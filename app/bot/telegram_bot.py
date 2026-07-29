@@ -4,7 +4,12 @@ from dotenv import load_dotenv
 
 from app.repositories.manager_repository import is_active_manager
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import (
+    Message,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardRemove,
+)
 from aiogram.filters import CommandStart
 
 load_dotenv()
@@ -49,10 +54,15 @@ async def start_handler(message: Message):
         return
 
     await message.answer(
+        "Обновляю меню…",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+    await message.answer(
         "🏠 Главное меню\n\n"
         "OhMySmell CRM запущена ✅\n\n"
         "Выберите раздел:",
-        reply_markup=main_menu
+        reply_markup=main_menu,
     )
 
 @dp.message(F.text == "🆔 Мой ID")
