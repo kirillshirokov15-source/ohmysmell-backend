@@ -32,17 +32,55 @@ class MoySkladClient:
         return response.json()
 
     def get_products(self) -> list[dict]:
+        products: list[dict] = []
+        limit = 100
+        offset = 0
+
+        while True:
+            response = requests.get(
+                f"{BASE_URL}/entity/product",
+                headers=self.headers,
+                params={
+                    "limit": limit,
+                    "offset": offset,
+                },
+                timeout=30,
+            )
+
+            response.raise_for_status()
+
+            data = response.json()
+            rows = data.get("rows", [])
+
+            products.extend(rows)
+
+            if len(rows) < limit:
+                break
+
+            offset += limit
+
+        return products
+
+    def get_stores(self) -> list[dict]:
         response = requests.get(
-            f"{BASE_URL}/entity/product",
+            f"{BASE_URL}/entity/store",
             headers=self.headers,
-            params={
-                "limit": 100,
-            },
+            params={"limit": 100},
             timeout=30,
         )
 
         response.raise_for_status()
 
         data = response.json()
-
         return data.get("rows", [])
+
+    def get_stock_by_store(self) -> dict:
+        response = requests.get(
+            f"{BASE_URL}/report/stock/bystore",
+            headers=self.headers,
+            params={"limit": 1000},
+            timeout=60,
+        )
+
+        response.raise_for_status()
+        return response.json()

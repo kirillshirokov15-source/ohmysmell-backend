@@ -53,3 +53,31 @@ def get_products():
     return {
         "products": service.get_catalog()
     }
+
+@app.get("/stores")
+def get_stores():
+    client = MoySkladClient()
+
+    return {
+        "stores": client.get_stores()
+    }
+
+
+@app.get("/stocks")
+def get_stocks():
+    client = MoySkladClient()
+
+    return {
+        "stocks": client.get_stock_by_store()
+    }
+
+@app.get("/debug-products")
+def debug_products():
+    client = MoySkladClient()
+    return client.get_products()[:1]
+
+@app.get("/debug-stock")
+def debug_stock():
+    client = MoySkladClient()
+    data = client.get_stock_by_store()
+    return data.get("rows", [])[:1]
