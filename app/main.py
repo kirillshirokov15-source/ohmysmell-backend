@@ -3,10 +3,19 @@ from app.schemas.order import OrderCreate
 from app.database.connection import check_database_connection
 from app.integrations.moysklad.client import MoySkladClient
 from app.services.product_service import ProductService
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(
     title="OhMySmell API",
     version="0.1.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
 )
 
 
