@@ -1,9 +1,13 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from app.schemas.order import OrderCreate
 from app.database.connection import check_database_connection
 from app.integrations.moysklad.client import MoySkladClient
 from app.services.product_service import ProductService
 from fastapi.middleware.cors import CORSMiddleware
+from app.services.order_validation_service import (
+    OrderValidationService,
+    OrderValidationError,
+)
 
 app = FastAPI(
     title="OhMySmell API",
@@ -41,10 +45,20 @@ async def health_db():
 
 @app.post("/orders")
 async def create_order(order: OrderCreate):
+    service = OrderValidationService()
+
+    try:
+        validated_order = service.validate(order)
+
+    except OrderValidationError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
 
     return {
         "success": True,
-        "received_order": order.model_dump()
+        "order": validated_order,
     }
 
 @app.get("/health/moysklad")
@@ -93,3 +107,10 @@ def debug_stock():
     client = MoySkladClient()
     data = client.get_stock_by_store()
     return data.get("rows", [])[:1]
+
+@app.get("/debug-product-images/{product_id}")
+def debug_product_images(product_id: str):
+    client = MoySkladClient()
+    return {
+        "images": client.get_product_images(product_id)
+    }

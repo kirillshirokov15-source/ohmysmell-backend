@@ -60,6 +60,19 @@ class MoySkladClient:
             offset += limit
 
         return products
+    
+    def get_product_images(self, product_id: str) -> list[dict]:
+        response = requests.get(
+            f"{BASE_URL}/entity/product/{product_id}/images",
+            headers=self.headers,
+            params={"limit": 100},
+            timeout=30,
+    )
+
+        response.raise_for_status()
+
+        data = response.json()
+        return data.get("rows", [])
 
     def get_stores(self) -> list[dict]:
         response = requests.get(
