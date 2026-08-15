@@ -8,6 +8,8 @@ from app.services.order_validation_service import (
     OrderValidationService,
     OrderValidationError,
 )
+from app.repositories.order_repository import create_order as save_order
+from app.services.telegram_notification_service import notify_managers
 
 app = FastAPI(
     title="OhMySmell API",
@@ -56,8 +58,17 @@ async def create_order(order: OrderCreate):
             detail=str(error),
         )
 
+    saved_order = await save_order(validated_order)
+
+    await notify_managers(
+        saved_order.id,
+        validated_order,
+    )
+
     return {
         "success": True,
+        "order_id": saved_order.id,
+        "status": "new",
         "order": validated_order,
     }
 
