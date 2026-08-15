@@ -1,19 +1,14 @@
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, Field
 
 
 class OrderItem(BaseModel):
-    id: int
-    brand: str
-    name: str
-    price: int
-    qty: int
+    id: str
+    qty: int = Field(gt=0)
 
 
 class OrderCreate(BaseModel):
     customer_name: str
     phone: str
-    telegram: Optional[str] = None
-    comment: Optional[str] = None
-
+    telegram: str | None = None
+    comment: str | None = None
     items: list[OrderItem]
