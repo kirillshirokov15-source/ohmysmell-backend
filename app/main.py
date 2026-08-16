@@ -98,8 +98,7 @@ def get_stores():
     return {
         "stores": client.get_stores()
     }
-
-
+    
 @app.get("/stocks")
 def get_stocks():
     client = MoySkladClient()
@@ -124,4 +123,12 @@ def debug_product_images(product_id: str):
     client = MoySkladClient()
     return {
         "images": client.get_product_images(product_id)
+    }
+
+@app.get("/debug-organizations")
+def debug_organizations():
+    client = MoySkladClient()
+
+    return {
+        "organizations": client.get_organizations()
     }
