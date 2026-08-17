@@ -8,8 +8,15 @@ from app.services.order_validation_service import (
     OrderValidationService,
     OrderValidationError,
 )
-from app.repositories.order_repository import create_order as save_order
+from app.repositories.order_repository import (
+    create_order as save_order,
+    set_order_counterparty,
+)
 from app.services.telegram_notification_service import notify_managers
+from app.services.moysklad_order_service import (
+    MoySkladOrderService,
+    MoySkladOrderError,
+)
 
 app = FastAPI(
     title="OhMySmell API",
@@ -98,7 +105,7 @@ def get_stores():
     return {
         "stores": client.get_stores()
     }
-    
+
 @app.get("/stocks")
 def get_stocks():
     client = MoySkladClient()
@@ -131,4 +138,59 @@ def debug_organizations():
 
     return {
         "organizations": client.get_organizations()
+    }
+
+@app.get("/debug-counterparties")
+def debug_counterparties(search: str):
+    client = MoySkladClient()
+
+    return {
+        "counterparties": client.search_counterparties(search)
+    }
+
+@app.post("/orders/{order_id}/counterparty")
+async def assign_counterparty(
+    order_id: int,
+    counterparty_id: str,
+    counterparty_name: str,
+):
+    order = await set_order_counterparty(
+        order_id=order_id,
+        counterparty_id=counterparty_id,
+        counterparty_name=counterparty_name,
+    )
+
+    if order is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Заказ не найден",
+        )
+
+    return {
+        "success": True,
+        "order_id": order.id,
+        "counterparty_id": order.counterparty_id,
+        "counterparty_name": order.counterparty_name,
+    }
+
+@app.post("/orders/{order_id}/moysklad")
+async def create_order_in_moysklad(order_id: int):
+    service = MoySkladOrderService()
+
+    try:
+        result = await service.create_from_crm_order(
+            order_id
+        )
+
+    except MoySkladOrderError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        )
+
+    return {
+        "success": True,
+        "crm_order_id": order_id,
+        "moysklad_order_id": result.get("id"),
+        "moysklad_order_name": result.get("name"),
     }

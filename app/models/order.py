@@ -16,7 +16,9 @@ from app.database.base import Base
 class Order(Base):
     __tablename__ = "orders"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[int] = mapped_column(
+        primary_key=True,
+    )
 
     customer_name: Mapped[str] = mapped_column(
         String(255),
@@ -29,6 +31,16 @@ class Order(Base):
     )
 
     telegram: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    counterparty_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    counterparty_name: Mapped[str | None] = mapped_column(
         String(255),
         nullable=True,
     )
@@ -60,14 +72,29 @@ class Order(Base):
         cascade="all, delete-orphan",
     )
 
+    moysklad_order_id: Mapped[str | None] = mapped_column(
+    String(255),
+    nullable=True,
+    )
+
+    moysklad_order_name: Mapped[str | None] = mapped_column(
+    String(255),
+    nullable=True,
+    )
+
 
 class OrderItem(Base):
     __tablename__ = "order_items"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[int] = mapped_column(
+        primary_key=True,
+    )
 
     order_id: Mapped[int] = mapped_column(
-        ForeignKey("orders.id", ondelete="CASCADE"),
+        ForeignKey(
+            "orders.id",
+            ondelete="CASCADE",
+        ),
         nullable=False,
         index=True,
     )

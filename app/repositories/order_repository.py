@@ -1,3 +1,6 @@
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+
 from app.database.session import async_session
 from app.models.order import Order, OrderItem
 
@@ -26,6 +29,67 @@ async def create_order(validated_order: dict) -> Order:
             )
 
         session.add(order)
+
+        await session.commit()
+        await session.refresh(order)
+
+        return order
+
+
+async def get_order(order_id: int) -> Order | None:
+    async with async_session() as session:
+        result = await session.execute(
+            select(Order)
+            .options(selectinload(Order.items))
+            .where(Order.id == order_id)
+        )
+
+        return result.scalar_one_or_none()
+
+
+async def set_order_counterparty(
+    order_id: int,
+    counterparty_id: str,
+    counterparty_name: str,
+) -> Order | None:
+    async with async_session() as session:
+        result = await session.execute(
+            select(Order).where(
+                Order.id == order_id
+            )
+        )
+
+        order = result.scalar_one_or_none()
+
+        if order is None:
+            return None
+
+        order.counterparty_id = counterparty_id
+        order.counterparty_name = counterparty_name
+
+        await session.commit()
+        await session.refresh(order)
+
+        return order
+
+async def set_moysklad_order(
+    order_id: int,
+    moysklad_order_id: str,
+    moysklad_order_name: str,
+) -> Order | None:
+    async with async_session() as session:
+        result = await session.execute(
+            select(Order).where(Order.id == order_id)
+        )
+
+        order = result.scalar_one_or_none()
+
+        if order is None:
+            return None
+
+        order.moysklad_order_id = moysklad_order_id
+        order.moysklad_order_name = moysklad_order_name
+        order.status = "created_in_moysklad"
 
         await session.commit()
         await session.refresh(order)
