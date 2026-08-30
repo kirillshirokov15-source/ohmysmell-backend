@@ -1,6 +1,7 @@
 import logging
 
 from app.integrations.email.provider import EmailMessage
+from app.logging_utils import log_event
 from app.models.draft_order import DraftOrder, ProductMatchStatus
 from app.models.sales import CustomerType
 from app.repositories.draft_order_repository import (
@@ -56,17 +57,42 @@ class DraftOrderService:
             message.external_message_id
         )
         if existing is not None:
+            log_event(
+                logger,
+                "duplicate_email_skipped",
+                message_id=message.external_message_id,
+                draft_id=existing.id,
+            )
             return existing
 
         customer = await self.customer_service.resolve_email(
             message.sender_email,
             message.sender_name,
         )
+        log_event(
+            logger,
+            "customer_resolved",
+            customer_id=customer.customer_id,
+            customer_type=customer.customer_type.value,
+        )
         extracted_lines = self.extraction_service.extract(message.body_text)
+        log_event(
+            logger,
+            "email_parsed",
+            message_id=message.external_message_id,
+            extracted_count=len(extracted_lines),
+        )
         matches = [
             self.matching_service.match(line.raw_product_text, line.qty)
             for line in extracted_lines
         ]
+        log_event(
+            logger,
+            "products_matched",
+            matched=sum(m.status == ProductMatchStatus.MATCHED for m in matches),
+            ambiguous=sum(m.status == ProductMatchStatus.AMBIGUOUS for m in matches),
+            not_found=sum(m.status == ProductMatchStatus.NOT_FOUND for m in matches),
+        )
 
         counterparty_candidates = []
         if not customer.moysklad_counterparty_id:
@@ -149,6 +175,13 @@ class DraftOrderService:
                 raise
             return draft
 
+        log_event(
+            logger,
+            "draft_created",
+            draft_id=draft.id,
+            status=draft.status.value if hasattr(draft.status, "value") else draft.status,
+        )
+
         try:
             await self.notifier(draft)
         except Exception:
@@ -159,17 +192,13 @@ class DraftOrderService:
         self, product: dict, customer_type: CustomerType, problems: list[str]
     ) -> int | None:
         try:
-            price = self.price_service.get_price(product, customer_type).value
+            price = self.price_service.get_price(
+                product, customer_type
+            ).amount_minor
         except (PriceConfigurationError, PriceNotConfiguredError) as error:
             problems.append(str(error))
             return None
-        if int(price) != price:
-            problems.append(
-                f"Цена товара '{product.get('name')}' содержит копейки, "
-                "которые текущая модель денег не поддерживает"
-            )
-            return None
-        return int(price)
+        return price
 
     async def review(self, draft_id: int) -> DraftOrder:
         draft = await self._get_required(draft_id)
@@ -273,6 +302,7 @@ class DraftOrderService:
             raise DraftOrderError(str(error)) from error
         if order is None:
             raise DraftOrderError("Draft не найден")
+        log_event(logger, "draft_finalized", draft_id=draft_id, order_id=order.id)
         return order
 
     async def _get_required(self, draft_id: int) -> DraftOrder:

@@ -1,6 +1,7 @@
 import logging
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
+from app.api.auth import require_debug_access, require_internal_api_token
 from app.schemas.order import OrderCreate
 from app.schemas.draft_order import (
     InboundEmailCreate,
@@ -39,6 +40,7 @@ from app.services.customer_resolution_service import (
 from app.integrations.email.provider import EmailMessage
 from app.repositories.draft_order_repository import DraftOrderRepository
 from app.services.draft_order_service import DraftOrderError, DraftOrderService
+from app.services.money import format_rubles
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,8 @@ def serialize_order(order):
         "counterparty_id": order.counterparty_id,
         "counterparty_name": order.counterparty_name,
         "total": order.total,
+        "total_minor": order.total,
+        "total_major": format_rubles(order.total),
         "created_at": order.created_at,
         "items": [
             {
@@ -64,8 +68,12 @@ def serialize_order(order):
                 "name": item.name,
                 "article": item.article,
                 "price": item.price,
+                "price_minor": item.price,
+                "price_major": format_rubles(item.price),
                 "qty": item.qty,
                 "item_total": item.item_total,
+                "item_total_minor": item.item_total,
+                "item_total_major": format_rubles(item.item_total),
             }
             for item in order.items
         ],
@@ -87,6 +95,10 @@ def serialize_draft(draft):
         "counterparty_name": draft.counterparty_name,
         "counterparty_candidates": draft.counterparty_candidates,
         "total": draft.total,
+        "total_minor": draft.total,
+        "total_major": (
+            format_rubles(draft.total) if draft.total is not None else None
+        ),
         "review_notes": draft.review_notes,
         "finalized_order_id": draft.finalized_order_id,
         "created_at": draft.created_at,
@@ -100,7 +112,16 @@ def serialize_draft(draft):
                 "product_name": item.product_name,
                 "article": item.article,
                 "price": item.price,
+                "price_minor": item.price,
+                "price_major": (
+                    format_rubles(item.price) if item.price is not None else None
+                ),
                 "item_total": item.item_total,
+                "item_total_minor": item.item_total,
+                "item_total_major": (
+                    format_rubles(item.item_total)
+                    if item.item_total is not None else None
+                ),
                 "candidates": item.candidates,
             }
             for item in draft.items
@@ -181,7 +202,7 @@ async def create_order(order: OrderCreate):
         "order": validated_order,
     }
 
-@app.get("/health/moysklad")
+@app.get("/health/moysklad", dependencies=[Depends(require_internal_api_token)])
 def health_moysklad():
     client = MoySkladClient()
     employee = client.get_current_user()
@@ -200,7 +221,7 @@ def get_products():
         "products": service.get_catalog()
     }
 
-@app.get("/stores")
+@app.get("/stores", dependencies=[Depends(require_internal_api_token)])
 def get_stores():
     client = MoySkladClient()
 
@@ -208,7 +229,7 @@ def get_stores():
         "stores": client.get_stores()
     }
 
-@app.get("/stocks")
+@app.get("/stocks", dependencies=[Depends(require_internal_api_token)])
 def get_stocks():
     client = MoySkladClient()
 
@@ -216,25 +237,28 @@ def get_stocks():
         "stocks": client.get_stock_by_store()
     }
 
-@app.get("/debug-products")
+@app.get("/debug-products", dependencies=[Depends(require_debug_access)])
 def debug_products():
     client = MoySkladClient()
     return client.get_products()[:1]
 
-@app.get("/debug-stock")
+@app.get("/debug-stock", dependencies=[Depends(require_debug_access)])
 def debug_stock():
     client = MoySkladClient()
     data = client.get_stock_by_store()
     return data.get("rows", [])[:1]
 
-@app.get("/debug-product-images/{product_id}")
+@app.get(
+    "/debug-product-images/{product_id}",
+    dependencies=[Depends(require_debug_access)],
+)
 def debug_product_images(product_id: str):
     client = MoySkladClient()
     return {
         "images": client.get_product_images(product_id)
     }
 
-@app.get("/debug-organizations")
+@app.get("/debug-organizations", dependencies=[Depends(require_debug_access)])
 def debug_organizations():
     client = MoySkladClient()
 
@@ -242,7 +266,7 @@ def debug_organizations():
         "organizations": client.get_organizations()
     }
 
-@app.get("/debug-counterparties")
+@app.get("/debug-counterparties", dependencies=[Depends(require_debug_access)])
 def debug_counterparties(search: str):
     client = MoySkladClient()
 
@@ -250,7 +274,10 @@ def debug_counterparties(search: str):
         "counterparties": client.search_counterparties(search)
     }
 
-@app.post("/orders/{order_id}/counterparty")
+@app.post(
+    "/orders/{order_id}/counterparty",
+    dependencies=[Depends(require_internal_api_token)],
+)
 async def assign_counterparty(
     order_id: int,
     counterparty_id: str,
@@ -275,7 +302,10 @@ async def assign_counterparty(
         "counterparty_name": order.counterparty_name,
     }
 
-@app.post("/orders/{order_id}/moysklad")
+@app.post(
+    "/orders/{order_id}/moysklad",
+    dependencies=[Depends(require_internal_api_token)],
+)
 async def create_order_in_moysklad(order_id: int):
     service = MoySkladOrderService()
 
@@ -298,12 +328,12 @@ async def create_order_in_moysklad(order_id: int):
     }
 
 
-@app.get("/orders")
+@app.get("/orders", dependencies=[Depends(require_internal_api_token)])
 async def get_orders():
     return {"orders": [serialize_order(order) for order in await list_orders()]}
 
 
-@app.get("/orders/{order_id}")
+@app.get("/orders/{order_id}", dependencies=[Depends(require_internal_api_token)])
 async def get_order_details(order_id: int):
     order = await get_order(order_id)
     if order is None:
@@ -311,7 +341,10 @@ async def get_order_details(order_id: int):
     return serialize_order(order)
 
 
-@app.post("/internal/email/messages")
+@app.post(
+    "/internal/email/messages",
+    dependencies=[Depends(require_internal_api_token)],
+)
 async def ingest_email_message(payload: InboundEmailCreate):
     message = EmailMessage(
         external_message_id=payload.external_message_id,
@@ -328,13 +361,16 @@ async def ingest_email_message(payload: InboundEmailCreate):
     return serialize_draft(draft)
 
 
-@app.get("/draft-orders")
+@app.get("/draft-orders", dependencies=[Depends(require_internal_api_token)])
 async def get_draft_orders():
     drafts = await DraftOrderRepository().list()
     return {"draft_orders": [serialize_draft(draft) for draft in drafts]}
 
 
-@app.get("/draft-orders/{draft_id}")
+@app.get(
+    "/draft-orders/{draft_id}",
+    dependencies=[Depends(require_internal_api_token)],
+)
 async def get_draft_order(draft_id: int):
     draft = await DraftOrderRepository().get(draft_id)
     if draft is None:
@@ -342,7 +378,10 @@ async def get_draft_order(draft_id: int):
     return serialize_draft(draft)
 
 
-@app.post("/draft-orders/{draft_id}/customer-type")
+@app.post(
+    "/draft-orders/{draft_id}/customer-type",
+    dependencies=[Depends(require_internal_api_token)],
+)
 async def set_draft_customer_type(
     draft_id: int, payload: SetCustomerTypeRequest
 ):
@@ -357,7 +396,10 @@ async def set_draft_customer_type(
     return serialize_draft(draft)
 
 
-@app.post("/draft-orders/{draft_id}/items/{item_id}/match")
+@app.post(
+    "/draft-orders/{draft_id}/items/{item_id}/match",
+    dependencies=[Depends(require_internal_api_token)],
+)
 async def resolve_draft_product(
     draft_id: int, item_id: int, payload: ResolveProductRequest
 ):
@@ -370,7 +412,10 @@ async def resolve_draft_product(
     return serialize_draft(draft)
 
 
-@app.post("/draft-orders/{draft_id}/counterparty")
+@app.post(
+    "/draft-orders/{draft_id}/counterparty",
+    dependencies=[Depends(require_internal_api_token)],
+)
 async def link_draft_counterparty(
     draft_id: int, payload: LinkCounterpartyRequest
 ):
@@ -383,7 +428,10 @@ async def link_draft_counterparty(
     return serialize_draft(draft)
 
 
-@app.post("/draft-orders/{draft_id}/reject")
+@app.post(
+    "/draft-orders/{draft_id}/reject",
+    dependencies=[Depends(require_internal_api_token)],
+)
 async def reject_draft_order(draft_id: int):
     try:
         draft = await DraftOrderService().reject(draft_id)
@@ -392,7 +440,10 @@ async def reject_draft_order(draft_id: int):
     return serialize_draft(draft)
 
 
-@app.post("/draft-orders/{draft_id}/finalize")
+@app.post(
+    "/draft-orders/{draft_id}/finalize",
+    dependencies=[Depends(require_internal_api_token)],
+)
 async def finalize_draft_order(draft_id: int):
     try:
         order = await DraftOrderService().finalize(draft_id)

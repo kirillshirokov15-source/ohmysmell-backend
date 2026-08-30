@@ -188,7 +188,7 @@ class MoySkladClient:
             positions.append(
                 {
                     "quantity": item["qty"],
-                    "price": item["price"] * 100,
+                    "price": item["price"],
                     "assortment": {
                         "meta": {
                             "href": (

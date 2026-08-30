@@ -6,6 +6,7 @@ from app.repositories.manager_repository import is_active_manager
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     CallbackQuery,
+    InlineKeyboardMarkup,
     Message,
     ReplyKeyboardMarkup,
     KeyboardButton,
@@ -15,6 +16,12 @@ from aiogram.filters import CommandStart
 from app.models.sales import CustomerType
 from app.repositories.draft_order_repository import DraftOrderRepository
 from app.services.draft_order_service import DraftOrderError, DraftOrderService
+from app.services.draft_telegram_service import (
+    build_draft_card,
+    build_draft_keyboard,
+)
+from app.logging_utils import log_event
+import logging
 
 load_dotenv()
 
@@ -44,6 +51,7 @@ main_menu = ReplyKeyboardMarkup(
 
 
 dp = Dispatcher()
+logger = logging.getLogger(__name__)
 
 async def check_access(message: Message) -> bool:
     if not is_active_manager(message.from_user.id):
@@ -126,16 +134,16 @@ async def draft_callback_handler(callback: CallbackQuery):
     parts = (callback.data or "").split(":")
     try:
         action = parts[1]
+        service = DraftOrderService()
+        draft = None
         if action == "type":
             customer_type = CustomerType(parts[2])
             draft_id = int(parts[3])
-            draft = await DraftOrderService().set_customer_type(
-                draft_id, customer_type
-            )
+            draft = await service.set_customer_type(draft_id, customer_type)
             await callback.answer(f"Тип клиента: {draft.customer_type}")
         elif action == "reject":
             draft_id = int(parts[2])
-            await DraftOrderService().reject(draft_id)
+            draft = await service.reject(draft_id)
             await callback.answer("Draft отклонён")
         elif action == "ambiguous":
             draft_id = int(parts[2])
@@ -157,8 +165,66 @@ async def draft_callback_handler(callback: CallbackQuery):
             if callback.message:
                 await callback.message.answer(text)
             await callback.answer()
+        elif action == "product":
+            draft_id = int(parts[2])
+            item_id = int(parts[3])
+            product_id = parts[4]
+            draft = await service.resolve_product(draft_id, item_id, product_id)
+            await callback.answer("Товар выбран")
+        elif action == "counterparty":
+            draft_id = int(parts[2])
+            counterparty_id = parts[3]
+            current = await DraftOrderRepository().get(draft_id)
+            if current is None:
+                raise DraftOrderError("Draft не найден")
+            candidate = next(
+                (
+                    item
+                    for item in current.counterparty_candidates
+                    if item.get("id") == counterparty_id
+                ),
+                None,
+            )
+            if candidate is None:
+                raise DraftOrderError("Кандидат контрагента не найден")
+            draft = await service.link_counterparty(
+                draft_id,
+                counterparty_id,
+                candidate.get("name") or counterparty_id,
+            )
+            await callback.answer("Контрагент выбран")
+        elif action == "finalize":
+            draft_id = int(parts[2])
+            order = await service.finalize(draft_id)
+            await callback.answer(f"Создан локальный заказ #{order.id}")
+            log_event(
+                logger,
+                "telegram_manager_action",
+                action=action,
+                draft_id=draft_id,
+                order_id=order.id,
+            )
+            if callback.message:
+                await callback.message.edit_text(
+                    f"Draft #{draft_id} финализирован в локальный заказ #{order.id}"
+                )
+            return
         else:
             await callback.answer("Неизвестное действие", show_alert=True)
+            return
+        log_event(
+            logger,
+            "telegram_manager_action",
+            action=action,
+            draft_id=draft_id,
+        )
+        if draft is not None and callback.message:
+            await callback.message.edit_text(
+                build_draft_card(draft),
+                reply_markup=InlineKeyboardMarkup.model_validate(
+                    build_draft_keyboard(draft)
+                ),
+            )
     except (ValueError, IndexError, DraftOrderError) as error:
         await callback.answer(str(error), show_alert=True)
 

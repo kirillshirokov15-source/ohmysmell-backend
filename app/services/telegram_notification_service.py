@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from app.database.session import async_session
 from app.models.manager import Manager
+from app.services.money import format_rubles
 
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -25,7 +26,7 @@ async def notify_managers(order_id: int, order: dict) -> None:
         managers = result.scalars().all()
 
     items_text = "\n".join(
-        f"• {item['name']} × {item['qty']} – {item['sum']} ₽"
+        f"• {item['name']} × {item['qty']} – {format_rubles(item['sum'])} ₽"
         for item in order["items"]
     )
 
@@ -35,7 +36,7 @@ async def notify_managers(order_id: int, order: dict) -> None:
         f"📞 {order['phone']}\n"
         f"✈️ {order.get('telegram') or '–'}\n\n"
         f"{items_text}\n\n"
-        f"💰 Итого: {order['total']} ₽"
+        f"💰 Итого: {format_rubles(order['total'])} ₽"
     )
 
     if order.get("comment"):

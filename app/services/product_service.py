@@ -5,6 +5,7 @@ from app.services.price_service import (
     PriceNotConfiguredError,
     PriceService,
 )
+from app.services.money import format_rubles
 
 
 class ProductService:
@@ -134,7 +135,14 @@ class ProductService:
                 "code": product.get("code"),
                 "description": product.get("description"),
                 "category": product.get("pathName"),
-                "price": selected_price.value if selected_price else None,
+                "price": selected_price.amount_minor if selected_price else None,
+                "price_minor": (
+                    selected_price.amount_minor if selected_price else None
+                ),
+                "price_major": (
+                    format_rubles(selected_price.amount_minor)
+                    if selected_price else None
+                ),
                 "price_type": (
                     selected_price.price_type if selected_price else None
                 ),

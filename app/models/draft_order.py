@@ -3,6 +3,7 @@ from enum import StrEnum
 
 from sqlalchemy import (
     CheckConstraint,
+    BigInteger,
     DateTime,
     ForeignKey,
     Integer,
@@ -63,7 +64,7 @@ class DraftOrder(Base):
     counterparty_candidates: Mapped[list[dict]] = mapped_column(
         JSON, nullable=False, default=list
     )
-    total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     review_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     finalized_order_id: Mapped[int | None] = mapped_column(
         ForeignKey("orders.id", ondelete="SET NULL"), nullable=True, unique=True
@@ -98,7 +99,7 @@ class DraftOrderItem(Base):
     product_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     product_name: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     article: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    price: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    item_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    price: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    item_total: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     candidates: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
     draft_order: Mapped[DraftOrder] = relationship(back_populates="items")

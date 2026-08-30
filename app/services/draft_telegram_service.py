@@ -6,6 +6,7 @@ from sqlalchemy import select
 from app.database.session import async_session
 from app.models.draft_order import DraftOrder
 from app.models.manager import Manager
+from app.services.money import format_rubles
 
 
 def build_draft_card(draft: DraftOrder) -> str:
@@ -22,14 +23,21 @@ def build_draft_card(draft: DraftOrder) -> str:
         "Позиции:",
     ]
     for item in draft.items:
-        price = f", {item.price} ₽" if item.price is not None else ""
+        price = (
+            f", {format_rubles(item.price)} ₽" if item.price is not None else ""
+        )
         lines.append(
             f"• {item.raw_product_text} × {item.qty} — {item.match_status}{price}"
         )
     lines.extend(
         [
             "",
-            f"Итого: {draft.total if draft.total is not None else 'не рассчитано'}",
+            "Итого: "
+            + (
+                f"{format_rubles(draft.total)} ₽"
+                if draft.total is not None
+                else "не рассчитано"
+            ),
             f"Статус: {draft.status}",
         ]
     )
@@ -45,6 +53,59 @@ def build_draft_card(draft: DraftOrder) -> str:
     return "\n".join(lines)
 
 
+def build_draft_keyboard(draft: DraftOrder) -> dict:
+    if str(draft.status) in {"new", "rejected"}:
+        return {"inline_keyboard": []}
+    rows = [
+        [
+            {
+                "text": "Confirm wholesale",
+                "callback_data": f"draft:type:wholesale:{draft.id}",
+            },
+            {
+                "text": "Confirm retail",
+                "callback_data": f"draft:type:retail:{draft.id}",
+            },
+        ]
+    ]
+    for item in draft.items:
+        for candidate in item.candidates[:3]:
+            rows.append(
+                [{
+                    "text": f"✓ {candidate.get('name', 'Product')[:35]}",
+                    "callback_data": (
+                        f"draft:product:{draft.id}:{item.id}:{candidate['id']}"
+                    ),
+                }]
+            )
+    for candidate in draft.counterparty_candidates[:3]:
+        rows.append(
+            [{
+                "text": f"Контрагент: {(candidate.get('name') or 'Без имени')[:25]}",
+                "callback_data": f"draft:counterparty:{draft.id}:{candidate['id']}",
+            }]
+        )
+    rows.extend(
+        [
+            [{
+                "text": "View ambiguous items",
+                "callback_data": f"draft:ambiguous:{draft.id}",
+            }],
+            [
+                {
+                    "text": "Finalize",
+                    "callback_data": f"draft:finalize:{draft.id}",
+                },
+                {
+                    "text": "Reject",
+                    "callback_data": f"draft:reject:{draft.id}",
+                },
+            ],
+        ]
+    )
+    return {"inline_keyboard": rows}
+
+
 async def notify_managers_about_draft(draft: DraftOrder) -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -55,30 +116,7 @@ async def notify_managers_about_draft(draft: DraftOrder) -> None:
         )
         managers = result.scalars().all()
 
-    keyboard = {
-        "inline_keyboard": [
-            [
-                {
-                    "text": "Confirm wholesale",
-                    "callback_data": f"draft:type:wholesale:{draft.id}",
-                },
-                {
-                    "text": "Confirm retail",
-                    "callback_data": f"draft:type:retail:{draft.id}",
-                },
-            ],
-            [
-                {
-                    "text": "View ambiguous items",
-                    "callback_data": f"draft:ambiguous:{draft.id}",
-                },
-                {
-                    "text": "Reject",
-                    "callback_data": f"draft:reject:{draft.id}",
-                },
-            ],
-        ]
-    }
+    keyboard = build_draft_keyboard(draft)
     for manager in managers:
         response = requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",

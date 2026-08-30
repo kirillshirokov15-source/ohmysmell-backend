@@ -141,11 +141,11 @@ class PriceServiceTests(unittest.TestCase):
         )
         self.assertEqual(
             self.service.get_price(product, CustomerType.WHOLESALE).value,
-            150,
+            15000,
         )
         self.assertEqual(
             self.service.get_price(product, CustomerType.RETAIL).value,
-            250,
+            25000,
         )
 
     def test_retail_without_retail_price_is_controlled_error(self):

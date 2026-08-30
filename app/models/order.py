@@ -2,6 +2,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     CheckConstraint,
+    BigInteger,
     DateTime,
     ForeignKey,
     Integer,
@@ -91,7 +92,7 @@ class Order(Base):
     )
 
     total: Mapped[int] = mapped_column(
-        Integer,
+        BigInteger,
         nullable=False,
     )
 
@@ -149,7 +150,7 @@ class OrderItem(Base):
     )
 
     price: Mapped[int] = mapped_column(
-        Integer,
+        BigInteger,
         nullable=False,
     )
 
@@ -159,7 +160,7 @@ class OrderItem(Base):
     )
 
     item_total: Mapped[int] = mapped_column(
-        Integer,
+        BigInteger,
         nullable=False,
     )
 

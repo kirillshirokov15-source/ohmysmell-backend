@@ -8,6 +8,10 @@ __pycache__/
 
 # Environment
 .env
+credentials.json
+token.json
+gmail-credentials*.json
+gmail-token*.json
 
 # IDE
 .vscode/

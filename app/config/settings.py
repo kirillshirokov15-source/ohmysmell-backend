@@ -20,6 +20,17 @@ class Settings:
         "MOYSKLAD_RETAIL_PRICE_TYPE",
         "",
     )
+    gmail_credentials_file: str = os.getenv("GMAIL_CREDENTIALS_FILE", "")
+    gmail_token_file: str = os.getenv("GMAIL_TOKEN_FILE", "")
+    gmail_user_id: str = os.getenv("GMAIL_USER_ID", "me")
+    gmail_initial_query: str = os.getenv(
+        "GMAIL_INITIAL_QUERY", "label:inbox is:unread"
+    )
+    email_poll_interval: int = int(os.getenv("EMAIL_POLL_INTERVAL", "60"))
+    internal_api_token: str = os.getenv("INTERNAL_API_TOKEN", "")
+    debug_endpoints_enabled: bool = os.getenv(
+        "DEBUG_ENDPOINTS_ENABLED", "false"
+    ).lower() in {"1", "true", "yes", "on"}
 
 
 settings = Settings()

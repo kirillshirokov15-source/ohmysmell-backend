@@ -4,6 +4,7 @@ from app.services.price_service import (
     PriceConfigurationError,
     PriceNotConfiguredError,
 )
+from app.services.money import format_rubles
 
 
 class OrderValidationError(Exception):
@@ -69,6 +70,8 @@ class OrderValidationService:
                     "name": product["name"],
                     "article": product.get("article"),
                     "price": price,
+                    "price_minor": price,
+                    "price_major": format_rubles(price),
                     "qty": qty,
                     "available": available,
                     "sum": item_total,
@@ -84,4 +87,6 @@ class OrderValidationService:
             "comment": order.comment,
             "items": validated_items,
             "total": total,
+            "total_minor": total,
+            "total_major": format_rubles(total),
         }

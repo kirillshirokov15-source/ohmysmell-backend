@@ -14,8 +14,13 @@ class PriceNotConfiguredError(Exception):
 
 @dataclass(frozen=True)
 class ProductPrice:
-    value: float
+    amount_minor: int
     price_type: str
+
+    @property
+    def value(self) -> int:
+        """Backward-compatible alias; value is now always minor units."""
+        return self.amount_minor
 
 
 class PriceService:
@@ -60,11 +65,11 @@ class PriceService:
                 continue
 
             value = sale_price.get("value")
-            if value is None:
+            if value is None or isinstance(value, bool) or not isinstance(value, int):
                 break
 
             return ProductPrice(
-                value=value / 100,
+                amount_minor=value,
                 price_type=configured_type,
             )
 

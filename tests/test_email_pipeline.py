@@ -249,7 +249,7 @@ class TestDraftOrderPipeline:
         )
         draft = asyncio.run(service.ingest_email(email_message()))
         assert draft.status == OrderStatus.READY
-        assert draft.total == 150
+        assert draft.total == 15000
 
     def test_manager_confirmation_wholesale_updates_customer(self):
         service, repository, _ = draft_service(
