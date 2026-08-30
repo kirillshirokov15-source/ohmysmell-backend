@@ -23,6 +23,7 @@ class CustomerRepositoryProtocol(Protocol):
     async def create(self, customer_type, display_name, identities): ...
     async def add_identities(self, customer_id, identities): ...
     async def update_customer_type(self, customer_id, customer_type): ...
+    async def delete_if_unreferenced(self, customer_id): ...
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,7 @@ class CustomerResolution:
     customer_type: CustomerType
     moysklad_counterparty_id: str | None
     identities: dict[str, list[str]] = field(default_factory=dict)
+    created: bool = False
 
 
 class CustomerResolutionService:
@@ -137,7 +139,17 @@ class CustomerResolutionService:
             customer_type=CustomerType.UNKNOWN,
             moysklad_counterparty_id=customer.moysklad_counterparty_id,
             identities={CustomerIdentityType.EMAIL.value: [email]},
+            created=True,
         )
+
+    async def discard_if_unreferenced(
+        self,
+        resolution: CustomerResolution,
+    ) -> None:
+        if resolution.created:
+            await self.repository.delete_if_unreferenced(
+                resolution.customer_id
+            )
 
     @staticmethod
     def _identity_values(customer: Customer) -> dict[str, list[str]]:

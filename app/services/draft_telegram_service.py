@@ -1,9 +1,9 @@
 import os
 
-import requests
 from sqlalchemy import select
 
 from app.database.session import async_session
+from app.integrations.http_tls import verified_session
 from app.models.draft_order import DraftOrder
 from app.models.manager import Manager
 from app.services.money import format_rubles
@@ -70,9 +70,19 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
     ]
     for item in draft.items:
         for candidate in item.candidates[:3]:
+            selected = item.product_id == candidate.get("id")
+            reference = candidate.get("article") or (
+                f"score {candidate.get('score')}"
+                if candidate.get("score") is not None
+                else "Product"
+            )
+            marker = "✓ " if selected else ""
             rows.append(
                 [{
-                    "text": f"✓ {candidate.get('name', 'Product')[:35]}",
+                    "text": (
+                        f"{marker}{reference} · "
+                        f"{candidate.get('name', 'Product')[:28]}"
+                    ),
                     "callback_data": (
                         f"draft:product:{draft.id}:{item.id}:{candidate['id']}"
                     ),
@@ -85,24 +95,35 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
                 "callback_data": f"draft:counterparty:{draft.id}:{candidate['id']}",
             }]
         )
-    rows.extend(
-        [
-            [{
-                "text": "View ambiguous items",
-                "callback_data": f"draft:ambiguous:{draft.id}",
-            }],
-            [
-                {
-                    "text": "Finalize",
-                    "callback_data": f"draft:finalize:{draft.id}",
-                },
-                {
-                    "text": "Reject",
-                    "callback_data": f"draft:reject:{draft.id}",
-                },
-            ],
-        ]
-    )
+    if not draft.counterparty_id and not draft.counterparty_candidates:
+        rows.append([{
+            "text": "Select counterparty",
+            "callback_data": f"draft:counterparty_select:{draft.id}",
+        }])
+    match_statuses = {str(item.match_status) for item in draft.items}
+    has_ambiguous = "ambiguous" in match_statuses
+    has_not_found = "not_found" in match_statuses
+    if has_ambiguous or has_not_found:
+        action_text = (
+            "Resolve products"
+            if has_not_found
+            else "View ambiguous items"
+        )
+        rows.append([{
+            "text": action_text,
+            "callback_data": f"draft:ambiguous:{draft.id}",
+        }])
+    final_actions = []
+    if str(draft.status) == "ready":
+        final_actions.append({
+            "text": "Finalize",
+            "callback_data": f"draft:finalize:{draft.id}",
+        })
+    final_actions.append({
+        "text": "Reject",
+        "callback_data": f"draft:reject:{draft.id}",
+    })
+    rows.append(final_actions)
     return {"inline_keyboard": rows}
 
 
@@ -117,9 +138,10 @@ async def notify_managers_about_draft(draft: DraftOrder) -> int:
         managers = result.scalars().all()
 
     keyboard = build_draft_keyboard(draft)
+    session = verified_session()
     sent_count = 0
     for manager in managers:
-        response = requests.post(
+        response = session.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
             json={
                 "chat_id": manager.telegram_id,

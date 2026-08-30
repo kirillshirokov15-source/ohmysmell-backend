@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from app.integrations.email.provider import EmailMessage
 from app.models.draft_order import ProductMatchStatus
 from app.models.sales import CustomerIdentityType, CustomerType
@@ -62,6 +64,9 @@ class FakeCustomerService:
         self.calls += 1
         return self.resolution
 
+    async def discard_if_unreferenced(self, resolution):
+        return None
+
 
 class FakeCounterpartyService:
     def candidates(self, *queries):
@@ -111,6 +116,15 @@ class FakeDraftRepository:
     async def set_customer_type(self, draft_id, customer_type):
         self.customer_updated_to = customer_type
         self.draft.customer_type = customer_type
+        return self.draft
+
+    async def resolve_item(self, draft_id, item_id, product):
+        item = next(item for item in self.draft.items if item.id == item_id)
+        item.match_status = ProductMatchStatus.MATCHED
+        item.product_id = product["id"]
+        item.product_name = product["name"]
+        item.article = product.get("article")
+        item.candidates = []
         return self.draft
 
     async def save_review(
@@ -189,6 +203,41 @@ class TestProductMatching:
         )
         assert result.status == ProductMatchStatus.NOT_FOUND
 
+    def test_exact_primary_name_before_localized_description_is_matched(self):
+        catalog = SimpleNamespace(
+            get_products=lambda: [{
+                "id": "marvis-1",
+                "name": (
+                    "Marvis Classic Strong Mint 85 ml / "
+                    "Зубная паста Классическая интенсивная мята"
+                ),
+                "article": "MARV007",
+            }]
+        )
+        result = ProductMatchingService(catalog).match(
+            "Marvis Classic Strong Mint 85 ml", 3
+        )
+        assert result.status == ProductMatchStatus.MATCHED
+        assert result.product["id"] == "marvis-1"
+
+    def test_partial_name_is_candidate_but_never_auto_matched(self):
+        catalog = SimpleNamespace(
+            get_products=lambda: [{
+                "id": "chanel-1",
+                "name": (
+                    "Chanel Allure Homme Sport Hair And Body Wash 200 ml"
+                ),
+                "article": "CHNL010",
+            }]
+        )
+        result = ProductMatchingService(catalog).match(
+            "Chanel Allure Homme Sport", 2
+        )
+        assert result.status == ProductMatchStatus.AMBIGUOUS
+        assert result.product is None
+        assert result.candidates[0].id == "chanel-1"
+        assert result.candidates[0].score >= 0.72
+
 
 class TestEmailCustomerResolution:
     def test_existing_wholesale_customer_stays_wholesale(self):
@@ -263,6 +312,69 @@ class TestDraftOrderPipeline:
         assert reviewed.customer_type == CustomerType.WHOLESALE
         assert reviewed.status == OrderStatus.READY
 
+    def test_wholesale_confirmation_and_product_resolution_reprice_items(self):
+        products = [
+            {
+                "id": "chanel-real",
+                "name": "Chanel Allure Home Sport Hair And Body Wash 200 ml",
+                "article": "CHNL010",
+                "salePrices": [{
+                    "value": 580000.0,
+                    "priceType": {"name": "Цена продажи"},
+                }],
+            },
+            {
+                "id": "marvis-real",
+                "name": (
+                    "Marvis Classic Strong Mint 85 ml / "
+                    "Зубная паста Классическая интенсивная мята"
+                ),
+                "article": "MARV007",
+                "salePrices": [{
+                    "value": 56000.0,
+                    "priceType": {"name": "Цена продажи"},
+                }],
+            },
+        ]
+        repository = FakeDraftRepository()
+        service = DraftOrderService(
+            repository=repository,
+            customer_service=FakeCustomerService(
+                CustomerType.UNKNOWN, "counterparty-1"
+            ),
+            matching_service=ProductMatchingService(
+                SimpleNamespace(get_products=lambda: products)
+            ),
+            price_service=PriceService({
+                CustomerType.WHOLESALE: "Цена продажи",
+                CustomerType.RETAIL: "",
+            }),
+            counterparty_service=FakeCounterpartyService(),
+            notifier=AsyncMock(),
+        )
+        draft = asyncio.run(service.ingest_email(email_message(body=(
+            "Chanel Allure Homme Sport x2\n"
+            "Marvis Classic Strong Mint 85 ml x3"
+        ))))
+
+        wholesale = asyncio.run(
+            service.set_customer_type(draft.id, CustomerType.WHOLESALE)
+        )
+        chanel, marvis = wholesale.items
+        assert chanel.match_status == ProductMatchStatus.AMBIGUOUS
+        assert chanel.price is None
+        assert marvis.product_id == "marvis-real"
+        assert marvis.price == 56000
+        assert marvis.item_total == 168000
+
+        resolved = asyncio.run(
+            service.resolve_product(draft.id, chanel.id, "chanel-real")
+        )
+        chanel, marvis = resolved.items
+        assert chanel.price == 580000
+        assert chanel.item_total == 1160000
+        assert marvis.price == 56000
+
     def test_duplicate_external_id_is_idempotent(self):
         notifier = AsyncMock()
         service, repository, customer_service = draft_service(
@@ -283,3 +395,78 @@ class TestDraftOrderPipeline:
         draft = asyncio.run(service.ingest_email(email_message()))
         assert draft.id == 10
         assert draft.status == OrderStatus.READY
+
+    def test_catalog_failure_discards_new_customer_and_identity(self):
+        state = {"customers": [], "identities": []}
+
+        class NewCustomerService:
+            async def resolve_email(self, email, display_name=None):
+                state["customers"].append(1)
+                state["identities"].append(email)
+                return CustomerResolution(
+                    1,
+                    CustomerType.UNKNOWN,
+                    None,
+                    created=True,
+                )
+
+            async def discard_if_unreferenced(self, resolution):
+                if resolution.created:
+                    state["customers"].clear()
+                    state["identities"].clear()
+
+        class FailingCatalog:
+            def get_products(self):
+                raise RuntimeError("catalog unavailable")
+
+        repository = FakeDraftRepository()
+        service = DraftOrderService(
+            repository=repository,
+            customer_service=NewCustomerService(),
+            matching_service=ProductMatchingService(FailingCatalog()),
+            counterparty_service=FakeCounterpartyService(),
+            notifier=AsyncMock(),
+        )
+
+        with pytest.raises(RuntimeError, match="catalog unavailable"):
+            asyncio.run(service.ingest_email(email_message()))
+
+        assert state == {"customers": [], "identities": []}
+        assert repository.draft is None
+
+    def test_catalog_failure_keeps_existing_customer_untouched(self):
+        state = {"customers": [10], "identities": ["buyer@example.com"]}
+
+        class ExistingCustomerService:
+            async def resolve_email(self, email, display_name=None):
+                return CustomerResolution(
+                    10,
+                    CustomerType.WHOLESALE,
+                    "counterparty-1",
+                    created=False,
+                )
+
+            async def discard_if_unreferenced(self, resolution):
+                assert resolution.created is False
+
+        class FailingCatalog:
+            def get_products(self):
+                raise RuntimeError("catalog unavailable")
+
+        repository = FakeDraftRepository()
+        service = DraftOrderService(
+            repository=repository,
+            customer_service=ExistingCustomerService(),
+            matching_service=ProductMatchingService(FailingCatalog()),
+            counterparty_service=FakeCounterpartyService(),
+            notifier=AsyncMock(),
+        )
+
+        with pytest.raises(RuntimeError, match="catalog unavailable"):
+            asyncio.run(service.ingest_email(email_message()))
+
+        assert state == {
+            "customers": [10],
+            "identities": ["buyer@example.com"],
+        }
+        assert repository.draft is None

@@ -65,6 +65,8 @@ class PriceService:
                 continue
 
             value = sale_price.get("value")
+            if isinstance(value, float) and value.is_integer():
+                value = int(value)
             if value is None or isinstance(value, bool) or not isinstance(value, int):
                 break
 

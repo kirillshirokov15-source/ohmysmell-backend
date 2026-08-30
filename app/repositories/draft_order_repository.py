@@ -117,6 +117,17 @@ class DraftOrderRepository:
             await session.commit()
         return await self.get(draft_id)
 
+    async def set_counterparty_candidates(
+        self, draft_id: int, candidates: list[dict]
+    ) -> DraftOrder | None:
+        async with async_session() as session:
+            draft = await session.get(DraftOrder, draft_id)
+            if draft is None:
+                return None
+            draft.counterparty_candidates = candidates
+            await session.commit()
+        return await self.get(draft_id)
+
     async def resolve_item(
         self, draft_id: int, item_id: int, product: dict
     ) -> DraftOrder | None:

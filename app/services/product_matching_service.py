@@ -57,6 +57,39 @@ class ProductMatchingService:
             ]
         return self._products
 
+    @classmethod
+    def normalized_name_variants(cls, value: str | None) -> tuple[str, ...]:
+        full = cls.normalize(value)
+        variants = [full] if full else []
+        if value:
+            parts = re.split(r"\s+/\s+", value, maxsplit=1)
+            if len(parts) == 2 and re.search(r"[А-Яа-яЁё]", parts[1]):
+                primary = cls.normalize(parts[0])
+                if primary and primary not in variants:
+                    variants.append(primary)
+        return tuple(variants)
+
+    @staticmethod
+    def _similarity(query: str, candidate: str) -> float:
+        full_score = SequenceMatcher(None, query, candidate).ratio()
+        query_tokens = query.split()
+        candidate_tokens = candidate.split()
+        if not query_tokens or not candidate_tokens:
+            return full_score
+        window_size = min(len(query_tokens), len(candidate_tokens))
+        window_score = max(
+            SequenceMatcher(
+                None,
+                query,
+                " ".join(candidate_tokens[index:index + window_size]),
+            ).ratio()
+            for index in range(len(candidate_tokens) - window_size + 1)
+        )
+        coverage = len(set(query_tokens) & set(candidate_tokens)) / len(
+            set(query_tokens)
+        )
+        return max(full_score, window_score, coverage)
+
     def match(self, raw_product_text: str, qty: int) -> ProductMatch:
         products = self.products()
         query = self.normalize(raw_product_text)
@@ -77,7 +110,7 @@ class ProductMatchingService:
         name_matches = [
             product
             for product in products
-            if self.normalize(product.get("name")) == query
+            if query in self.normalized_name_variants(product.get("name"))
         ]
         if len(name_matches) == 1:
             return ProductMatch(
@@ -89,8 +122,11 @@ class ProductMatchingService:
 
         scored = []
         for product in products:
-            candidate_name = self.normalize(product.get("name"))
-            score = SequenceMatcher(None, query, candidate_name).ratio()
+            variants = self.normalized_name_variants(product.get("name"))
+            score = max(
+                (self._similarity(query, candidate) for candidate in variants),
+                default=0,
+            )
             if score >= self.fuzzy_threshold:
                 scored.append((score, product))
         scored.sort(key=lambda item: item[0], reverse=True)
@@ -110,9 +146,12 @@ class ProductMatchingService:
         candidates = tuple(
             self._candidate(
                 product,
-                SequenceMatcher(
-                    None, query, self.normalize(product.get("name"))
-                ).ratio(),
+                max(
+                    self._similarity(query, candidate)
+                    for candidate in self.normalized_name_variants(
+                        product.get("name")
+                    )
+                ),
             )
             for product in products[: self.candidate_limit]
         )

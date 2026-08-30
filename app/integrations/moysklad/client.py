@@ -3,6 +3,8 @@ import os
 import requests
 from dotenv import load_dotenv
 
+from app.integrations.http_tls import verified_session
+
 
 load_dotenv()
 
@@ -11,11 +13,12 @@ MOYSKLAD_TOKEN = os.getenv("MOYSKLAD_TOKEN")
 
 
 class MoySkladClient:
-    def __init__(self) -> None:
+    def __init__(self, session: requests.Session | None = None) -> None:
         if not MOYSKLAD_TOKEN:
             raise RuntimeError("MOYSKLAD_TOKEN не найден в .env")
 
         self.base_url = BASE_URL
+        self.session = session or verified_session()
 
         self.headers = {
             "Authorization": f"Bearer {MOYSKLAD_TOKEN}",
@@ -29,7 +32,7 @@ class MoySkladClient:
     # ---------------------------------------------------------
 
     def get_current_user(self) -> dict:
-        response = requests.get(
+        response = self.session.get(
             f"{self.base_url}/context/employee",
             headers=self.headers,
             timeout=30,
@@ -44,27 +47,34 @@ class MoySkladClient:
     # ---------------------------------------------------------
 
     def get_products(self) -> list[dict]:
-        response = requests.get(
-            f"{self.base_url}/entity/product",
-            headers=self.headers,
-            params={
-                "limit": 1000,
-            },
-            timeout=60,
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-
-        return data.get("rows", [])
+        limit = 1000
+        offset = 0
+        products = []
+        while True:
+            response = self.session.get(
+                f"{self.base_url}/entity/product",
+                headers=self.headers,
+                params={"limit": limit, "offset": offset},
+                timeout=60,
+            )
+            response.raise_for_status()
+            data = response.json()
+            rows = data.get("rows", [])
+            products.extend(rows)
+            total = data.get("meta", {}).get("size")
+            offset += len(rows)
+            if not rows or (total is not None and offset >= total):
+                break
+            if total is None and len(rows) < limit:
+                break
+        return products
 
     # ---------------------------------------------------------
     # ФОТОГРАФИИ ТОВАРА
     # ---------------------------------------------------------
 
     def get_product_images(self, product_id: str) -> list[dict]:
-        response = requests.get(
+        response = self.session.get(
             f"{self.base_url}/entity/product/{product_id}/images",
             headers=self.headers,
             timeout=30,
@@ -81,7 +91,7 @@ class MoySkladClient:
     # ---------------------------------------------------------
 
     def get_stores(self) -> list[dict]:
-        response = requests.get(
+        response = self.session.get(
             f"{self.base_url}/entity/store",
             headers=self.headers,
             params={
@@ -101,7 +111,7 @@ class MoySkladClient:
     # ---------------------------------------------------------
 
     def get_stock_by_store(self) -> dict:
-        response = requests.get(
+        response = self.session.get(
             f"{self.base_url}/report/stock/bystore",
             headers=self.headers,
             timeout=60,
@@ -116,7 +126,7 @@ class MoySkladClient:
     # ---------------------------------------------------------
 
     def get_organizations(self) -> list[dict]:
-        response = requests.get(
+        response = self.session.get(
             f"{self.base_url}/entity/organization",
             headers=self.headers,
             timeout=30,
@@ -137,7 +147,7 @@ class MoySkladClient:
     # ---------------------------------------------------------
 
     def search_counterparties(self, query: str) -> list[dict]:
-        response = requests.get(
+        response = self.session.get(
             f"{self.base_url}/entity/counterparty",
             headers=self.headers,
             params={
@@ -153,12 +163,22 @@ class MoySkladClient:
 
         return data.get("rows", [])
 
+    def get_recent_counterparties(self, limit: int = 10) -> list[dict]:
+        response = self.session.get(
+            f"{self.base_url}/entity/counterparty",
+            headers=self.headers,
+            params={"limit": min(max(limit, 1), 100), "order": "updated,desc"},
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json().get("rows", [])
+
     # ---------------------------------------------------------
     # ПОЛУЧИТЬ КОНТРАГЕНТА ПО ID
     # ---------------------------------------------------------
 
     def get_counterparty(self, counterparty_id: str) -> dict:
-        response = requests.get(
+        response = self.session.get(
             (
                 f"{self.base_url}/entity/counterparty/"
                 f"{counterparty_id}"
@@ -229,7 +249,7 @@ class MoySkladClient:
         if description:
             payload["description"] = description
 
-        response = requests.post(
+        response = self.session.post(
             f"{self.base_url}/entity/customerorder",
             headers=self.headers,
             json=payload,

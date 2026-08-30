@@ -12,14 +12,15 @@ class Settings:
         "MOYSKLAD_ORGANIZATION_ID",
         "ef8e60b2-c856-11f0-0a80-00b00020eed1",
     )
-    moysklad_wholesale_price_type: str = os.getenv(
-        "MOYSKLAD_WHOLESALE_PRICE_TYPE",
-        "Цена продажи",
-    )
-    moysklad_retail_price_type: str = os.getenv(
-        "MOYSKLAD_RETAIL_PRICE_TYPE",
-        "",
-    )
+    def __init__(self) -> None:
+        self.moysklad_wholesale_price_type = os.getenv(
+            "MOYSKLAD_WHOLESALE_PRICE_TYPE",
+            "Цена продажи",
+        )
+        self.moysklad_retail_price_type = os.getenv(
+            "MOYSKLAD_RETAIL_PRICE_TYPE",
+            "",
+        )
     gmail_credentials_file: str = os.getenv("GMAIL_CREDENTIALS_FILE", "")
     gmail_token_file: str = os.getenv("GMAIL_TOKEN_FILE", "")
     gmail_user_id: str = os.getenv("GMAIL_USER_ID", "me")

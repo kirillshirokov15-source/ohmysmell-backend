@@ -1,11 +1,14 @@
 from collections.abc import Sequence
 
-from sqlalchemy import select, tuple_
+from sqlalchemy import delete, exists, or_, select, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from app.database.session import async_session
 from app.models.customer import Customer, CustomerIdentity
+from app.models.draft_order import DraftOrder
+from app.models.inbound_message import InboundMessage
+from app.models.order import Order
 from app.models.sales import CustomerIdentityType, CustomerType
 
 
@@ -14,6 +17,25 @@ class DuplicateCustomerIdentityError(Exception):
 
 
 class CustomerRepository:
+    async def delete_if_unreferenced(self, customer_id: int) -> bool:
+        async with async_session() as session:
+            referenced = await session.scalar(
+                select(
+                    or_(
+                        exists().where(InboundMessage.customer_id == customer_id),
+                        exists().where(DraftOrder.customer_id == customer_id),
+                        exists().where(Order.customer_id == customer_id),
+                    )
+                )
+            )
+            if referenced:
+                return False
+            result = await session.execute(
+                delete(Customer).where(Customer.id == customer_id)
+            )
+            await session.commit()
+            return bool(result.rowcount)
+
     async def find_by_identities(
         self,
         identities: Sequence[tuple[CustomerIdentityType, str]],

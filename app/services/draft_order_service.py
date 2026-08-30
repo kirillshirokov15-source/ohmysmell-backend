@@ -69,6 +69,22 @@ class DraftOrderService:
             message.sender_email,
             message.sender_name,
         )
+        try:
+            return await self._ingest_resolved_email(message, customer)
+        except Exception:
+            try:
+                await self.customer_service.discard_if_unreferenced(customer)
+            except Exception:
+                logger.exception(
+                    "Failed to discard unreferenced customer after ingestion error"
+                )
+            raise
+
+    async def _ingest_resolved_email(
+        self,
+        message: EmailMessage,
+        customer,
+    ) -> DraftOrder:
         log_event(
             logger,
             "customer_resolved",
@@ -277,6 +293,22 @@ class DraftOrderService:
             raise DraftOrderError("Draft не найден")
         return await self.review(draft_id)
 
+    async def load_counterparty_candidates(
+        self, draft_id: int
+    ) -> DraftOrder:
+        draft = await self._get_required(draft_id)
+        self._ensure_reviewable(draft)
+        candidates = self.counterparty_service.fallback_candidates(
+            draft.sender_email,
+            draft.customer_name,
+        )
+        updated = await self.repository.set_counterparty_candidates(
+            draft_id, candidates
+        )
+        if updated is None:
+            raise DraftOrderError("Draft not found")
+        return updated
+
     async def reject(self, draft_id: int) -> DraftOrder:
         try:
             draft = await self.repository.reject(draft_id)
@@ -294,8 +326,11 @@ class DraftOrderService:
                 raise DraftOrderError("Связанный заказ не найден")
             return order
         draft = await self.review(draft_id)
-        if draft.status != OrderStatus.READY:
-            raise DraftOrderError("Draft требует проверки и не может быть финализирован")
+        problems = self._finalize_problems(draft)
+        if problems:
+            raise DraftOrderError(
+                "Draft cannot be finalized: " + "; ".join(problems)
+            )
         try:
             order = await self.repository.finalize(draft_id)
         except InvalidOrderTransitionError as error:
@@ -304,6 +339,27 @@ class DraftOrderService:
             raise DraftOrderError("Draft не найден")
         log_event(logger, "draft_finalized", draft_id=draft_id, order_id=order.id)
         return order
+
+    @staticmethod
+    def _finalize_problems(draft: DraftOrder) -> list[str]:
+        problems = []
+        if CustomerType(draft.customer_type) == CustomerType.UNKNOWN:
+            problems.append("customer type is unknown")
+        if not draft.counterparty_id:
+            problems.append("counterparty is not selected")
+        if not draft.items:
+            problems.append("order has no items")
+        for item in draft.items:
+            if (
+                item.match_status != ProductMatchStatus.MATCHED
+                or not item.product_id
+            ):
+                problems.append(f"unresolved product: {item.raw_product_text}")
+            elif item.price is None or item.item_total is None:
+                problems.append(f"price is missing: {item.raw_product_text}")
+        if draft.status != OrderStatus.READY:
+            problems.append("draft is not ready")
+        return problems
 
     async def _get_required(self, draft_id: int) -> DraftOrder:
         draft = await self.repository.get(draft_id)

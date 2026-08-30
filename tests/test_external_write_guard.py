@@ -5,9 +5,11 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from app.config.settings import settings
+from app.config.settings import Settings, settings
 from app.integrations.moysklad.client import MoySkladClient
 from app.services.draft_order_service import DraftOrderService
+from app.services.draft_telegram_service import build_draft_keyboard
+from app.services.counterparty_matching_service import CounterpartyMatchingService
 from app.services.moysklad_order_service import (
     MoySkladOrderError,
     MoySkladOrderService,
@@ -22,6 +24,12 @@ from app.workers.staging_fake_email import (
 
 def test_external_writes_default_to_false():
     assert settings.external_writes_enabled is False
+
+
+def test_wholesale_price_type_default_is_exact_utf8(monkeypatch):
+    monkeypatch.delenv("MOYSKLAD_WHOLESALE_PRICE_TYPE", raising=False)
+    assert Settings().moysklad_wholesale_price_type == "Цена продажи"
+    assert Settings().moysklad_retail_price_type == ""
 
 
 def test_moysklad_write_is_blocked_before_local_or_external_work():
@@ -49,20 +57,179 @@ def test_read_only_moysklad_operation_is_unaffected():
     client = MoySkladClient.__new__(MoySkladClient)
     client.base_url = "https://example.invalid/api"
     client.headers = {}
+    client.session = Mock()
     response = Mock()
     response.raise_for_status.return_value = None
     response.json.return_value = {"rows": [{"id": "product-1"}]}
 
     with (
         patch.object(settings, "external_writes_enabled", False),
-        patch(
-            "app.integrations.moysklad.client.requests.get",
-            return_value=response,
-        ) as get,
+        patch.object(client.session, "get", return_value=response) as get,
     ):
         assert client.get_products() == [{"id": "product-1"}]
 
     get.assert_called_once()
+
+
+def test_moysklad_products_are_loaded_from_later_pages():
+    client = MoySkladClient.__new__(MoySkladClient)
+    client.base_url = "https://example.invalid/api"
+    client.headers = {}
+    client.session = Mock()
+    first = Mock()
+    first.raise_for_status.return_value = None
+    first.json.return_value = {
+        "meta": {"size": 1001},
+        "rows": [{"id": f"p-{index}"} for index in range(1000)],
+    }
+    second = Mock()
+    second.raise_for_status.return_value = None
+    second.json.return_value = {
+        "meta": {"size": 1001},
+        "rows": [{"id": "last-page-product"}],
+    }
+    client.session.get.side_effect = [first, second]
+
+    products = client.get_products()
+
+    assert len(products) == 1001
+    assert products[-1]["id"] == "last-page-product"
+    assert [call.kwargs["params"]["offset"] for call in client.session.get.call_args_list] == [
+        0,
+        1000,
+    ]
+
+
+def test_telegram_product_action_matches_unresolved_state():
+    def draft_with(*statuses):
+        return SimpleNamespace(
+            id=1,
+            status="needs_review",
+            items=[
+                SimpleNamespace(
+                    id=index,
+                    match_status=status,
+                    product_id=None,
+                    candidates=[],
+                )
+                for index, status in enumerate(statuses, start=1)
+            ],
+            counterparty_candidates=[],
+            counterparty_id=None,
+        )
+
+    ambiguous = build_draft_keyboard(draft_with("ambiguous"))
+    not_found = build_draft_keyboard(draft_with("not_found"))
+    mixed = build_draft_keyboard(draft_with("ambiguous", "not_found"))
+
+    def labels(keyboard):
+        return [button["text"] for row in keyboard["inline_keyboard"] for button in row]
+
+    assert "View ambiguous items" in labels(ambiguous)
+    assert "Resolve products" in labels(not_found)
+    assert "Resolve products" in labels(mixed)
+    assert "Select counterparty" in labels(not_found)
+    assert "Finalize" not in labels(not_found)
+
+
+def test_candidate_buttons_mark_only_selected_product():
+    candidates = [
+        {"id": "p1", "name": "First long product name", "article": "A1", "score": 0.9},
+        {"id": "p2", "name": "Second long product name", "article": "A2", "score": 0.8},
+    ]
+
+    def labels(selected):
+        keyboard = build_draft_keyboard(SimpleNamespace(
+            id=1,
+            status="needs_review",
+            counterparty_id="cp1",
+            counterparty_candidates=[],
+            items=[SimpleNamespace(
+                id=2,
+                match_status="ambiguous",
+                product_id=selected,
+                candidates=candidates,
+            )],
+        ))
+        return [
+            button["text"]
+            for row in keyboard["inline_keyboard"]
+            for button in row
+            if "A1" in button["text"] or "A2" in button["text"]
+        ]
+
+    assert all(not label.startswith("✓") for label in labels(None))
+    selected = labels("p1")
+    assert selected[0].startswith("✓ A1")
+    assert not selected[1].startswith("✓")
+
+
+def test_zero_relevant_counterparties_fall_back_to_recent_existing():
+    provider = SimpleNamespace(
+        search_counterparties=lambda query: [],
+        get_recent_counterparties=lambda limit=10: [{
+            "id": "cp-existing",
+            "name": "Existing Counterparty",
+            "email": "existing@example.com",
+        }],
+    )
+    candidates = CounterpartyMatchingService(provider).fallback_candidates(
+        "unknown@example.com"
+    )
+    assert candidates == [{
+        "id": "cp-existing",
+        "name": "Existing Counterparty",
+        "email": "existing@example.com",
+        "phone": None,
+    }]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"customer_type": "unknown"}, "customer type is unknown"),
+        ({"item_status": "ambiguous", "product_id": None}, "unresolved product"),
+        ({"counterparty_id": None}, "counterparty is not selected"),
+        ({"price": None, "item_total": None}, "price is missing"),
+    ],
+)
+def test_finalize_guards_block_incomplete_draft(overrides, message):
+    values = {
+        "customer_type": "wholesale",
+        "counterparty_id": "cp1",
+        "item_status": "matched",
+        "product_id": "p1",
+        "price": 100,
+        "item_total": 100,
+    }
+    values.update(overrides)
+    reviewed = SimpleNamespace(
+        id=5,
+        status=OrderStatus.READY,
+        customer_type=values["customer_type"],
+        counterparty_id=values["counterparty_id"],
+        items=[SimpleNamespace(
+            raw_product_text="Product",
+            match_status=values["item_status"],
+            product_id=values["product_id"],
+            price=values["price"],
+            item_total=values["item_total"],
+        )],
+    )
+    repository = SimpleNamespace(
+        get=AsyncMock(return_value=SimpleNamespace(
+            id=5, finalized_order_id=None
+        )),
+        finalize=AsyncMock(),
+    )
+    service = DraftOrderService.__new__(DraftOrderService)
+    service.repository = repository
+    service.review = AsyncMock(return_value=reviewed)
+
+    with pytest.raises(Exception, match=message):
+        asyncio.run(service.finalize(5))
+
+    repository.finalize.assert_not_awaited()
 
 
 def test_enabling_external_writes_reaches_mocked_integration():
@@ -116,15 +283,26 @@ def test_enabling_external_writes_reaches_mocked_integration():
 
 def test_finalize_draft_remains_local_only():
     draft = SimpleNamespace(id=5, finalized_order_id=None)
+    ready = SimpleNamespace(
+        id=5,
+        status=OrderStatus.READY,
+        customer_type="wholesale",
+        counterparty_id="cp1",
+        items=[SimpleNamespace(
+            raw_product_text="Product",
+            match_status="matched",
+            product_id="p1",
+            price=100,
+            item_total=100,
+        )],
+    )
     local_order = SimpleNamespace(id=10, status=OrderStatus.NEW)
     repository = SimpleNamespace(
         get=AsyncMock(return_value=draft),
         finalize=AsyncMock(return_value=local_order),
     )
     service = DraftOrderService(repository=repository)
-    service.review = AsyncMock(
-        return_value=SimpleNamespace(status=OrderStatus.READY)
-    )
+    service.review = AsyncMock(return_value=ready)
 
     with patch.object(settings, "external_writes_enabled", False):
         result = asyncio.run(service.finalize(5))

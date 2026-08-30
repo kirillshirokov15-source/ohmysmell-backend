@@ -73,13 +73,11 @@ class TestMoney:
         client = MoySkladClient.__new__(MoySkladClient)
         client.base_url = "https://example.invalid/api"
         client.headers = {}
+        client.session = Mock()
         response = Mock()
         response.raise_for_status.return_value = None
         response.json.return_value = {"id": "order-1"}
-        with patch(
-            "app.integrations.moysklad.client.requests.post",
-            return_value=response,
-        ) as post:
+        with patch.object(client.session, "post", return_value=response) as post:
             client.create_customer_order(
                 "org", "counterparty", [{"id": "p1", "qty": 2, "price": 9999}]
             )

@@ -193,6 +193,16 @@ async def draft_callback_handler(callback: CallbackQuery):
                 candidate.get("name") or counterparty_id,
             )
             await callback.answer("Контрагент выбран")
+        elif action == "counterparty_select":
+            draft_id = int(parts[2])
+            draft = await service.load_counterparty_candidates(draft_id)
+            if not draft.counterparty_candidates:
+                await callback.answer(
+                    "No existing counterparties found",
+                    show_alert=True,
+                )
+            else:
+                await callback.answer("Select an existing counterparty")
         elif action == "finalize":
             draft_id = int(parts[2])
             order = await service.finalize(draft_id)
