@@ -31,6 +31,9 @@ class Settings:
     debug_endpoints_enabled: bool = os.getenv(
         "DEBUG_ENDPOINTS_ENABLED", "false"
     ).lower() in {"1", "true", "yes", "on"}
+    external_writes_enabled: bool = os.getenv(
+        "EXTERNAL_WRITES_ENABLED", "false"
+    ).lower() in {"1", "true", "yes", "on"}
 
 
 settings = Settings()

@@ -11,10 +11,13 @@ class MoySkladOrderError(Exception):
 
 
 class MoySkladOrderService:
-    def __init__(self) -> None:
-        self.client = MoySkladClient()
+    def __init__(self, client: MoySkladClient | None = None) -> None:
+        self.client = client
 
     async def create_from_crm_order(self, order_id: int) -> dict:
+        if not settings.external_writes_enabled:
+            raise MoySkladOrderError("External writes are disabled")
+
         order = await get_order(order_id)
 
         if order is None:
@@ -65,7 +68,8 @@ class MoySkladOrderService:
 
         description = "\n".join(description_parts)
 
-        result = self.client.create_customer_order(
+        client = self.client or MoySkladClient()
+        result = client.create_customer_order(
             organization_id=settings.moysklad_organization_id,
             counterparty_id=order.counterparty_id,
             items=items,

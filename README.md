@@ -32,6 +32,12 @@ production PostgreSQL.
 Manager/internal endpoints require `X-Internal-API-Token`. Debug endpoints
 also require `DEBUG_ENDPOINTS_ENABLED=true`; they return 404 by default.
 
+External business-data writes are disabled by default with
+`EXTERNAL_WRITES_ENABLED=false`. Read-only MoySklad catalog, stock,
+counterparty, organization, and health operations remain available. Enable
+external writes only through an explicit environment setting after staging
+verification.
+
 ## Email worker
 
 Create a Google OAuth Desktop application with only the Gmail read-only scope.
