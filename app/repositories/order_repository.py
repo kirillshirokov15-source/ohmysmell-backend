@@ -3,6 +3,7 @@ from sqlalchemy.orm import selectinload
 
 from app.database.session import async_session
 from app.models.order import Order, OrderItem
+from app.services.order_lifecycle import OrderStatus, ensure_order_transition
 
 
 async def create_order(validated_order: dict) -> Order:
@@ -10,9 +11,13 @@ async def create_order(validated_order: dict) -> Order:
         order = Order(
             customer_name=validated_order["customer_name"],
             phone=validated_order["phone"],
+            customer_id=validated_order.get("customer_id"),
+            customer_type=validated_order["customer_type"],
+            source=validated_order["source"],
+            counterparty_id=validated_order.get("counterparty_id"),
             telegram=validated_order.get("telegram"),
             comment=validated_order.get("comment"),
-            status="new",
+            status=OrderStatus.NEW,
             total=validated_order["total"],
         )
 
@@ -45,6 +50,16 @@ async def get_order(order_id: int) -> Order | None:
         )
 
         return result.scalar_one_or_none()
+
+
+async def list_orders() -> list[Order]:
+    async with async_session() as session:
+        result = await session.execute(
+            select(Order)
+            .options(selectinload(Order.items))
+            .order_by(Order.created_at.desc())
+        )
+        return list(result.scalars().unique().all())
 
 
 async def set_order_counterparty(
@@ -89,7 +104,8 @@ async def set_moysklad_order(
 
         order.moysklad_order_id = moysklad_order_id
         order.moysklad_order_name = moysklad_order_name
-        order.status = "created_in_moysklad"
+        ensure_order_transition(order.status, OrderStatus.CREATED_IN_MOYSKLAD)
+        order.status = OrderStatus.CREATED_IN_MOYSKLAD
 
         await session.commit()
         await session.refresh(order)

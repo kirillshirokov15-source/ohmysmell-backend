@@ -3,9 +3,7 @@ from app.repositories.order_repository import (
     get_order,
     set_moysklad_order,
 )
-
-
-ORGANIZATION_ID = "ef8e60b2-c856-11f0-0a80-00b00020eed1"
+from app.config.settings import settings
 
 
 class MoySkladOrderError(Exception):
@@ -68,7 +66,7 @@ class MoySkladOrderService:
         description = "\n".join(description_parts)
 
         result = self.client.create_customer_order(
-            organization_id=ORGANIZATION_ID,
+            organization_id=settings.moysklad_organization_id,
             counterparty_id=order.counterparty_id,
             items=items,
             description=description,

@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Integer,
@@ -11,10 +12,22 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base
+from app.models.sales import CustomerType, OrderSource
+from app.services.order_lifecycle import OrderStatus
 
 
 class Order(Base):
     __tablename__ = "orders"
+    __table_args__ = (
+        CheckConstraint(
+            "customer_type IN ('wholesale', 'retail', 'unknown')",
+            name="ck_orders_customer_type",
+        ),
+        CheckConstraint(
+            "source IN ('email', 'instagram', 'website', 'manual')",
+            name="ck_orders_source",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
         primary_key=True,
@@ -25,9 +38,29 @@ class Order(Base):
         nullable=False,
     )
 
+    customer_type: Mapped[CustomerType] = mapped_column(
+        String(20),
+        nullable=False,
+        default=CustomerType.RETAIL,
+        server_default=CustomerType.RETAIL.value,
+    )
+
+    source: Mapped[OrderSource] = mapped_column(
+        String(20),
+        nullable=False,
+        default=OrderSource.WEBSITE,
+        server_default=OrderSource.WEBSITE.value,
+    )
+
     phone: Mapped[str] = mapped_column(
         String(100),
         nullable=False,
+    )
+
+    customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customers.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
 
     telegram: Mapped[str | None] = mapped_column(
@@ -53,7 +86,8 @@ class Order(Base):
     status: Mapped[str] = mapped_column(
         String(50),
         nullable=False,
-        default="new",
+        default=OrderStatus.NEW,
+        server_default=OrderStatus.NEW.value,
     )
 
     total: Mapped[int] = mapped_column(

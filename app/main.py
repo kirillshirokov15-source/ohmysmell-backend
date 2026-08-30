@@ -1,5 +1,13 @@
+import logging
+
 from fastapi import FastAPI, HTTPException
 from app.schemas.order import OrderCreate
+from app.schemas.draft_order import (
+    InboundEmailCreate,
+    LinkCounterpartyRequest,
+    ResolveProductRequest,
+    SetCustomerTypeRequest,
+)
 from app.database.connection import check_database_connection
 from app.integrations.moysklad.client import MoySkladClient
 from app.services.product_service import ProductService
@@ -10,6 +18,8 @@ from app.services.order_validation_service import (
 )
 from app.repositories.order_repository import (
     create_order as save_order,
+    get_order,
+    list_orders,
     set_order_counterparty,
 )
 from app.services.telegram_notification_service import notify_managers
@@ -22,6 +32,80 @@ app = FastAPI(
     title="OhMySmell API",
     version="0.1.0"
 )
+from app.services.customer_resolution_service import (
+    CustomerResolutionError,
+    CustomerResolutionService,
+)
+from app.integrations.email.provider import EmailMessage
+from app.repositories.draft_order_repository import DraftOrderRepository
+from app.services.draft_order_service import DraftOrderError, DraftOrderService
+
+logger = logging.getLogger(__name__)
+
+
+def serialize_order(order):
+    return {
+        "id": order.id,
+        "customer_id": order.customer_id,
+        "customer_name": order.customer_name,
+        "customer_type": order.customer_type,
+        "source": order.source,
+        "status": order.status,
+        "phone": order.phone,
+        "telegram": order.telegram,
+        "counterparty_id": order.counterparty_id,
+        "counterparty_name": order.counterparty_name,
+        "total": order.total,
+        "created_at": order.created_at,
+        "items": [
+            {
+                "id": item.id,
+                "product_id": item.product_id,
+                "name": item.name,
+                "article": item.article,
+                "price": item.price,
+                "qty": item.qty,
+                "item_total": item.item_total,
+            }
+            for item in order.items
+        ],
+    }
+
+
+def serialize_draft(draft):
+    return {
+        "id": draft.id,
+        "inbound_message_id": draft.inbound_message_id,
+        "customer_id": draft.customer_id,
+        "customer_type": draft.customer_type,
+        "source": draft.source,
+        "status": draft.status,
+        "sender_email": draft.sender_email,
+        "customer_name": draft.customer_name,
+        "subject": draft.subject,
+        "counterparty_id": draft.counterparty_id,
+        "counterparty_name": draft.counterparty_name,
+        "counterparty_candidates": draft.counterparty_candidates,
+        "total": draft.total,
+        "review_notes": draft.review_notes,
+        "finalized_order_id": draft.finalized_order_id,
+        "created_at": draft.created_at,
+        "items": [
+            {
+                "id": item.id,
+                "raw_product_text": item.raw_product_text,
+                "qty": item.qty,
+                "match_status": item.match_status,
+                "product_id": item.product_id,
+                "product_name": item.product_name,
+                "article": item.article,
+                "price": item.price,
+                "item_total": item.item_total,
+                "candidates": item.candidates,
+            }
+            for item in draft.items
+        ],
+    }
 
 app.add_middleware(
     CORSMiddleware,
@@ -54,10 +138,22 @@ async def health_db():
 
 @app.post("/orders")
 async def create_order(order: OrderCreate):
+    try:
+        customer = await CustomerResolutionService().resolve(order)
+    except CustomerResolutionError as error:
+        raise HTTPException(status_code=409, detail=str(error))
+
+    order = order.model_copy(
+        update={"customer_type": customer.customer_type}
+    )
     service = OrderValidationService()
 
     try:
         validated_order = service.validate(order)
+        validated_order["customer_id"] = customer.customer_id
+        validated_order["counterparty_id"] = (
+            customer.moysklad_counterparty_id
+        )
 
     except OrderValidationError as error:
         raise HTTPException(
@@ -67,10 +163,16 @@ async def create_order(order: OrderCreate):
 
     saved_order = await save_order(validated_order)
 
-    await notify_managers(
-        saved_order.id,
-        validated_order,
-    )
+    try:
+        await notify_managers(
+            saved_order.id,
+            validated_order,
+        )
+    except Exception:
+        logger.exception(
+            "Order %s was saved, but Telegram notification failed",
+            saved_order.id,
+        )
 
     return {
         "success": True,
@@ -194,3 +296,106 @@ async def create_order_in_moysklad(order_id: int):
         "moysklad_order_id": result.get("id"),
         "moysklad_order_name": result.get("name"),
     }
+
+
+@app.get("/orders")
+async def get_orders():
+    return {"orders": [serialize_order(order) for order in await list_orders()]}
+
+
+@app.get("/orders/{order_id}")
+async def get_order_details(order_id: int):
+    order = await get_order(order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="Заказ не найден")
+    return serialize_order(order)
+
+
+@app.post("/internal/email/messages")
+async def ingest_email_message(payload: InboundEmailCreate):
+    message = EmailMessage(
+        external_message_id=payload.external_message_id,
+        sender_email=payload.sender_email,
+        sender_name=payload.sender_name,
+        subject=payload.subject,
+        body_text=payload.body_text,
+        received_at=payload.received_timestamp(),
+    )
+    try:
+        draft = await DraftOrderService().ingest_email(message)
+    except DraftOrderError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    return serialize_draft(draft)
+
+
+@app.get("/draft-orders")
+async def get_draft_orders():
+    drafts = await DraftOrderRepository().list()
+    return {"draft_orders": [serialize_draft(draft) for draft in drafts]}
+
+
+@app.get("/draft-orders/{draft_id}")
+async def get_draft_order(draft_id: int):
+    draft = await DraftOrderRepository().get(draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="Draft не найден")
+    return serialize_draft(draft)
+
+
+@app.post("/draft-orders/{draft_id}/customer-type")
+async def set_draft_customer_type(
+    draft_id: int, payload: SetCustomerTypeRequest
+):
+    if payload.customer_type == "unknown":
+        raise HTTPException(status_code=400, detail="Нужно выбрать wholesale или retail")
+    try:
+        draft = await DraftOrderService().set_customer_type(
+            draft_id, payload.customer_type
+        )
+    except DraftOrderError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    return serialize_draft(draft)
+
+
+@app.post("/draft-orders/{draft_id}/items/{item_id}/match")
+async def resolve_draft_product(
+    draft_id: int, item_id: int, payload: ResolveProductRequest
+):
+    try:
+        draft = await DraftOrderService().resolve_product(
+            draft_id, item_id, payload.product_id
+        )
+    except DraftOrderError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    return serialize_draft(draft)
+
+
+@app.post("/draft-orders/{draft_id}/counterparty")
+async def link_draft_counterparty(
+    draft_id: int, payload: LinkCounterpartyRequest
+):
+    try:
+        draft = await DraftOrderService().link_counterparty(
+            draft_id, payload.counterparty_id, payload.counterparty_name
+        )
+    except DraftOrderError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    return serialize_draft(draft)
+
+
+@app.post("/draft-orders/{draft_id}/reject")
+async def reject_draft_order(draft_id: int):
+    try:
+        draft = await DraftOrderService().reject(draft_id)
+    except DraftOrderError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    return serialize_draft(draft)
+
+
+@app.post("/draft-orders/{draft_id}/finalize")
+async def finalize_draft_order(draft_id: int):
+    try:
+        order = await DraftOrderService().finalize(draft_id)
+    except DraftOrderError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    return {"success": True, "order": serialize_order(order)}

@@ -1,14 +1,5 @@
-from pydantic import BaseModel, Field
+"""Backward-compatible imports for the canonical order schemas."""
 
+from app.schemas.order import OrderCreate, OrderItem
 
-class OrderItem(BaseModel):
-    id: str
-    qty: int = Field(gt=0)
-
-
-class OrderCreate(BaseModel):
-    customer_name: str
-    phone: str
-    telegram: str | None = None
-    comment: str | None = None
-    items: list[OrderItem]
+__all__ = ["OrderCreate", "OrderItem"]

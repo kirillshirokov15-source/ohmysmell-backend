@@ -1,5 +1,9 @@
 from app.services.product_service import ProductService
 from app.schemas.order import OrderCreate
+from app.services.price_service import (
+    PriceConfigurationError,
+    PriceNotConfiguredError,
+)
 
 
 class OrderValidationError(Exception):
@@ -7,11 +11,17 @@ class OrderValidationError(Exception):
 
 
 class OrderValidationService:
-    def __init__(self) -> None:
-        self.product_service = ProductService()
+    def __init__(self, product_service: ProductService | None = None) -> None:
+        self.product_service = product_service or ProductService()
 
     def validate(self, order: OrderCreate) -> dict:
-        catalog = self.product_service.get_catalog()
+        try:
+            catalog = self.product_service.get_catalog(
+                customer_type=order.customer_type,
+                strict_pricing=True,
+            )
+        except (PriceConfigurationError, PriceNotConfiguredError) as error:
+            raise OrderValidationError(str(error)) from error
 
         products_by_id = {
             product["id"]: product
@@ -21,20 +31,26 @@ class OrderValidationService:
         validated_items = []
         total = 0
 
+        requested_quantities: dict[str, int] = {}
         for item in order.items:
-            product = products_by_id.get(item.id)
+            requested_quantities[item.id] = (
+                requested_quantities.get(item.id, 0) + item.qty
+            )
+
+        for product_id, qty in requested_quantities.items():
+            product = products_by_id.get(product_id)
 
             if not product:
                 raise OrderValidationError(
-                    f"Товар {item.id} не найден в МойСклад"
+                    f"Товар {product_id} не найден в МойСклад"
                 )
 
             available = product.get("total_available", 0) or 0
 
-            if available < item.qty:
+            if available < qty:
                 raise OrderValidationError(
                     f"Недостаточно товара '{product['name']}'. "
-                    f"Запрошено: {item.qty}, доступно: {available}"
+                    f"Запрошено: {qty}, доступно: {available}"
                 )
 
             price = product.get("price")
@@ -44,7 +60,7 @@ class OrderValidationService:
                     f"У товара '{product['name']}' не указана цена"
                 )
 
-            item_total = price * item.qty
+            item_total = price * qty
             total += item_total
 
             validated_items.append(
@@ -53,7 +69,7 @@ class OrderValidationService:
                     "name": product["name"],
                     "article": product.get("article"),
                     "price": price,
-                    "qty": item.qty,
+                    "qty": qty,
                     "available": available,
                     "sum": item_total,
                 }
@@ -62,6 +78,8 @@ class OrderValidationService:
         return {
             "customer_name": order.customer_name,
             "phone": order.phone,
+            "customer_type": order.customer_type,
+            "source": order.source,
             "telegram": order.telegram,
             "comment": order.comment,
             "items": validated_items,

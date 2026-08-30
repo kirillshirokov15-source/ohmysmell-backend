@@ -1,9 +1,20 @@
 from app.integrations.moysklad.client import MoySkladClient
+from app.models.sales import CustomerType
+from app.services.price_service import (
+    PriceConfigurationError,
+    PriceNotConfiguredError,
+    PriceService,
+)
 
 
 class ProductService:
-    def __init__(self) -> None:
-        self.client = MoySkladClient()
+    def __init__(
+        self,
+        price_service: PriceService | None = None,
+        client: MoySkladClient | None = None,
+    ) -> None:
+        self.client = client or MoySkladClient()
+        self.price_service = price_service or PriceService()
 
     @staticmethod
     def _extract_id_from_href(href: str | None) -> str | None:
@@ -13,21 +24,12 @@ class ProductService:
         clean_href = href.split("?")[0]
         return clean_href.rstrip("/").split("/")[-1]
 
-    @staticmethod
-    def _get_price(product: dict) -> float | None:
-        sale_prices = product.get("salePrices") or []
-
-        if not sale_prices:
-            return None
-
-        value = sale_prices[0].get("value")
-
-        if value is None:
-            return None
-
-        return value / 100
-
-    def get_catalog(self) -> list[dict]:
+    def get_catalog(
+        self,
+        customer_type: CustomerType = CustomerType.RETAIL,
+        include_price_types: bool = False,
+        strict_pricing: bool = False,
+    ) -> list[dict]:
         products = self.client.get_products()
         stores = self.client.get_stores()
         stock_report = self.client.get_stock_by_store()
@@ -115,22 +117,40 @@ class ProductService:
             images = product.get("images") or {}
             image_meta = images.get("meta") or {}
 
-            catalog.append(
-                {
-                    "id": product_id,
-                    "name": product.get("name"),
-                    "article": product.get("article"),
-                    "code": product.get("code"),
-                    "description": product.get("description"),
-                    "category": product.get("pathName"),
-                    "price": self._get_price(product),
-                    "image_count": image_meta.get("size", 0),
-                    "stocks": list(product_stores.values()),
-                    "total_stock": total_stock,
-                    "total_reserve": total_reserve,
-                    "total_available": total_available,
-                    "available": total_available > 0,
-                }
-            )
+            try:
+                selected_price = self.price_service.get_price(
+                    product,
+                    customer_type,
+                )
+            except (PriceConfigurationError, PriceNotConfiguredError):
+                if strict_pricing:
+                    raise
+                selected_price = None
+
+            catalog_product = {
+                "id": product_id,
+                "name": product.get("name"),
+                "article": product.get("article"),
+                "code": product.get("code"),
+                "description": product.get("description"),
+                "category": product.get("pathName"),
+                "price": selected_price.value if selected_price else None,
+                "price_type": (
+                    selected_price.price_type if selected_price else None
+                ),
+                "image_count": image_meta.get("size", 0),
+                "stocks": list(product_stores.values()),
+                "total_stock": total_stock,
+                "total_reserve": total_reserve,
+                "total_available": total_available,
+                "available": total_available > 0,
+            }
+
+            if include_price_types:
+                catalog_product["available_price_types"] = (
+                    self.price_service.available_price_types(product)
+                )
+
+            catalog.append(catalog_product)
 
         return catalog
