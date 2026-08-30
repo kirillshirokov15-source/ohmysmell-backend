@@ -26,7 +26,12 @@ def upgrade() -> None:
     sa.Column('telegram_id', sa.BigInteger(), nullable=False),
     sa.Column('name', sa.String(length=255), nullable=True),
     sa.Column('is_active', sa.Boolean(), nullable=False),
-    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.Column(
+        'created_at',
+        sa.DateTime(timezone=True),
+        server_default=sa.func.now(),
+        nullable=False,
+    ),
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_managers_telegram_id'), 'managers', ['telegram_id'], unique=True)
