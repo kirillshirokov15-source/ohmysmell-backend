@@ -53,6 +53,18 @@ labels, marks messages read, deletes, or archives. It persists Gmail
 `historyId` in PostgreSQL and retains `external_message_id` uniqueness as the
 last idempotency boundary.
 
+Without Gmail access, run one explicit staging-only message through the same
+ingestion pipeline:
+
+```powershell
+.\.venv\Scripts\python.exe -m app.workers.staging_fake_email
+```
+
+The command requires a distinct `STAGING_DATABASE_URL` and
+`EXTERNAL_WRITES_ENABLED=false`. It is never started automatically. It uses
+the existing fake provider, read-only MoySklad matching/pricing, local draft
+storage, and the normal Telegram manager notification.
+
 ## Telegram bot
 
 ```powershell

@@ -1,4 +1,5 @@
 import asyncio
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -12,6 +13,11 @@ from app.services.moysklad_order_service import (
     MoySkladOrderService,
 )
 from app.services.order_lifecycle import OrderStatus
+from app.workers.staging_fake_email import (
+    BODY,
+    SUBJECT,
+    configure_staging_environment,
+)
 
 
 def test_external_writes_default_to_false():
@@ -125,3 +131,47 @@ def test_finalize_draft_remains_local_only():
 
     assert result is local_order
     repository.finalize.assert_awaited_once_with(5)
+
+
+def test_staging_fake_message_uses_expected_parser_input():
+    from app.services.email_parser import EmailParser
+
+    lines = EmailParser().parse_lines(BODY)
+    assert SUBJECT == "STAGING TEST ORDER"
+    assert [(line.raw_product_text, line.qty) for line in lines] == [
+        ("Chanel Allure Homme Sport", 2),
+        ("Marvis Classic Strong Mint 85 ml", 3),
+    ]
+
+
+def test_staging_fake_entrypoint_requires_external_writes_disabled(
+    monkeypatch,
+):
+    monkeypatch.setenv("EXTERNAL_WRITES_ENABLED", "true")
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql://prod@production.invalid/prod"
+    )
+    monkeypatch.setenv(
+        "STAGING_DATABASE_URL", "postgresql://stage@staging.invalid/stage"
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="EXTERNAL_WRITES_ENABLED must be false",
+    ):
+        configure_staging_environment()
+
+
+def test_staging_fake_entrypoint_selects_only_distinct_staging_database(
+    monkeypatch,
+):
+    staging_url = "postgresql://stage@staging.invalid/stage"
+    monkeypatch.setenv("EXTERNAL_WRITES_ENABLED", "false")
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql://prod@production.invalid/prod"
+    )
+    monkeypatch.setenv("STAGING_DATABASE_URL", staging_url)
+
+    configure_staging_environment()
+
+    assert os.environ["DATABASE_URL"] == staging_url

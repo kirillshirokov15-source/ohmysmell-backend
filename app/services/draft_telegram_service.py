@@ -106,10 +106,10 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
     return {"inline_keyboard": rows}
 
 
-async def notify_managers_about_draft(draft: DraftOrder) -> None:
+async def notify_managers_about_draft(draft: DraftOrder) -> int:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
-        return
+        return 0
     async with async_session() as session:
         result = await session.execute(
             select(Manager).where(Manager.is_active.is_(True))
@@ -117,6 +117,7 @@ async def notify_managers_about_draft(draft: DraftOrder) -> None:
         managers = result.scalars().all()
 
     keyboard = build_draft_keyboard(draft)
+    sent_count = 0
     for manager in managers:
         response = requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
@@ -128,3 +129,5 @@ async def notify_managers_about_draft(draft: DraftOrder) -> None:
             timeout=20,
         )
         response.raise_for_status()
+        sent_count += 1
+    return sent_count
