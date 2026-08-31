@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 
 from app.repositories.manager_repository import is_active_manager
 from aiogram import Bot, Dispatcher, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
@@ -53,6 +54,30 @@ main_menu = ReplyKeyboardMarkup(
 
 dp = Dispatcher()
 logger = logging.getLogger(__name__)
+
+
+def _is_stale_callback_error(error: TelegramBadRequest) -> bool:
+    message = str(error).casefold()
+    return "query is too old" in message or "query id is invalid" in message
+
+
+async def safe_callback_answer(callback: CallbackQuery, *args, **kwargs) -> bool:
+    try:
+        await callback.answer(*args, **kwargs)
+        return True
+    except TelegramBadRequest as error:
+        if not _is_stale_callback_error(error):
+            raise
+        log_event(
+            logger,
+            "telegram_callback_stale",
+            action="ignored",
+            callback_data=callback.data,
+            telegram_user_id=(
+                callback.from_user.id if callback.from_user else None
+            ),
+        )
+        return False
 
 async def check_access(message: Message) -> bool:
     if not is_active_manager(message.from_user.id):
@@ -129,27 +154,43 @@ async def settings_handler(message: Message):
 @dp.callback_query(F.data.startswith("draft:"))
 async def draft_callback_handler(callback: CallbackQuery):
     if not callback.from_user or not is_active_manager(callback.from_user.id):
-        await callback.answer("Нет доступа", show_alert=True)
+        await safe_callback_answer(callback, "Нет доступа", show_alert=True)
         return
 
     parts = (callback.data or "").split(":")
     try:
         action = parts[1]
+        draft_id = int(parts[3] if action == "type" else parts[2])
+        log_event(
+            logger,
+            "telegram_callback_received",
+            callback_data=callback.data,
+            telegram_user_id=callback.from_user.id,
+            draft_id=draft_id,
+        )
+        if not await safe_callback_answer(callback):
+            return
+        log_event(
+            logger,
+            "telegram_callback_acknowledged",
+            callback_data=callback.data,
+            telegram_user_id=callback.from_user.id,
+            draft_id=draft_id,
+        )
+        log_event(
+            logger,
+            "telegram_callback_action_started",
+            action=action,
+            draft_id=draft_id,
+        )
         service = DraftOrderService()
         draft = None
         if action == "type":
             customer_type = CustomerType(parts[2])
-            draft_id = int(parts[3])
             draft = await service.set_customer_type(draft_id, customer_type)
-            await callback.answer(
-                f"Тип клиента: {customer_type_label(draft.customer_type)}"
-            )
         elif action == "reject":
-            draft_id = int(parts[2])
             draft = await service.reject(draft_id)
-            await callback.answer("Черновик отклонён")
         elif action == "ambiguous":
-            draft_id = int(parts[2])
             draft = await DraftOrderRepository().get(draft_id)
             if draft is None:
                 raise DraftOrderError("Черновик не найден")
@@ -167,15 +208,11 @@ async def draft_callback_handler(callback: CallbackQuery):
             ) or "Неоднозначных позиций нет"
             if callback.message:
                 await callback.message.answer(text)
-            await callback.answer()
         elif action == "product":
-            draft_id = int(parts[2])
             item_id = int(parts[3])
             product_id = parts[4]
             draft = await service.resolve_product(draft_id, item_id, product_id)
-            await callback.answer("Товар выбран")
         elif action == "counterparty":
-            draft_id = int(parts[2])
             counterparty_id = parts[3]
             current = await DraftOrderRepository().get(draft_id)
             if current is None:
@@ -195,21 +232,16 @@ async def draft_callback_handler(callback: CallbackQuery):
                 counterparty_id,
                 candidate.get("name") or counterparty_id,
             )
-            await callback.answer("Контрагент выбран")
         elif action == "counterparty_select":
-            draft_id = int(parts[2])
             draft = await service.load_counterparty_candidates(draft_id)
-            if not draft.counterparty_candidates:
-                await callback.answer(
-                    "Подходящие контрагенты не найдены",
-                    show_alert=True,
-                )
-            else:
-                await callback.answer("Выберите существующего контрагента")
         elif action == "finalize":
-            draft_id = int(parts[2])
             order = await service.finalize(draft_id)
-            await callback.answer(f"Создан локальный заказ №{order.id}")
+            log_event(
+                logger,
+                "telegram_callback_action_completed",
+                action=action,
+                draft_id=draft_id,
+            )
             log_event(
                 logger,
                 "telegram_manager_action",
@@ -223,8 +255,14 @@ async def draft_callback_handler(callback: CallbackQuery):
                 )
             return
         else:
-            await callback.answer("Неизвестное действие", show_alert=True)
+            logger.warning("Unknown Telegram draft callback action: %s", action)
             return
+        log_event(
+            logger,
+            "telegram_callback_action_completed",
+            action=action,
+            draft_id=draft_id,
+        )
         log_event(
             logger,
             "telegram_manager_action",
@@ -239,13 +277,17 @@ async def draft_callback_handler(callback: CallbackQuery):
                 ),
             )
     except (ValueError, IndexError, DraftOrderError) as error:
-        await callback.answer(str(error), show_alert=True)
+        logger.warning("Telegram callback rejected: %s", error)
 
 
-async def main():
+async def main(*, drop_pending_updates: bool = False):
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    if drop_pending_updates:
+        await bot.delete_webhook(drop_pending_updates=True)
+        print("Pending Telegram updates: DROPPED")
+        print("Telegram polling: STARTING")
     await dp.start_polling(bot)
 
 
-def run_bot():
-    asyncio.run(main())
+def run_bot(*, drop_pending_updates: bool = False):
+    asyncio.run(main(drop_pending_updates=drop_pending_updates))

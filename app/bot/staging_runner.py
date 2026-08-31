@@ -104,7 +104,6 @@ def startup_lines(
             f"{'yes' if manager_exists else 'no'}"
         ),
         f"Draft #{STAGING_DRAFT_ID} exists: {'yes' if draft_exists else 'no'}",
-        "Telegram polling: STARTING",
     ]
 
 
@@ -118,9 +117,13 @@ def main() -> None:
 
     # These imports must remain after activate_staging_config: repositories and
     # async sessions then bind only to the validated staging database.
+    launch_staging_bot()
+
+
+def launch_staging_bot() -> None:
     from app.bot.telegram_bot import run_bot
 
-    run_bot()
+    run_bot(drop_pending_updates=True)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,13 @@
-from unittest.mock import Mock, patch
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
 from app.bot.staging_runner import (
     StagingBotConfig,
     activate_staging_config,
+    launch_staging_bot,
     startup_lines,
     validate_staging_config,
 )
@@ -118,3 +121,36 @@ def test_russian_labels_preserve_technical_callback_data():
     assert by_label["Подтвердить: опт"] == "draft:type:wholesale:2"
     assert by_label["Подтвердить: розница"] == "draft:type:retail:2"
     assert by_label["Отклонить"] == "draft:reject:2"
+
+
+def test_staging_runner_requests_pending_update_drop():
+    from app.bot import telegram_bot
+
+    with patch.object(telegram_bot, "run_bot") as run:
+        launch_staging_bot()
+    run.assert_called_once_with(drop_pending_updates=True)
+
+
+def test_pending_updates_are_dropped_before_polling_without_database_work():
+    from app.bot import telegram_bot
+
+    events = []
+    bot = SimpleNamespace(
+        delete_webhook=AsyncMock(side_effect=lambda **kwargs: events.append("drop"))
+    )
+    with (
+        patch.object(telegram_bot, "Bot", return_value=bot),
+        patch.object(
+            telegram_bot.dp,
+            "start_polling",
+            AsyncMock(side_effect=lambda *_: events.append("poll")),
+        ),
+        patch.object(telegram_bot, "DraftOrderService") as service,
+        patch.object(telegram_bot, "DraftOrderRepository") as repository,
+    ):
+        asyncio.run(telegram_bot.main(drop_pending_updates=True))
+
+    assert events == ["drop", "poll"]
+    bot.delete_webhook.assert_awaited_once_with(drop_pending_updates=True)
+    service.assert_not_called()
+    repository.assert_not_called()

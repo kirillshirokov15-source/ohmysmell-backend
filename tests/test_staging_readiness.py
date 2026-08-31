@@ -294,6 +294,7 @@ class TestTelegramCallbacks:
             patch.object(telegram_bot, "DraftOrderService", return_value=service),
         ):
             asyncio.run(telegram_bot.draft_callback_handler(callback))
+        callback.answer.assert_awaited_once_with()
         service.reject.assert_awaited_once_with(5)
 
 
