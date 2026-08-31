@@ -67,9 +67,23 @@ storage, and the normal Telegram manager notification.
 
 ## Telegram bot
 
+Normal environment:
+
 ```powershell
 .\.venv\Scripts\python.exe run_bot.py
 ```
+
+Explicit staging environment (never falls back to `DATABASE_URL`):
+
+```powershell
+.\.venv\Scripts\python.exe -m app.bot.staging_runner
+```
+
+The staging runner requires distinct `STAGING_DATABASE_URL` and
+`DATABASE_URL` values and refuses to start unless
+`EXTERNAL_WRITES_ENABLED=false`. It prints only the selected database host
+and read-only presence checks for staging manager `898019732` and draft `#2`.
+It never prints database credentials or the Telegram token.
 
 Telegram users must be active rows in `managers`. Review callbacks call the
 same draft services used by the internal API. Finalize creates only a local

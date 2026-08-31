@@ -20,6 +20,7 @@ from app.services.draft_telegram_service import (
     build_draft_card,
     build_draft_keyboard,
 )
+from app.services.telegram_display import customer_type_label
 from app.logging_utils import log_event
 import logging
 
@@ -140,16 +141,18 @@ async def draft_callback_handler(callback: CallbackQuery):
             customer_type = CustomerType(parts[2])
             draft_id = int(parts[3])
             draft = await service.set_customer_type(draft_id, customer_type)
-            await callback.answer(f"Тип клиента: {draft.customer_type}")
+            await callback.answer(
+                f"Тип клиента: {customer_type_label(draft.customer_type)}"
+            )
         elif action == "reject":
             draft_id = int(parts[2])
             draft = await service.reject(draft_id)
-            await callback.answer("Draft отклонён")
+            await callback.answer("Черновик отклонён")
         elif action == "ambiguous":
             draft_id = int(parts[2])
             draft = await DraftOrderRepository().get(draft_id)
             if draft is None:
-                raise DraftOrderError("Draft не найден")
+                raise DraftOrderError("Черновик не найден")
             ambiguous = [
                 item for item in draft.items if item.match_status == "ambiguous"
             ]
@@ -176,7 +179,7 @@ async def draft_callback_handler(callback: CallbackQuery):
             counterparty_id = parts[3]
             current = await DraftOrderRepository().get(draft_id)
             if current is None:
-                raise DraftOrderError("Draft не найден")
+                raise DraftOrderError("Черновик не найден")
             candidate = next(
                 (
                     item
@@ -198,15 +201,15 @@ async def draft_callback_handler(callback: CallbackQuery):
             draft = await service.load_counterparty_candidates(draft_id)
             if not draft.counterparty_candidates:
                 await callback.answer(
-                    "No existing counterparties found",
+                    "Подходящие контрагенты не найдены",
                     show_alert=True,
                 )
             else:
-                await callback.answer("Select an existing counterparty")
+                await callback.answer("Выберите существующего контрагента")
         elif action == "finalize":
             draft_id = int(parts[2])
             order = await service.finalize(draft_id)
-            await callback.answer(f"Создан локальный заказ #{order.id}")
+            await callback.answer(f"Создан локальный заказ №{order.id}")
             log_event(
                 logger,
                 "telegram_manager_action",
@@ -216,7 +219,7 @@ async def draft_callback_handler(callback: CallbackQuery):
             )
             if callback.message:
                 await callback.message.edit_text(
-                    f"Draft #{draft_id} финализирован в локальный заказ #{order.id}"
+                    f"Черновик №{draft_id} подтверждён как заказ №{order.id}"
                 )
             return
         else:

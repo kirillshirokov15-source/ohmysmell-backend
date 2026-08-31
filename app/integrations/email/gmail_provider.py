@@ -3,14 +3,13 @@ import base64
 from datetime import datetime, timezone
 from email.utils import parseaddr
 from html.parser import HTMLParser
-from pathlib import Path
-
 from app.config.settings import settings
+from app.integrations.email.gmail_auth import (
+    GMAIL_READONLY_SCOPE,
+    GMAIL_SCOPES,
+    load_gmail_credentials,
+)
 from app.integrations.email.provider import EmailFetchBatch, EmailMessage
-
-
-GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
-GMAIL_SCOPES = (GMAIL_READONLY_SCOPE,)
 
 
 class _HTMLTextExtractor(HTMLParser):
@@ -88,30 +87,25 @@ class GmailEmailProvider:
         return message_ids, profile.get("historyId")
 
     def _build_service(self):
-        from google.auth.transport.requests import Request
-        from google.oauth2.credentials import Credentials
-        from google_auth_oauthlib.flow import InstalledAppFlow
         from googleapiclient.discovery import build
 
-        credentials = None
-        token_path = Path(settings.gmail_token_file) if settings.gmail_token_file else None
-        if token_path and token_path.exists():
-            credentials = Credentials.from_authorized_user_file(
-                str(token_path), GMAIL_SCOPES
-            )
-        if credentials and credentials.expired and credentials.refresh_token:
-            credentials.refresh(Request())
-        if not credentials or not credentials.valid:
-            if not settings.gmail_credentials_file:
-                raise RuntimeError("GMAIL_CREDENTIALS_FILE is not configured")
-            flow = InstalledAppFlow.from_client_secrets_file(
-                settings.gmail_credentials_file, GMAIL_SCOPES
-            )
-            credentials = flow.run_local_server(port=0)
-        if token_path:
-            token_path.parent.mkdir(parents=True, exist_ok=True)
-            token_path.write_text(credentials.to_json(), encoding="utf-8")
+        credentials = load_gmail_credentials(allow_interactive=False)
         return build("gmail", "v1", credentials=credentials, cache_discovery=False)
+
+    def readonly_smoke_check(self, max_messages: int = 5) -> dict:
+        service = self.service or self._build_service()
+        profile = service.users().getProfile(
+            userId=settings.gmail_user_id
+        ).execute()
+        response = service.users().messages().list(
+            userId=settings.gmail_user_id,
+            labelIds=["INBOX"],
+            maxResults=max(0, min(max_messages, 5)),
+        ).execute()
+        return {
+            "account": profile.get("emailAddress", "unknown"),
+            "messages_found": len(response.get("messages", [])),
+        }
 
     def _initial_message_ids(self, service) -> tuple[list[str], str | None]:
         ids = []

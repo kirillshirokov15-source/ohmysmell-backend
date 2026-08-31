@@ -6,121 +6,128 @@ from app.database.session import async_session
 from app.integrations.http_tls import verified_session
 from app.models.draft_order import DraftOrder
 from app.models.manager import Manager
-from app.services.money import format_rubles
+from app.services.telegram_display import (
+    customer_type_label,
+    draft_status_label,
+    product_match_label,
+    review_problem_lines,
+    telegram_rubles,
+)
 
 
 def build_draft_card(draft: DraftOrder) -> str:
     lines = [
-        "📧 Новый заказ из Email",
+        "📨 Новый заказ из почты",
         "",
-        f"Draft: #{draft.id}",
-        f"Клиент: {draft.customer_name or '—'}",
+        f"Черновик №{draft.id}",
+        "",
+        f"Клиент: {draft.customer_name or 'Не указан'}",
         f"Email: {draft.sender_email}",
-        f"Customer type: {draft.customer_type}",
-        f"Тема: {draft.subject or '—'}",
-        f"Контрагент: {draft.counterparty_name or draft.counterparty_id or 'не выбран'}",
+        f"Тип клиента: {customer_type_label(draft.customer_type)}",
+        f"Тема: {draft.subject or 'Без темы'}",
+        f"Контрагент: {draft.counterparty_name or draft.counterparty_id or 'Не выбран'}",
         "",
         "Позиции:",
     ]
     for item in draft.items:
-        price = (
-            f", {format_rubles(item.price)} ₽" if item.price is not None else ""
-        )
-        lines.append(
-            f"• {item.raw_product_text} × {item.qty} — {item.match_status}{price}"
-        )
-    lines.extend(
-        [
-            "",
-            "Итого: "
-            + (
-                f"{format_rubles(draft.total)} ₽"
-                if draft.total is not None
-                else "не рассчитано"
-            ),
-            f"Статус: {draft.status}",
-        ]
-    )
-    if draft.review_notes:
-        lines.extend(["", "Требует проверки:", draft.review_notes])
+        lines.extend(["", f"• {item.raw_product_text}"])
+        if item.price is not None and item.item_total is not None:
+            lines.append(
+                f"  {item.qty} шт. × {telegram_rubles(item.price)} "
+                f"= {telegram_rubles(item.item_total)}"
+            )
+        else:
+            lines.append(
+                f"  {item.qty} шт. — {product_match_label(item.match_status)}"
+            )
+
+    lines.extend([
+        "",
+        "Итого: "
+        + (
+            telegram_rubles(draft.total)
+            if draft.total is not None
+            else "Не рассчитано"
+        ),
+        f"Статус: {draft_status_label(draft.status)}",
+    ])
+    problems = review_problem_lines(draft)
     if draft.counterparty_candidates:
-        lines.extend(["", "Кандидаты контрагента:"])
+        lines.extend(["", "Возможные контрагенты:"])
         lines.extend(
-            f"• {candidate.get('name') or 'Без имени'} "
-            f"({candidate.get('email') or candidate.get('phone') or candidate['id']})"
-            for candidate in draft.counterparty_candidates
+            f"• {candidate.get('name') or 'Без имени'}"
+            for candidate in draft.counterparty_candidates[:5]
         )
+    if problems:
+        lines.extend(["", "⚠️ Требует проверки:"])
+        lines.extend(f"• {problem}" for problem in problems)
     return "\n".join(lines)
 
 
 def build_draft_keyboard(draft: DraftOrder) -> dict:
     if str(draft.status) in {"new", "rejected"}:
         return {"inline_keyboard": []}
-    rows = [
-        [
-            {
-                "text": "Confirm wholesale",
-                "callback_data": f"draft:type:wholesale:{draft.id}",
-            },
-            {
-                "text": "Confirm retail",
-                "callback_data": f"draft:type:retail:{draft.id}",
-            },
-        ]
-    ]
+    rows = [[
+        {
+            "text": "Подтвердить: опт",
+            "callback_data": f"draft:type:wholesale:{draft.id}",
+        },
+        {
+            "text": "Подтвердить: розница",
+            "callback_data": f"draft:type:retail:{draft.id}",
+        },
+    ]]
     for item in draft.items:
         for candidate in item.candidates[:3]:
             selected = item.product_id == candidate.get("id")
             reference = candidate.get("article") or (
-                f"score {candidate.get('score')}"
+                f"оценка {candidate.get('score')}"
                 if candidate.get("score") is not None
-                else "Product"
+                else "Товар"
             )
             marker = "✓ " if selected else ""
-            rows.append(
-                [{
-                    "text": (
-                        f"{marker}{reference} · "
-                        f"{candidate.get('name', 'Product')[:28]}"
-                    ),
-                    "callback_data": (
-                        f"draft:product:{draft.id}:{item.id}:{candidate['id']}"
-                    ),
-                }]
-            )
+            rows.append([{
+                "text": (
+                    f"{marker}{reference} · "
+                    f"{candidate.get('name', 'Товар')[:28]}"
+                ),
+                "callback_data": (
+                    f"draft:product:{draft.id}:{item.id}:{candidate['id']}"
+                ),
+            }])
     for candidate in draft.counterparty_candidates[:3]:
-        rows.append(
-            [{
-                "text": f"Контрагент: {(candidate.get('name') or 'Без имени')[:25]}",
-                "callback_data": f"draft:counterparty:{draft.id}:{candidate['id']}",
-            }]
-        )
+        rows.append([{
+            "text": (
+                "Контрагент: "
+                f"{(candidate.get('name') or 'Без имени')[:25]}"
+            ),
+            "callback_data": f"draft:counterparty:{draft.id}:{candidate['id']}",
+        }])
     if not draft.counterparty_id and not draft.counterparty_candidates:
         rows.append([{
-            "text": "Select counterparty",
+            "text": "Выбрать контрагента",
             "callback_data": f"draft:counterparty_select:{draft.id}",
         }])
-    match_statuses = {str(item.match_status) for item in draft.items}
-    has_ambiguous = "ambiguous" in match_statuses
-    has_not_found = "not_found" in match_statuses
-    if has_ambiguous or has_not_found:
-        action_text = (
-            "Resolve products"
-            if has_not_found
-            else "View ambiguous items"
-        )
+
+    statuses = {str(item.match_status) for item in draft.items}
+    if "ambiguous" in statuses or "not_found" in statuses:
         rows.append([{
-            "text": action_text,
+            "text": (
+                "Сопоставить товары"
+                if "not_found" in statuses
+                else "Выбрать товар"
+            ),
             "callback_data": f"draft:ambiguous:{draft.id}",
         }])
+
     final_actions = []
     if str(draft.status) == "ready":
         final_actions.append({
-            "text": "Finalize",
+            "text": "Подтвердить заказ",
             "callback_data": f"draft:finalize:{draft.id}",
         })
     final_actions.append({
-        "text": "Reject",
+        "text": "Отклонить",
         "callback_data": f"draft:reject:{draft.id}",
     })
     rows.append(final_actions)
@@ -131,17 +138,17 @@ async def notify_managers_about_draft(draft: DraftOrder) -> int:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         return 0
-    async with async_session() as session:
-        result = await session.execute(
+    async with async_session() as database_session:
+        result = await database_session.execute(
             select(Manager).where(Manager.is_active.is_(True))
         )
         managers = result.scalars().all()
 
+    http_session = verified_session()
     keyboard = build_draft_keyboard(draft)
-    session = verified_session()
     sent_count = 0
     for manager in managers:
-        response = session.post(
+        response = http_session.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
             json={
                 "chat_id": manager.telegram_id,

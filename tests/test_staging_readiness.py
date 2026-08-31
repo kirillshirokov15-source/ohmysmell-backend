@@ -249,6 +249,23 @@ class TestInternalAuth:
 
 
 class TestTelegramCallbacks:
+    def test_draft_callback_router_filter_still_matches_callback_data(self):
+        from app.bot import telegram_bot
+
+        handler = next(
+            item
+            for item in telegram_bot.dp.callback_query.handlers
+            if item.callback is telegram_bot.draft_callback_handler
+        )
+        matched, _ = asyncio.run(handler.check(SimpleNamespace(
+            data="draft:type:wholesale:2"
+        )))
+        not_matched, _ = asyncio.run(handler.check(SimpleNamespace(
+            data="other:type:wholesale:2"
+        )))
+        assert matched is True
+        assert not_matched is False
+
     def test_reject_callback_delegates_to_service(self):
         from app.bot import telegram_bot
 

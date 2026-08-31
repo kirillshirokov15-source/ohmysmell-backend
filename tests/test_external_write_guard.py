@@ -8,8 +8,17 @@ import pytest
 from app.config.settings import Settings, settings
 from app.integrations.moysklad.client import MoySkladClient
 from app.services.draft_order_service import DraftOrderService
-from app.services.draft_telegram_service import build_draft_keyboard
+from app.services.draft_telegram_service import (
+    build_draft_card,
+    build_draft_keyboard,
+)
 from app.services.counterparty_matching_service import CounterpartyMatchingService
+from app.services.telegram_display import (
+    customer_type_label,
+    draft_status_label,
+    product_match_label,
+    telegram_rubles,
+)
 from app.services.moysklad_order_service import (
     MoySkladOrderError,
     MoySkladOrderService,
@@ -125,11 +134,11 @@ def test_telegram_product_action_matches_unresolved_state():
     def labels(keyboard):
         return [button["text"] for row in keyboard["inline_keyboard"] for button in row]
 
-    assert "View ambiguous items" in labels(ambiguous)
-    assert "Resolve products" in labels(not_found)
-    assert "Resolve products" in labels(mixed)
-    assert "Select counterparty" in labels(not_found)
-    assert "Finalize" not in labels(not_found)
+    assert "Выбрать товар" in labels(ambiguous)
+    assert "Сопоставить товары" in labels(not_found)
+    assert "Сопоставить товары" in labels(mixed)
+    assert "Выбрать контрагента" in labels(not_found)
+    assert "Подтвердить заказ" not in labels(not_found)
 
 
 def test_candidate_buttons_mark_only_selected_product():
@@ -162,6 +171,99 @@ def test_candidate_buttons_mark_only_selected_product():
     selected = labels("p1")
     assert selected[0].startswith("✓ A1")
     assert not selected[1].startswith("✓")
+
+
+def test_russian_labels_keep_callback_data_unchanged():
+    draft = SimpleNamespace(
+        id=22,
+        status="needs_review",
+        counterparty_id=None,
+        counterparty_candidates=[],
+        items=[SimpleNamespace(
+            id=7,
+            match_status="ambiguous",
+            product_id=None,
+            candidates=[{
+                "id": "product-uuid",
+                "name": "Product name",
+                "article": "ART-1",
+            }],
+        )],
+    )
+    buttons = [
+        button
+        for row in build_draft_keyboard(draft)["inline_keyboard"]
+        for button in row
+    ]
+    by_text = {button["text"]: button["callback_data"] for button in buttons}
+    assert by_text["Подтвердить: опт"] == "draft:type:wholesale:22"
+    assert by_text["Подтвердить: розница"] == "draft:type:retail:22"
+    assert by_text["Выбрать контрагента"] == "draft:counterparty_select:22"
+    assert by_text["Выбрать товар"] == "draft:ambiguous:22"
+    assert by_text["Отклонить"] == "draft:reject:22"
+    candidate = next(button for button in buttons if "ART-1" in button["text"])
+    assert candidate["callback_data"] == "draft:product:22:7:product-uuid"
+
+
+def test_draft_card_is_fully_localized_and_formats_minor_units():
+    draft = SimpleNamespace(
+        id=2,
+        status="needs_review",
+        customer_name="OhMySmell Staging Test",
+        sender_email="staging-test@ohmysmell.local",
+        customer_type="unknown",
+        subject="STAGING TEST ORDER",
+        counterparty_name=None,
+        counterparty_id=None,
+        counterparty_candidates=[],
+        total=None,
+        items=[
+            SimpleNamespace(
+                raw_product_text="Chanel Allure Homme Sport",
+                qty=2,
+                match_status="ambiguous",
+                price=None,
+                item_total=None,
+            ),
+            SimpleNamespace(
+                raw_product_text="Marvis Classic Strong Mint 85 ml",
+                qty=3,
+                match_status="matched",
+                price=56000,
+                item_total=168000,
+            ),
+        ],
+    )
+    card = build_draft_card(draft)
+    assert "📨 Новый заказ из почты" in card
+    assert "Черновик №2" in card
+    assert "Тип клиента: Не определён" in card
+    assert "Статус: требует проверки" in card
+    assert "3 шт. × 560 ₽ = 1 680 ₽" in card
+    assert "Необходимо определить тип клиента" in card
+    assert "Необходимо выбрать контрагента" in card
+    assert "Необходимо выбрать товар: Chanel Allure Homme Sport" in card
+    for internal in (
+        "needs_review",
+        "customer_type=unknown",
+        "matched",
+        "ambiguous",
+        "not_found",
+    ):
+        assert internal not in card
+
+
+def test_display_mappings_and_telegram_money_are_russian():
+    assert customer_type_label("unknown") == "Не определён"
+    assert customer_type_label("wholesale") == "Оптовый"
+    assert customer_type_label("retail") == "Розничный"
+    assert draft_status_label("needs_review") == "требует проверки"
+    assert product_match_label("matched") == "найден"
+    assert product_match_label("ambiguous") == "нужно выбрать"
+    assert product_match_label("not_found") == "не найден"
+    assert telegram_rubles(56000) == "560 ₽"
+    assert telegram_rubles(580000) == "5 800 ₽"
+    assert telegram_rubles(1328000) == "13 280 ₽"
 
 
 def test_zero_relevant_counterparties_fall_back_to_recent_existing():
