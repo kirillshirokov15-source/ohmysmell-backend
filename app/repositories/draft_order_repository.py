@@ -212,7 +212,7 @@ class DraftOrderRepository:
                 counterparty_name=draft.counterparty_name,
                 comment=f"Email: {draft.subject or 'без темы'}",
                 status=OrderStatus.NEW,
-                total=draft.total or 0,
+                total=draft.total,
             )
             order.items.extend(
                 OrderItem(

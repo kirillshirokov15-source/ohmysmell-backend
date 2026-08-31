@@ -31,6 +31,36 @@ class DraftOrderError(Exception):
     pass
 
 
+def calculate_draft_total(
+    items,
+    priced_items: dict[int, tuple[int, int]] | None = None,
+) -> int | None:
+    """Return an exact minor-unit total only for fully resolved/priced items."""
+    items = list(items)
+    if not items:
+        return None
+    total = 0
+    for item in items:
+        value = item.get if isinstance(item, dict) else lambda key: getattr(item, key)
+        if (
+            ProductMatchStatus(value("match_status")) != ProductMatchStatus.MATCHED
+            or not value("product_id")
+        ):
+            return None
+        if priced_items is None:
+            price = value("price")
+            item_total = value("item_total")
+        else:
+            pricing = priced_items.get(value("id"))
+            if pricing is None:
+                return None
+            price, item_total = pricing
+        if price is None or item_total is None:
+            return None
+        total += item_total
+    return total
+
+
 class DraftOrderService:
     def __init__(
         self,
@@ -123,8 +153,6 @@ class DraftOrderService:
 
         items = []
         problems = []
-        total = 0
-        all_priced = True
         if not extracted_lines:
             problems.append("Не удалось извлечь позиции из письма")
         if customer.customer_type == CustomerType.UNKNOWN:
@@ -148,7 +176,6 @@ class DraftOrderService:
                 problems.append(
                     f"{match.raw_product_text}: {match.status.value}"
                 )
-                all_priced = False
             else:
                 item.update(
                     product_id=match.product["id"],
@@ -156,12 +183,9 @@ class DraftOrderService:
                     article=match.product.get("article"),
                 )
                 price = self._price(match.product, customer.customer_type, problems)
-                if price is None:
-                    all_priced = False
-                else:
+                if price is not None:
                     item["price"] = price
                     item["item_total"] = price * match.qty
-                    total += item["item_total"]
             items.append(item)
 
         status = OrderStatus.NEEDS_REVIEW if problems else OrderStatus.READY
@@ -177,7 +201,7 @@ class DraftOrderService:
             "counterparty_id": customer.moysklad_counterparty_id,
             "counterparty_candidates": counterparty_candidates,
             "status": status,
-            "total": total if all_priced and items else None,
+            "total": calculate_draft_total(items),
             "problems": problems,
             "items": items,
         }
@@ -220,7 +244,6 @@ class DraftOrderService:
         draft = await self._get_required(draft_id)
         problems = []
         priced_items = {}
-        total = 0
         products = {item["id"]: item for item in self.matching_service.products()}
 
         if CustomerType(draft.customer_type) == CustomerType.UNKNOWN:
@@ -241,14 +264,15 @@ class DraftOrderService:
             price = self._price(product, CustomerType(draft.customer_type), problems)
             if price is not None:
                 priced_items[item.id] = (price, price * item.qty)
-                total += price * item.qty
+
+        total = calculate_draft_total(draft.items, priced_items)
 
         target = OrderStatus.NEEDS_REVIEW if problems else OrderStatus.READY
         try:
             reviewed = await self.repository.save_review(
                 draft_id,
                 target,
-                None if problems else total,
+                total,
                 problems,
                 priced_items,
             )
@@ -347,6 +371,8 @@ class DraftOrderService:
             problems.append("customer type is unknown")
         if not draft.counterparty_id:
             problems.append("counterparty is not selected")
+        if draft.total is None:
+            problems.append("draft total is missing")
         if not draft.items:
             problems.append("order has no items")
         for item in draft.items:

@@ -12,7 +12,10 @@ from app.services.customer_resolution_service import (
     CustomerResolution,
     CustomerResolutionService,
 )
-from app.services.draft_order_service import DraftOrderService
+from app.services.draft_order_service import (
+    DraftOrderService,
+    calculate_draft_total,
+)
 from app.services.email_parser import EmailParser
 from app.services.order_lifecycle import OrderStatus
 from app.services.price_service import PriceService
@@ -274,6 +277,31 @@ class TestEmailCustomerResolution:
 
 
 class TestDraftOrderPipeline:
+    def test_total_requires_all_items_resolved_and_priced(self):
+        complete = [
+            {
+                "id": 1,
+                "match_status": "matched",
+                "product_id": "p1",
+                "price": 580000,
+                "item_total": 1160000,
+            },
+            {
+                "id": 2,
+                "match_status": "matched",
+                "product_id": "p2",
+                "price": 56000,
+                "item_total": 168000,
+            },
+        ]
+        assert calculate_draft_total(complete) == 1328000
+
+        unresolved = [dict(complete[0], match_status="ambiguous", product_id=None)]
+        assert calculate_draft_total(unresolved) is None
+
+        missing_price = [dict(complete[0], price=None, item_total=None)]
+        assert calculate_draft_total(missing_price) is None
+
     def test_unknown_customer_needs_review(self):
         service, _, _ = draft_service(CustomerType.UNKNOWN)
         draft = asyncio.run(service.ingest_email(email_message()))
@@ -311,6 +339,7 @@ class TestDraftOrderPipeline:
         assert repository.customer_updated_to == CustomerType.WHOLESALE
         assert reviewed.customer_type == CustomerType.WHOLESALE
         assert reviewed.status == OrderStatus.READY
+        assert reviewed.total == 15000
 
     def test_wholesale_confirmation_and_product_resolution_reprice_items(self):
         products = [
@@ -374,6 +403,13 @@ class TestDraftOrderPipeline:
         assert chanel.price == 580000
         assert chanel.item_total == 1160000
         assert marvis.price == 56000
+        assert resolved.total == 1328000
+
+        repeated = asyncio.run(
+            service.resolve_product(draft.id, chanel.id, "chanel-real")
+        )
+        assert repeated.total == 1328000
+        assert repeated.items[0].item_total == 1160000
 
     def test_duplicate_external_id_is_idempotent(self):
         notifier = AsyncMock()

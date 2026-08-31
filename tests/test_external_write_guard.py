@@ -266,6 +266,42 @@ def test_display_mappings_and_telegram_money_are_russian():
     assert telegram_rubles(1328000) == "13 280 ₽"
 
 
+def test_fully_priced_draft_card_shows_exact_item_and_order_totals():
+    draft = SimpleNamespace(
+        id=2,
+        status="needs_review",
+        customer_name="Test customer",
+        sender_email="test@example.invalid",
+        customer_type="wholesale",
+        subject="Test",
+        counterparty_name=None,
+        counterparty_id=None,
+        counterparty_candidates=[],
+        total=1328000,
+        items=[
+            SimpleNamespace(
+                raw_product_text="Chanel Allure Homme Sport",
+                qty=2,
+                match_status="matched",
+                price=580000,
+                item_total=1160000,
+            ),
+            SimpleNamespace(
+                raw_product_text="Marvis Classic Strong Mint 85 ml",
+                qty=3,
+                match_status="matched",
+                price=56000,
+                item_total=168000,
+            ),
+        ],
+    )
+
+    card = build_draft_card(draft)
+    assert "2 шт. × 5 800 ₽ = 11 600 ₽" in card
+    assert "3 шт. × 560 ₽ = 1 680 ₽" in card
+    assert "Итого: 13 280 ₽" in card
+
+
 def test_zero_relevant_counterparties_fall_back_to_recent_existing():
     provider = SimpleNamespace(
         search_counterparties=lambda query: [],
@@ -303,6 +339,7 @@ def test_finalize_guards_block_incomplete_draft(overrides, message):
         "product_id": "p1",
         "price": 100,
         "item_total": 100,
+        "total": 100,
     }
     values.update(overrides)
     reviewed = SimpleNamespace(
@@ -310,6 +347,7 @@ def test_finalize_guards_block_incomplete_draft(overrides, message):
         status=OrderStatus.READY,
         customer_type=values["customer_type"],
         counterparty_id=values["counterparty_id"],
+        total=values["total"],
         items=[SimpleNamespace(
             raw_product_text="Product",
             match_status=values["item_status"],
@@ -329,6 +367,35 @@ def test_finalize_guards_block_incomplete_draft(overrides, message):
     service.review = AsyncMock(return_value=reviewed)
 
     with pytest.raises(Exception, match=message):
+        asyncio.run(service.finalize(5))
+
+    repository.finalize.assert_not_awaited()
+
+
+def test_finalize_blocks_missing_draft_total():
+    reviewed = SimpleNamespace(
+        id=5,
+        status=OrderStatus.READY,
+        customer_type="wholesale",
+        counterparty_id="cp1",
+        total=None,
+        items=[SimpleNamespace(
+            raw_product_text="Product",
+            match_status="matched",
+            product_id="p1",
+            price=100,
+            item_total=100,
+        )],
+    )
+    repository = SimpleNamespace(
+        get=AsyncMock(return_value=SimpleNamespace(id=5, finalized_order_id=None)),
+        finalize=AsyncMock(),
+    )
+    service = DraftOrderService.__new__(DraftOrderService)
+    service.repository = repository
+    service.review = AsyncMock(return_value=reviewed)
+
+    with pytest.raises(Exception, match="draft total is missing"):
         asyncio.run(service.finalize(5))
 
     repository.finalize.assert_not_awaited()
@@ -390,6 +457,7 @@ def test_finalize_draft_remains_local_only():
         status=OrderStatus.READY,
         customer_type="wholesale",
         counterparty_id="cp1",
+        total=1328000,
         items=[SimpleNamespace(
             raw_product_text="Product",
             match_status="matched",
@@ -398,7 +466,11 @@ def test_finalize_draft_remains_local_only():
             item_total=100,
         )],
     )
-    local_order = SimpleNamespace(id=10, status=OrderStatus.NEW)
+    local_order = SimpleNamespace(
+        id=10,
+        status=OrderStatus.NEW,
+        total=1328000,
+    )
     repository = SimpleNamespace(
         get=AsyncMock(return_value=draft),
         finalize=AsyncMock(return_value=local_order),
@@ -410,6 +482,8 @@ def test_finalize_draft_remains_local_only():
         result = asyncio.run(service.finalize(5))
 
     assert result is local_order
+    assert result.total == 1328000
+    assert isinstance(result.total, int)
     repository.finalize.assert_awaited_once_with(5)
 
 

@@ -79,6 +79,37 @@ async def safe_callback_answer(callback: CallbackQuery, *args, **kwargs) -> bool
         )
         return False
 
+
+async def safe_edit_message(
+    message: Message,
+    text: str,
+    *,
+    draft_id: int,
+    reply_markup=None,
+) -> bool:
+    log_event(
+        logger,
+        "telegram_card_refresh_started",
+        draft_id=draft_id,
+    )
+    try:
+        await message.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest as error:
+        if "message is not modified" not in str(error).casefold():
+            raise
+        log_event(
+            logger,
+            "telegram_card_not_modified",
+            draft_id=draft_id,
+        )
+        return False
+    log_event(
+        logger,
+        "telegram_card_refresh_completed",
+        draft_id=draft_id,
+    )
+    return True
+
 async def check_access(message: Message) -> bool:
     if not is_active_manager(message.from_user.id):
         await message.answer("⛔ У вас нет доступа к OhMySmell CRM.")
@@ -250,8 +281,10 @@ async def draft_callback_handler(callback: CallbackQuery):
                 order_id=order.id,
             )
             if callback.message:
-                await callback.message.edit_text(
-                    f"Черновик №{draft_id} подтверждён как заказ №{order.id}"
+                await safe_edit_message(
+                    callback.message,
+                    f"Черновик №{draft_id} подтверждён как заказ №{order.id}",
+                    draft_id=draft_id,
                 )
             return
         else:
@@ -270,8 +303,10 @@ async def draft_callback_handler(callback: CallbackQuery):
             draft_id=draft_id,
         )
         if draft is not None and callback.message:
-            await callback.message.edit_text(
+            await safe_edit_message(
+                callback.message,
                 build_draft_card(draft),
+                draft_id=draft_id,
                 reply_markup=InlineKeyboardMarkup.model_validate(
                     build_draft_keyboard(draft)
                 ),
