@@ -170,7 +170,7 @@ async def create_order(order: OrderCreate):
     service = OrderValidationService()
 
     try:
-        validated_order = service.validate(order)
+        validated_order = await service.validate_async(order)
         validated_order["customer_id"] = customer.customer_id
         validated_order["counterparty_id"] = (
             customer.moysklad_counterparty_id

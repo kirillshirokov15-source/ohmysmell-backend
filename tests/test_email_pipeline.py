@@ -72,7 +72,10 @@ class FakeCustomerService:
 
 
 class FakeCounterpartyService:
-    def candidates(self, *queries):
+    async def candidates_async(self, *queries):
+        return []
+
+    async def fallback_candidates_async(self, *queries):
         return []
 
 

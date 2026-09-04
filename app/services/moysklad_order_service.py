@@ -1,4 +1,5 @@
 from app.integrations.moysklad.client import MoySkladClient
+from app.integrations.moysklad.async_gateway import AsyncMoySkladGateway
 from app.repositories.order_repository import (
     get_order,
     set_moysklad_order,
@@ -69,7 +70,7 @@ class MoySkladOrderService:
         description = "\n".join(description_parts)
 
         client = self.client or MoySkladClient()
-        result = client.create_customer_order(
+        result = await AsyncMoySkladGateway(client).create_customer_order(
             organization_id=settings.moysklad_organization_id,
             counterparty_id=order.counterparty_id,
             items=items,

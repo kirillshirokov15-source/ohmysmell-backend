@@ -24,6 +24,22 @@ class OrderValidationService:
         except (PriceConfigurationError, PriceNotConfiguredError) as error:
             raise OrderValidationError(str(error)) from error
 
+        return self._validate_with_catalog(order, catalog)
+
+    async def validate_async(self, order: OrderCreate) -> dict:
+        try:
+            catalog = await self.product_service.get_catalog_async(
+                customer_type=order.customer_type,
+                strict_pricing=True,
+            )
+        except (PriceConfigurationError, PriceNotConfiguredError) as error:
+            raise OrderValidationError(str(error)) from error
+
+        return self._validate_with_catalog(order, catalog)
+
+    @staticmethod
+    def _validate_with_catalog(order: OrderCreate, catalog: list[dict]) -> dict:
+
         products_by_id = {
             product["id"]: product
             for product in catalog

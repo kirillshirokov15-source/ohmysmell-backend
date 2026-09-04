@@ -335,7 +335,7 @@ class OrderCreationTests(unittest.TestCase):
                 return CustomerResolution(77, CustomerType.WHOLESALE, None)
 
         class FakeValidationService:
-            def validate(self, order):
+            async def validate_async(self, order):
                 return {
                     "customer_name": order.customer_name,
                     "phone": order.phone,
@@ -371,7 +371,7 @@ class OrderCreationTests(unittest.TestCase):
                 return CustomerResolution(78, CustomerType.RETAIL, None)
 
         class FakeValidationService:
-            def validate(self, order):
+            async def validate_async(self, order):
                 return {
                     "customer_name": order.customer_name,
                     "phone": order.phone,

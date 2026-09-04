@@ -129,7 +129,7 @@ class DraftOrderService:
             extracted_count=len(extracted_lines),
         )
         matches = [
-            self.matching_service.match(line.raw_product_text, line.qty)
+            await self.matching_service.match_async(line.raw_product_text, line.qty)
             for line in extracted_lines
         ]
         log_event(
@@ -143,7 +143,7 @@ class DraftOrderService:
         counterparty_candidates = []
         if not customer.moysklad_counterparty_id:
             try:
-                counterparty_candidates = self.counterparty_service.candidates(
+                counterparty_candidates = await self.counterparty_service.candidates_async(
                     message.sender_email,
                     message.sender_name,
                     *customer.identities.get("phone", []),
@@ -244,7 +244,10 @@ class DraftOrderService:
         draft = await self._get_required(draft_id)
         problems = []
         priced_items = {}
-        products = {item["id"]: item for item in self.matching_service.products()}
+        products = {
+            item["id"]: item
+            for item in await self.matching_service.products_async()
+        }
 
         if CustomerType(draft.customer_type) == CustomerType.UNKNOWN:
             problems.append("Необходимо подтвердить тип клиента")
@@ -296,7 +299,11 @@ class DraftOrderService:
     ) -> DraftOrder:
         self._ensure_reviewable(await self._get_required(draft_id))
         product = next(
-            (item for item in self.matching_service.products() if item["id"] == product_id),
+            (
+                item
+                for item in await self.matching_service.products_async()
+                if item["id"] == product_id
+            ),
             None,
         )
         if product is None:
@@ -322,7 +329,7 @@ class DraftOrderService:
     ) -> DraftOrder:
         draft = await self._get_required(draft_id)
         self._ensure_reviewable(draft)
-        candidates = self.counterparty_service.fallback_candidates(
+        candidates = await self.counterparty_service.fallback_candidates_async(
             draft.sender_email,
             draft.customer_name,
         )

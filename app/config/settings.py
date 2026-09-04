@@ -35,6 +35,9 @@ class Settings:
     external_writes_enabled: bool = os.getenv(
         "EXTERNAL_WRITES_ENABLED", "false"
     ).lower() in {"1", "true", "yes", "on"}
+    moysklad_catalog_cache_ttl_seconds: float = float(
+        os.getenv("MOYSKLAD_CATALOG_CACHE_TTL_SECONDS", "60")
+    )
 
 
 settings = Settings()

@@ -1,3 +1,8 @@
+from app.integrations.moysklad.async_gateway import (
+    AsyncMoySkladGateway,
+    ProductCatalogTTLCache,
+    catalog_cache,
+)
 from app.integrations.moysklad.client import MoySkladClient
 from app.models.sales import CustomerType
 from app.services.price_service import (
@@ -14,7 +19,12 @@ class ProductService:
         price_service: PriceService | None = None,
         client: MoySkladClient | None = None,
     ) -> None:
+        uses_default_client = client is None
         self.client = client or MoySkladClient()
+        self.async_gateway = AsyncMoySkladGateway(
+            self.client,
+            catalog_cache if uses_default_client else ProductCatalogTTLCache(),
+        )
         self.price_service = price_service or PriceService()
 
     @staticmethod
@@ -34,6 +44,43 @@ class ProductService:
         products = self.client.get_products()
         stores = self.client.get_stores()
         stock_report = self.client.get_stock_by_store()
+
+        return self._build_catalog(
+            products,
+            stores,
+            stock_report,
+            customer_type,
+            include_price_types,
+            strict_pricing,
+        )
+
+    async def get_catalog_async(
+        self,
+        customer_type: CustomerType = CustomerType.RETAIL,
+        include_price_types: bool = False,
+        strict_pricing: bool = False,
+    ) -> list[dict]:
+        products = await self.async_gateway.get_products()
+        stores = await self.async_gateway.get_stores()
+        stock_report = await self.async_gateway.get_stock_by_store()
+        return self._build_catalog(
+            products,
+            stores,
+            stock_report,
+            customer_type,
+            include_price_types,
+            strict_pricing,
+        )
+
+    def _build_catalog(
+        self,
+        products: list[dict],
+        stores: list[dict],
+        stock_report: dict,
+        customer_type: CustomerType,
+        include_price_types: bool,
+        strict_pricing: bool,
+    ) -> list[dict]:
 
         active_stores = {
             store["id"]: {

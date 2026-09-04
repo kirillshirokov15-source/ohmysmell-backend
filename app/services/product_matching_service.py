@@ -4,6 +4,11 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Protocol
 
+from app.integrations.moysklad.async_gateway import (
+    AsyncMoySkladGateway,
+    ProductCatalogTTLCache,
+    catalog_cache,
+)
 from app.integrations.moysklad.client import MoySkladClient
 from app.models.draft_order import ProductMatchStatus
 
@@ -36,7 +41,12 @@ class ProductMatchingService:
         fuzzy_threshold: float = 0.72,
         candidate_limit: int = 5,
     ) -> None:
+        uses_default_provider = provider is None
         self.provider = provider or MoySkladClient()
+        self.async_gateway = AsyncMoySkladGateway(
+            self.provider,
+            catalog_cache if uses_default_provider else ProductCatalogTTLCache(),
+        )
         self.fuzzy_threshold = fuzzy_threshold
         self.candidate_limit = candidate_limit
         self._products: list[dict] | None = None
@@ -56,6 +66,10 @@ class ProductMatchingService:
                 if not product.get("archived")
             ]
         return self._products
+
+    async def products_async(self) -> list[dict]:
+        products = await self.async_gateway.get_products()
+        return [product for product in products if not product.get("archived")]
 
     @classmethod
     def normalized_name_variants(cls, value: str | None) -> tuple[str, ...]:
@@ -91,7 +105,14 @@ class ProductMatchingService:
         return max(full_score, window_score, coverage)
 
     def match(self, raw_product_text: str, qty: int) -> ProductMatch:
-        products = self.products()
+        return self._match(self.products(), raw_product_text, qty)
+
+    async def match_async(self, raw_product_text: str, qty: int) -> ProductMatch:
+        return self._match(await self.products_async(), raw_product_text, qty)
+
+    def _match(
+        self, products: list[dict], raw_product_text: str, qty: int
+    ) -> ProductMatch:
         query = self.normalize(raw_product_text)
 
         article_matches = [
