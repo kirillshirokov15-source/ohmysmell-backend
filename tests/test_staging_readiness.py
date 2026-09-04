@@ -290,7 +290,11 @@ class TestTelegramCallbacks:
             message=None,
         )
         with (
-            patch.object(telegram_bot, "is_active_manager", return_value=True),
+            patch.object(
+                telegram_bot.manager_repository,
+                "is_active_by_telegram_id",
+                AsyncMock(return_value=True),
+            ),
             patch.object(telegram_bot, "DraftOrderService", return_value=service),
         ):
             asyncio.run(telegram_bot.draft_callback_handler(callback))

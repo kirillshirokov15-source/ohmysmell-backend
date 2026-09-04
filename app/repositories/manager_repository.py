@@ -1,19 +1,18 @@
-import psycopg2
-from app.config.settings import settings
+from sqlalchemy import select
+
+from app.database.session import async_session
+from app.models.manager import Manager
 
 
-def is_active_manager(telegram_id: int) -> bool:
-    with psycopg2.connect(settings.database_url) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT EXISTS(
-                    SELECT 1
-                    FROM managers
-                    WHERE telegram_id = %s
-                    AND is_active = true
-                );
-                """,
-                (telegram_id,),
+class ManagerRepository:
+    async def is_active_by_telegram_id(self, telegram_id: int) -> bool:
+        async with async_session() as session:
+            result = await session.execute(
+                select(Manager.id)
+                .where(
+                    Manager.telegram_id == telegram_id,
+                    Manager.is_active.is_(True),
+                )
+                .limit(1)
             )
-            return cur.fetchone()[0]
+            return result.scalar_one_or_none() is not None

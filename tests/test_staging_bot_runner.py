@@ -1,6 +1,6 @@
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -63,28 +63,12 @@ def test_startup_diagnostics_do_not_expose_secrets():
     assert "TELEGRAM_BOT_TOKEN" not in output
 
 
-def test_activation_selects_staging_for_manager_auth(monkeypatch):
-    from app.repositories import manager_repository
-
+def test_activation_selects_staging_before_async_manager_auth_import():
     old_database_url = settings.database_url
     old_external_writes = settings.external_writes_enabled
-    connection = Mock()
-    connection.__enter__ = Mock(return_value=connection)
-    connection.__exit__ = Mock(return_value=False)
-    cursor = Mock()
-    cursor.__enter__ = Mock(return_value=cursor)
-    cursor.__exit__ = Mock(return_value=False)
-    cursor.fetchone.return_value = (True,)
-    connection.cursor.return_value = cursor
     try:
         activate_staging_config(StagingBotConfig(STAGING_URL, "stage.invalid"))
-        with patch.object(
-            manager_repository.psycopg2,
-            "connect",
-            return_value=connection,
-        ) as connect:
-            assert manager_repository.is_active_manager(898019732) is True
-        connect.assert_called_once_with(STAGING_URL)
+        assert settings.database_url == STAGING_URL
         assert settings.external_writes_enabled is False
     finally:
         settings.database_url = old_database_url

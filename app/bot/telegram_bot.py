@@ -1,8 +1,9 @@
 import os
 import asyncio
+from time import perf_counter
 from dotenv import load_dotenv
 
-from app.repositories.manager_repository import is_active_manager
+from app.repositories.manager_repository import ManagerRepository
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
@@ -54,6 +55,11 @@ main_menu = ReplyKeyboardMarkup(
 
 dp = Dispatcher()
 logger = logging.getLogger(__name__)
+manager_repository = ManagerRepository()
+
+
+def _duration_ms(started_at: float) -> float:
+    return round((perf_counter() - started_at) * 1000, 2)
 
 
 def _is_stale_callback_error(error: TelegramBadRequest) -> bool:
@@ -111,7 +117,9 @@ async def safe_edit_message(
     return True
 
 async def check_access(message: Message) -> bool:
-    if not is_active_manager(message.from_user.id):
+    if not await manager_repository.is_active_by_telegram_id(
+        message.from_user.id
+    ):
         await message.answer("⛔ У вас нет доступа к OhMySmell CRM.")
         return False
 
@@ -184,10 +192,12 @@ async def settings_handler(message: Message):
 
 @dp.callback_query(F.data.startswith("draft:"))
 async def draft_callback_handler(callback: CallbackQuery):
-    if not callback.from_user or not is_active_manager(callback.from_user.id):
-        await safe_callback_answer(callback, "Нет доступа", show_alert=True)
-        return
-
+    handler_started_at = perf_counter()
+    action_started_at = None
+    action = None
+    draft_id = None
+    outcome = "error"
+    telegram_user_id = callback.from_user.id if callback.from_user else None
     parts = (callback.data or "").split(":")
     try:
         action = parts[1]
@@ -195,19 +205,40 @@ async def draft_callback_handler(callback: CallbackQuery):
         log_event(
             logger,
             "telegram_callback_received",
-            callback_data=callback.data,
-            telegram_user_id=callback.from_user.id,
+            telegram_user_id=telegram_user_id,
             draft_id=draft_id,
         )
         if not await safe_callback_answer(callback):
+            outcome = "stale"
             return
         log_event(
             logger,
             "telegram_callback_acknowledged",
-            callback_data=callback.data,
-            telegram_user_id=callback.from_user.id,
+            telegram_user_id=telegram_user_id,
             draft_id=draft_id,
+            duration_ms=_duration_ms(handler_started_at),
         )
+        if not callback.from_user:
+            outcome = "missing_user"
+            return
+        auth_started_at = perf_counter()
+        authorized = await manager_repository.is_active_by_telegram_id(
+            callback.from_user.id
+        )
+        log_event(
+            logger,
+            "telegram_manager_auth_completed",
+            telegram_user_id=telegram_user_id,
+            draft_id=draft_id,
+            action=action,
+            authorized=authorized,
+            duration_ms=_duration_ms(auth_started_at),
+            total_duration_ms=_duration_ms(handler_started_at),
+        )
+        if not authorized:
+            outcome = "unauthorized"
+            return
+        action_started_at = perf_counter()
         log_event(
             logger,
             "telegram_callback_action_started",
@@ -269,12 +300,6 @@ async def draft_callback_handler(callback: CallbackQuery):
             order = await service.finalize(draft_id)
             log_event(
                 logger,
-                "telegram_callback_action_completed",
-                action=action,
-                draft_id=draft_id,
-            )
-            log_event(
-                logger,
                 "telegram_manager_action",
                 action=action,
                 draft_id=draft_id,
@@ -286,16 +311,12 @@ async def draft_callback_handler(callback: CallbackQuery):
                     f"Черновик №{draft_id} подтверждён как заказ №{order.id}",
                     draft_id=draft_id,
                 )
+            outcome = "success"
             return
         else:
             logger.warning("Unknown Telegram draft callback action: %s", action)
+            outcome = "unknown_action"
             return
-        log_event(
-            logger,
-            "telegram_callback_action_completed",
-            action=action,
-            draft_id=draft_id,
-        )
         log_event(
             logger,
             "telegram_manager_action",
@@ -311,8 +332,22 @@ async def draft_callback_handler(callback: CallbackQuery):
                     build_draft_keyboard(draft)
                 ),
             )
+        outcome = "success"
     except (ValueError, IndexError, DraftOrderError) as error:
         logger.warning("Telegram callback rejected: %s", error)
+        outcome = "rejected"
+    finally:
+        if action_started_at is not None:
+            log_event(
+                logger,
+                "telegram_callback_action_completed",
+                action=action,
+                draft_id=draft_id,
+                telegram_user_id=telegram_user_id,
+                outcome=outcome,
+                duration_ms=_duration_ms(action_started_at),
+                total_duration_ms=_duration_ms(handler_started_at),
+            )
 
 
 async def main(*, drop_pending_updates: bool = False):
