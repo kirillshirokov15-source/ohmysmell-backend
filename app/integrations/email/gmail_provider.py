@@ -148,27 +148,33 @@ class GmailEmailProvider:
         return list(dict.fromkeys(ids)), latest_history_id
 
     def _get_message(self, service, message_id: str) -> EmailMessage | None:
-        raw = service.users().messages().get(
-            userId=settings.gmail_user_id,
-            id=message_id,
-            format="full",
-        ).execute()
+        try:
+            raw = service.users().messages().get(
+                userId=settings.gmail_user_id, id=message_id, format="full",
+            ).execute()
+        except Exception as error:
+            if getattr(getattr(error, "resp", None), "status", None) == 404:
+                return None
+            raise
         if "INBOX" not in raw.get("labelIds", []):
             return None
         headers = {
             header["name"].casefold(): header["value"]
             for header in raw.get("payload", {}).get("headers", [])
+            if isinstance(header.get("name"), str) and isinstance(header.get("value"), str)
         }
         sender_name, sender_email = parseaddr(headers.get("from", ""))
+        try:
+            received = datetime.fromtimestamp(int(raw.get("internalDate", "0")) / 1000, tz=timezone.utc)
+        except (ValueError, OverflowError, OSError):
+            received = datetime.now(timezone.utc)
         return EmailMessage(
             external_message_id=raw["id"],
             sender_email=sender_email,
             sender_name=sender_name or None,
             subject=headers.get("subject"),
             body_text=self._body_text(raw.get("payload", {})),
-            received_at=datetime.fromtimestamp(
-                int(raw["internalDate"]) / 1000, tz=timezone.utc
-            ),
+            received_at=received,
         )
 
     @classmethod
@@ -182,18 +188,21 @@ class GmailEmailProvider:
         return parser.text()
 
     @classmethod
-    def _mime_parts(cls, payload: dict, mime_type: str) -> list[str]:
+    def _mime_parts(cls, payload: dict, mime_type: str, depth: int = 0) -> list[str]:
+        if depth > 30:
+            return []
+        if payload.get("filename") or payload.get("body", {}).get("attachmentId"):
+            return []
         parts = []
         if payload.get("mimeType") == mime_type:
             body = payload.get("body", {})
             data = body.get("data")
             if data and not body.get("attachmentId"):
                 padding = "=" * (-len(data) % 4)
-                parts.append(
-                    base64.urlsafe_b64decode(data + padding).decode(
-                        "utf-8", errors="replace"
-                    )
-                )
+                try:
+                    parts.append(base64.urlsafe_b64decode(data + padding).decode("utf-8", errors="replace")[:200000])
+                except (ValueError, TypeError):
+                    parts.append("")
         for child in payload.get("parts", []):
-            parts.extend(cls._mime_parts(child, mime_type))
+            parts.extend(cls._mime_parts(child, mime_type, depth + 1))
         return parts

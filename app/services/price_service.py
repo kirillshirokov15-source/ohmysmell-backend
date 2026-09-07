@@ -55,6 +55,10 @@ class PriceService:
     ) -> ProductPrice:
         configured_type = self.price_type_mapping.get(customer_type)
 
+        if (customer_type == CustomerType.RETAIL and configured_type and
+                configured_type == self.price_type_mapping.get(CustomerType.WHOLESALE)):
+            raise PriceConfigurationError("Розничный тип цены совпадает с оптовым")
+
         if not configured_type:
             raise PriceConfigurationError(
                 f"Тип цены МойСклад для customer_type={customer_type.value} не настроен"
@@ -67,7 +71,8 @@ class PriceService:
             value = sale_price.get("value")
             if isinstance(value, float) and value.is_integer():
                 value = int(value)
-            if value is None or isinstance(value, bool) or not isinstance(value, int):
+            if (value is None or isinstance(value, bool) or not isinstance(value, int)
+                    or value < 0 or value > 9_223_372_036_854_775_807):
                 break
 
             return ProductPrice(

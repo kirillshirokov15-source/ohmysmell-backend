@@ -396,7 +396,7 @@ class OrderCreationTests(unittest.TestCase):
                 "app.main.notify_managers",
                 AsyncMock(side_effect=RuntimeError("Telegram unavailable")),
             ),
-            patch("app.main.logger.exception") as log_exception,
+            patch("app.main.logger.warning") as log_exception,
         ):
             response = asyncio.run(create_order(make_order()))
 

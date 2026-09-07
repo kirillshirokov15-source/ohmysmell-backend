@@ -70,6 +70,12 @@ def verified_ca_bundle(explicit_path: str | None = None) -> str:
 
 
 def verified_session(ca_bundle: str | None = None) -> requests.Session:
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
     session = requests.Session()
     session.verify = verified_ca_bundle(ca_bundle)
+    session.mount("https://", HTTPAdapter(max_retries=Retry(
+        total=2, backoff_factor=0.3, allowed_methods=frozenset({"GET", "HEAD"}),
+        status_forcelist=(429, 502, 503, 504), respect_retry_after_header=False,
+    )))
     return session

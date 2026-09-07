@@ -15,7 +15,7 @@ async def require_internal_api_token(
             detail="Internal API token is not configured",
         )
     if not x_internal_api_token or not hmac.compare_digest(
-        x_internal_api_token, expected
+        x_internal_api_token.encode("utf-8"), expected.encode("utf-8")
     ):
         raise HTTPException(status_code=401, detail="Invalid internal API token")
 

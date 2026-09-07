@@ -17,7 +17,7 @@ class MessageProcessingStatus(StrEnum):
 class InboundMessage(Base):
     __tablename__ = "inbound_messages"
     __table_args__ = (
-        CheckConstraint("source IN ('email')", name="ck_inbound_messages_source"),
+        CheckConstraint("source IN ('email', 'website', 'instagram', 'manual')", name="ck_inbound_messages_source"),
         CheckConstraint(
             "processing_status IN ('received', 'processing', 'processed', 'failed')",
             name="ck_inbound_messages_processing_status",

@@ -37,10 +37,12 @@ class DraftOrder(Base):
             "customer_type IN ('wholesale', 'retail', 'unknown')",
             name="ck_draft_orders_customer_type",
         ),
-        CheckConstraint("source IN ('email')", name="ck_draft_orders_source"),
+        CheckConstraint("source IN ('email', 'website', 'instagram', 'manual')", name="ck_draft_orders_source"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0", default=0)
+    contact_details: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     inbound_message_id: Mapped[int] = mapped_column(
         ForeignKey("inbound_messages.id", ondelete="CASCADE"),
         nullable=False,

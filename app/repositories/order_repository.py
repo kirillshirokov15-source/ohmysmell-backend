@@ -36,8 +36,6 @@ async def create_order(validated_order: dict) -> Order:
         session.add(order)
 
         await session.commit()
-        await session.refresh(order)
-
         return order
 
 
@@ -52,12 +50,13 @@ async def get_order(order_id: int) -> Order | None:
         return result.scalar_one_or_none()
 
 
-async def list_orders() -> list[Order]:
+async def list_orders(limit: int = 50, offset: int = 0) -> list[Order]:
     async with async_session() as session:
         result = await session.execute(
             select(Order)
             .options(selectinload(Order.items))
             .order_by(Order.created_at.desc())
+            .limit(min(max(limit, 1), 100)).offset(max(offset, 0))
         )
         return list(result.scalars().unique().all())
 
@@ -83,8 +82,6 @@ async def set_order_counterparty(
         order.counterparty_name = counterparty_name
 
         await session.commit()
-        await session.refresh(order)
-
         return order
 
 async def set_moysklad_order(

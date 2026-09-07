@@ -76,7 +76,7 @@ class ProductMatchingService:
         full = cls.normalize(value)
         variants = [full] if full else []
         if value:
-            parts = re.split(r"\s+/\s+", value, maxsplit=1)
+            parts = re.split(r"\s*/\s*", value, maxsplit=1)
             if len(parts) == 2 and re.search(r"[А-Яа-яЁё]", parts[1]):
                 primary = cls.normalize(parts[0])
                 if primary and primary not in variants:
@@ -114,6 +114,10 @@ class ProductMatchingService:
         self, products: list[dict], raw_product_text: str, qty: int
     ) -> ProductMatch:
         query = self.normalize(raw_product_text)
+        products = list({p["id"]: p for p in products
+                         if p.get("id") and not p.get("archived")}.values())
+        if not query:
+            return ProductMatch(raw_product_text, qty, ProductMatchStatus.NOT_FOUND, None, ())
 
         article_matches = [
             product
@@ -127,6 +131,13 @@ class ProductMatchingService:
             )
         if len(article_matches) > 1:
             return self._ambiguous(raw_product_text, qty, article_matches, query)
+
+        code_matches = [p for p in products if self.normalize(p.get("code")) == query]
+        if len(code_matches) == 1:
+            return ProductMatch(raw_product_text, qty, ProductMatchStatus.MATCHED,
+                                code_matches[0], ())
+        if code_matches:
+            return self._ambiguous(raw_product_text, qty, code_matches, query)
 
         name_matches = [
             product
@@ -167,12 +178,12 @@ class ProductMatchingService:
         candidates = tuple(
             self._candidate(
                 product,
-                max(
+                max((
                     self._similarity(query, candidate)
                     for candidate in self.normalized_name_variants(
                         product.get("name")
                     )
-                ),
+                ), default=1.0),
             )
             for product in products[: self.candidate_limit]
         )

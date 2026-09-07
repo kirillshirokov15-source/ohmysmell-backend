@@ -5,6 +5,7 @@ from app.repositories.order_repository import (
     set_moysklad_order,
 )
 from app.config.settings import settings
+from app.services.external_operation_service import ExternalOperationService
 
 
 class MoySkladOrderError(Exception):
@@ -12,8 +13,9 @@ class MoySkladOrderError(Exception):
 
 
 class MoySkladOrderService:
-    def __init__(self, client: MoySkladClient | None = None) -> None:
+    def __init__(self, client: MoySkladClient | None = None, operations=None) -> None:
         self.client = client
+        self.operations = operations or ExternalOperationService()
 
     async def create_from_crm_order(self, order_id: int) -> dict:
         if not settings.external_writes_enabled:
@@ -52,7 +54,7 @@ class MoySkladOrderService:
             )
 
         description_parts = [
-            f"Заказ с сайта Oh My Smell #{order.id}",
+            f"Заказ Oh My Smell #{order.id}",
             f"Клиент: {order.customer_name}",
             f"Телефон: {order.phone}",
         ]
@@ -70,12 +72,12 @@ class MoySkladOrderService:
         description = "\n".join(description_parts)
 
         client = self.client or MoySkladClient()
-        result = await AsyncMoySkladGateway(client).create_customer_order(
-            organization_id=settings.moysklad_organization_id,
-            counterparty_id=order.counterparty_id,
-            items=items,
-            description=description,
-        )
+        arguments = dict(organization_id=settings.moysklad_organization_id,
+                         counterparty_id=order.counterparty_id, items=items,
+                         description=description, operation_key=f"customerorder:{order.id}")
+        async def send(arguments):
+            return await AsyncMoySkladGateway(client).create_customer_order(**arguments)
+        result = await self.operations.execute(f"customerorder:{order.id}", arguments, send)
 
         await set_moysklad_order(
             order_id=order.id,

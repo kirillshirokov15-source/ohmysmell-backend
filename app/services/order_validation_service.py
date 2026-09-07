@@ -19,7 +19,7 @@ class OrderValidationService:
         try:
             catalog = self.product_service.get_catalog(
                 customer_type=order.customer_type,
-                strict_pricing=True,
+                strict_pricing=False,
             )
         except (PriceConfigurationError, PriceNotConfiguredError) as error:
             raise OrderValidationError(str(error)) from error
@@ -30,7 +30,7 @@ class OrderValidationService:
         try:
             catalog = await self.product_service.get_catalog_async(
                 customer_type=order.customer_type,
-                strict_pricing=True,
+                strict_pricing=False,
             )
         except (PriceConfigurationError, PriceNotConfiguredError) as error:
             raise OrderValidationError(str(error)) from error
@@ -72,13 +72,15 @@ class OrderValidationService:
 
             price = product.get("price")
 
-            if price is None:
+            if type(price) is not int or price < 0:
                 raise OrderValidationError(
                     f"У товара '{product['name']}' не указана цена"
                 )
 
             item_total = price * qty
             total += item_total
+            if total > 9_223_372_036_854_775_807:
+                raise OrderValidationError("Сумма превышает допустимый предел")
 
             validated_items.append(
                 {

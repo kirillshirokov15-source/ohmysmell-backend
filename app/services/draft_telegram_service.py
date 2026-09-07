@@ -1,4 +1,5 @@
 import os
+import asyncio
 
 from sqlalchemy import select
 
@@ -17,7 +18,7 @@ from app.services.telegram_display import (
 
 def build_draft_card(draft: DraftOrder) -> str:
     lines = [
-        "📨 Новый заказ из почты",
+        "📨 Новый заказ из почты" if getattr(draft, "source", "email") == "email" else "📨 Входящая заявка",
         "",
         f"Черновик №{draft.id}",
         "",
@@ -30,7 +31,8 @@ def build_draft_card(draft: DraftOrder) -> str:
         "Позиции:",
     ]
     for item in draft.items:
-        lines.extend(["", f"• {item.raw_product_text}"])
+        reference = f" (позиция {item.id})" if getattr(item, "id", None) else ""
+        lines.extend(["", f"• {item.raw_product_text}{reference}"])
         if item.price is not None and item.item_total is not None:
             lines.append(
                 f"  {item.qty} шт. × {telegram_rubles(item.price)} "
@@ -40,6 +42,12 @@ def build_draft_card(draft: DraftOrder) -> str:
             lines.append(
                 f"  {item.qty} шт. — {product_match_label(item.match_status)}"
             )
+
+    contact = getattr(draft, "contact_details", None) or {}
+    if contact.get("phone"):
+        lines.append(f"Телефон: {contact['phone']}")
+    if contact.get("comment"):
+        lines.append(f"Комментарий: {contact['comment'][:500]}")
 
     lines.extend([
         "",
@@ -61,7 +69,7 @@ def build_draft_card(draft: DraftOrder) -> str:
     if problems:
         lines.extend(["", "⚠️ Требует проверки:"])
         lines.extend(f"• {problem}" for problem in problems)
-    return "\n".join(lines)
+    return "\n".join(lines)[:4000]
 
 
 def build_draft_keyboard(draft: DraftOrder) -> dict:
@@ -131,32 +139,35 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
         "callback_data": f"draft:reject:{draft.id}",
     })
     rows.append(final_actions)
+    if hasattr(draft, "revision") and isinstance(draft.revision, int):
+        for row in rows:
+            for button in row:
+                button["callback_data"] += f":v{draft.revision}"
+        # Telegram callback data has a 64-byte limit.
+        rows = [row for row in rows if all(len(b["callback_data"].encode()) <= 64 for b in row)]
     return {"inline_keyboard": rows}
 
 
 async def notify_managers_about_draft(draft: DraftOrder) -> int:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
-        return 0
+        raise RuntimeError("Telegram token is not configured")
     async with async_session() as database_session:
         result = await database_session.execute(
             select(Manager).where(Manager.is_active.is_(True))
         )
         managers = result.scalars().all()
 
-    http_session = verified_session()
-    keyboard = build_draft_keyboard(draft)
-    sent_count = 0
-    for manager in managers:
-        response = http_session.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={
-                "chat_id": manager.telegram_id,
-                "text": build_draft_card(draft),
-                "reply_markup": keyboard,
-            },
-            timeout=20,
-        )
-        response.raise_for_status()
-        sent_count += 1
-    return sent_count
+    if not managers:
+        raise RuntimeError("No active Telegram managers")
+    chat_ids = [manager.telegram_id for manager in managers]
+    keyboard, card = build_draft_keyboard(draft), build_draft_card(draft)
+    def send():
+        with verified_session() as http_session:
+            for chat_id in chat_ids:
+                response = http_session.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": chat_id, "text": card, "reply_markup": keyboard}, timeout=(5, 20))
+                if not response.ok:
+                    raise RuntimeError(f"Telegram notification HTTP {response.status_code}")
+        return len(chat_ids)
+    return await asyncio.to_thread(send)

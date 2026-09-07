@@ -122,6 +122,8 @@ class AsyncMoySkladGateway:
         )
 
     async def create_customer_order(self, **kwargs) -> dict:
+        from app.integrations.write_guard import require_external_writes
+        require_external_writes()
         return await self._call(
             "create_customer_order", self.client.create_customer_order, **kwargs
         )

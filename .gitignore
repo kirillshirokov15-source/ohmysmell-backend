@@ -1,5 +1,6 @@
 # Python
 __pycache__/
+.pytest_cache/
 *.py[cod]
 *$py.class
 
@@ -8,6 +9,12 @@ __pycache__/
 
 # Environment
 .env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+.staging-artifacts/
 credentials.json
 token.json
 gmail-credentials.json

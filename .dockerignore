@@ -1,0 +1,11 @@
+.git
+.venv
+.env
+.env.*
+secrets
+.staging-artifacts
+**/__pycache__
+**/*.pem
+**/*.key
+**/*credentials*.json
+**/*token*.json

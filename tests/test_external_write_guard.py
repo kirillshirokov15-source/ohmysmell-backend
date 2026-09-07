@@ -8,6 +8,7 @@ import pytest
 from app.config.settings import Settings, settings
 from app.integrations.moysklad.client import MoySkladClient
 from app.services.draft_order_service import DraftOrderService
+from app.services.external_operation_service import ExternalOperationService
 from app.services.draft_telegram_service import (
     build_draft_card,
     build_draft_keyboard,
@@ -438,7 +439,9 @@ def test_enabling_external_writes_reaches_mocked_integration():
         ) as set_moysklad_order,
     ):
         result = asyncio.run(
-            MoySkladOrderService(client).create_from_crm_order(1)
+            MoySkladOrderService(client, operations=ExternalOperationService(SimpleNamespace(
+                claim=AsyncMock(return_value=None), finish=AsyncMock()
+            ))).create_from_crm_order(1)
         )
 
     assert result["already_exists"] is False

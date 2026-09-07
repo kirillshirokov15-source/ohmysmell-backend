@@ -20,6 +20,7 @@ from app.services.order_lifecycle import OrderStatus
 class Order(Base):
     __tablename__ = "orders"
     __table_args__ = (
+        CheckConstraint("total >= 0", name="ck_orders_total_nonnegative"),
         CheckConstraint(
             "customer_type IN ('wholesale', 'retail', 'unknown')",
             name="ck_orders_customer_type",
@@ -120,6 +121,9 @@ class Order(Base):
 
 class OrderItem(Base):
     __tablename__ = "order_items"
+    __table_args__ = (
+        CheckConstraint("qty > 0 AND price >= 0 AND item_total = price * qty", name="ck_order_items_money_quantity"),
+    )
 
     id: Mapped[int] = mapped_column(
         primary_key=True,

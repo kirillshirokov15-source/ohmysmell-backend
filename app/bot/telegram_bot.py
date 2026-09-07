@@ -14,7 +14,8 @@ from aiogram.types import (
     KeyboardButton,
     ReplyKeyboardRemove,
 )
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
+from app.services.order_lifecycle import InvalidOrderTransitionError
 from app.models.sales import CustomerType
 from app.repositories.draft_order_repository import DraftOrderRepository
 from app.services.draft_order_service import DraftOrderError, DraftOrderService
@@ -155,7 +156,13 @@ async def new_orders_handler(message: Message):
     if not await check_access(message):
         return
 
-    await message.answer("📦 Новых заказов пока нет.")
+    drafts = await DraftOrderRepository().list(limit=10, active_only=True)
+    if not drafts:
+        await message.answer("Новых черновиков нет.")
+    for draft in drafts:
+        await message.answer(build_draft_card(draft), reply_markup=InlineKeyboardMarkup.model_validate(build_draft_keyboard(draft)))
+    if len(drafts) == 10:
+        await message.answer("Показаны 10 последних. /drafts 10 — следующая страница.")
 
 
 @dp.message(F.text == "📋 Все заказы")
@@ -163,7 +170,10 @@ async def all_orders_handler(message: Message):
     if not await check_access(message):
         return
 
-    await message.answer("📋 Список заказов пока пуст.")
+    from app.repositories.order_repository import list_orders
+    from app.services.telegram_display import telegram_rubles
+    orders = await list_orders(limit=20)
+    await message.answer("\n".join(f"№{o.id} · {o.customer_name[:80]} · {telegram_rubles(o.total)} · {o.status}" for o in orders)[:4000] or "Заказов пока нет.")
 
 
 @dp.message(F.text == "👥 Контрагенты")
@@ -171,7 +181,9 @@ async def contractors_handler(message: Message):
     if not await check_access(message):
         return
 
-    await message.answer("👥 Контрагенты будут подключены после интеграции с МойСклад.")
+    from app.services.counterparty_matching_service import CounterpartyMatchingService
+    candidates = await CounterpartyMatchingService().fallback_candidates_async()
+    await message.answer("Последние контрагенты:\n" + "\n".join(str(c.get("name") or "Без имени")[:100] for c in candidates[:20]))
 
 
 @dp.message(F.text == "📦 Остатки")
@@ -179,7 +191,9 @@ async def stock_handler(message: Message):
     if not await check_access(message):
         return
 
-    await message.answer("📦 Остатки будут доступны после подключения МойСклад.")
+    from app.services.product_service import ProductService
+    catalog = await ProductService().get_catalog_async()
+    await message.answer("Остатки МойСклад (первые 20 товаров):\n" + "\n".join(f"{p['name'][:100]}: {p['total_available']} шт." for p in catalog[:20]))
 
 
 @dp.message(F.text == "⚙️ Настройки")
@@ -187,7 +201,38 @@ async def settings_handler(message: Message):
     if not await check_access(message):
         return
 
-    await message.answer("⚙️ Настройки CRM пока не добавлены.")
+    from app.config.settings import settings
+    await message.answer("Настройки CRM\n"
+        f"Среда: {settings.environment}\n"
+        f"Внешние записи: {'включены' if settings.external_writes_enabled else 'выключены'}\n"
+        f"Розничный прайс: {'настроен' if settings.moysklad_retail_price_type else 'требует настройки'}")
+
+
+@dp.message(Command("drafts"))
+async def drafts_page(message: Message):
+    if not await check_access(message):
+        return
+    try:
+        offset = max(int((message.text or "").split()[1]), 0)
+    except (ValueError, IndexError):
+        offset = 0
+    drafts = await DraftOrderRepository().list(limit=10, offset=offset, active_only=True)
+    for draft in drafts:
+        await message.answer(build_draft_card(draft), reply_markup=InlineKeyboardMarkup.model_validate(build_draft_keyboard(draft)))
+    await message.answer(f"Следующая страница: /drafts {offset + 10}" if len(drafts) == 10 else "Конец списка.")
+
+
+@dp.message(Command("match"))
+async def search_product_for_draft(message: Message):
+    if not await check_access(message):
+        return
+    try:
+        _, draft_id, item_id, query = (message.text or "").split(maxsplit=3)
+        await message.answer("Ищу варианты товара…")
+        draft = await DraftOrderService().search_item(int(draft_id), int(item_id), query)
+        await message.answer(build_draft_card(draft), reply_markup=InlineKeyboardMarkup.model_validate(build_draft_keyboard(draft)))
+    except (ValueError, DraftOrderError, InvalidOrderTransitionError):
+        await message.answer("Формат: /match НОМЕР_ЧЕРНОВИКА НОМЕР_ПОЗИЦИИ название или артикул")
 
 
 @dp.callback_query(F.data.startswith("draft:"))
@@ -246,6 +291,8 @@ async def draft_callback_handler(callback: CallbackQuery):
             draft_id=draft_id,
         )
         service = DraftOrderService()
+        if parts[-1].startswith("v") and parts[-1][1:].isdigit():
+            service.repository.expected_revision = int(parts[-1][1:])
         draft = None
         if action == "type":
             customer_type = CustomerType(parts[2])
@@ -268,6 +315,7 @@ async def draft_callback_handler(callback: CallbackQuery):
                 )
                 for item in ambiguous
             ) or "Неоднозначных позиций нет"
+            text += f"\n\nПоиск товара: /match {draft_id} НОМЕР_ПОЗИЦИИ название или артикул"
             if callback.message:
                 await callback.message.answer(text)
         elif action == "product":
@@ -333,9 +381,17 @@ async def draft_callback_handler(callback: CallbackQuery):
                 ),
             )
         outcome = "success"
-    except (ValueError, IndexError, DraftOrderError) as error:
-        logger.warning("Telegram callback rejected: %s", error)
+    except (ValueError, IndexError, DraftOrderError, InvalidOrderTransitionError) as error:
+        logger.warning("Telegram callback rejected error_type=%s", type(error).__name__)
+        if callback.message:
+            await callback.message.answer("Действие не выполнено: обновите черновик через «Новые заказы». Проверьте тип клиента, товары и цены.")
         outcome = "rejected"
+    except TelegramBadRequest:
+        raise
+    except Exception as error:
+        logger.warning("Telegram callback failed error_type=%s", type(error).__name__)
+        if callback.message:
+            await callback.message.answer("Сервис временно недоступен. Повторите действие позже; подтверждение заказа защищено от дублирования.")
     finally:
         if action_started_at is not None:
             log_event(

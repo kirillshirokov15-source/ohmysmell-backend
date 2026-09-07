@@ -8,22 +8,22 @@ from app.models.sales import (
 
 
 class OrderItem(BaseModel):
-    id: str
-    qty: int = Field(gt=0)
+    id: str = Field(min_length=1, max_length=255, pattern=r"^[A-Za-z0-9_-]+$")
+    qty: int = Field(strict=True, gt=0, le=10000)
 
 
 class OrderCreate(BaseModel):
     _customer_type_explicit: bool = PrivateAttr(default=False)
 
-    customer_name: str
-    phone: str
+    customer_name: str = Field(min_length=1, max_length=255)
+    phone: str = Field(max_length=100)
     customer_type: CustomerType | None = None
     source: OrderSource = OrderSource.WEBSITE
     email: str | None = None
     instagram_username: str | None = None
     telegram: str | None = None
     comment: str | None = None
-    items: list[OrderItem] = Field(min_length=1)
+    items: list[OrderItem] = Field(min_length=1, max_length=100)
 
     def model_post_init(self, context: object) -> None:
         self._customer_type_explicit = "customer_type" in self.model_fields_set

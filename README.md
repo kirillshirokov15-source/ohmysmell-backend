@@ -1,129 +1,42 @@
-# OhMySmell Backend
+﻿# OhMySmell Backend / CRM
 
-FastAPI backend for sales orders, customer identities, email draft ingestion,
-Telegram manager review, and explicitly triggered MoySklad export.
+FastAPI + async SQLAlchemy/PostgreSQL, Telegram manager review, email ingestion,
+server-authoritative pricing and local warehouse fulfillment plans.
 
-## Local development
+- [Architecture and flows](docs/ARCHITECTURE.md)
+- [Tilda API contract](docs/TILDA.md)
+- [OpenAPI snapshot](docs/openapi.json)
+- [Environments, migration, launch and rollback](docs/OPERATIONS.md)
+- [Audit findings](docs/STAGING_AUDIT.md)
+- [Finish report](docs/FINISH_REPORT.md)
 
-Copy `.env.example` to `.env` and provide local or staging credentials. Never
-commit `.env`, Gmail OAuth credentials, Gmail tokens, or service tokens.
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-```
-
-## Tests
+Use the project virtual environment:
 
 ```powershell
+.\.venv\Scripts\python.exe -m scripts.install_dependencies
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m compileall -q app tests alembic scripts
 ```
 
-Tests use fake providers and do not write to Gmail, Telegram, MoySklad, or
-production PostgreSQL.
-
-## FastAPI
+Copy .env.example to .env and configure an explicitly selected local/staging DB.
+Never commit credentials or use production DB for experiments.
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
+.\.venv\Scripts\python.exe -m scripts.staging_probe
+.\.venv\Scripts\python.exe -m scripts.validate_staging
+.\.venv\Scripts\python.exe -m scripts.run_staging_tests
+.\.venv\Scripts\python.exe -m app.api.staging_runner
 ```
 
-Manager/internal endpoints require `X-Internal-API-Token`. Debug endpoints
-also require `DEBUG_ENDPOINTS_ENABLED=true`; they return 404 by default.
+The local staging API listens at http://127.0.0.1:8001; /docs describes schemas.
+For the bot use the project interpreter with -m app.bot.staging_runner.
+Use one poller per token. Workers and deployment are described in OPERATIONS.md.
 
-External business-data writes are disabled by default with
-`EXTERNAL_WRITES_ENABLED=false`. Read-only MoySklad catalog, stock,
-counterparty, organization, and health operations remain available. Enable
-external writes only through an explicit environment setting after staging
-verification.
+EXTERNAL_WRITES_ENABLED=false and PUBLIC_CHECKOUT_ENABLED=false are safe defaults.
+The staging API runner enables only staging checkout. Finalize creates only a
+local order; warehouse allocations are plans, not external reservations.
+The confirmed wholesale price type is Цена продажи. Retail has no fallback and
+remains in manager review until its own price is configured.
 
-## Email worker
-
-Create a Google OAuth Desktop application with only the Gmail read-only scope.
-Store its JSON outside the repository and configure `GMAIL_CREDENTIALS_FILE`
-and `GMAIL_TOKEN_FILE`.
-
-```powershell
-.\.venv\Scripts\python.exe -m app.workers.email_ingestion
-```
-
-The first OAuth run opens user consent. The worker never sends mail, modifies
-labels, marks messages read, deletes, or archives. It persists Gmail
-`historyId` in PostgreSQL and retains `external_message_id` uniqueness as the
-last idempotency boundary.
-
-Without Gmail access, run one explicit staging-only message through the same
-ingestion pipeline:
-
-```powershell
-.\.venv\Scripts\python.exe -m app.workers.staging_fake_email
-```
-
-The command requires a distinct `STAGING_DATABASE_URL` and
-`EXTERNAL_WRITES_ENABLED=false`. It is never started automatically. It uses
-the existing fake provider, read-only MoySklad matching/pricing, local draft
-storage, and the normal Telegram manager notification.
-
-## Telegram bot
-
-Normal environment:
-
-```powershell
-.\.venv\Scripts\python.exe run_bot.py
-```
-
-Explicit staging environment (never falls back to `DATABASE_URL`):
-
-```powershell
-.\.venv\Scripts\python.exe -m app.bot.staging_runner
-```
-
-The staging runner requires distinct `STAGING_DATABASE_URL` and
-`DATABASE_URL` values and refuses to start unless
-`EXTERNAL_WRITES_ENABLED=false`. It prints only the selected database host
-and read-only presence checks for staging manager `898019732` and draft `#2`.
-It never prints database credentials or the Telegram token.
-
-Telegram users must be active rows in `managers`. Review callbacks call the
-same draft services used by the internal API. Finalize creates only a local
-order and never creates a MoySklad customer order automatically.
-
-## Migrations: fresh database
-
-Create a new empty PostgreSQL database, point `DATABASE_URL` to it, and run:
-
-```powershell
-.\.venv\Scripts\python.exe -m alembic upgrade head
-```
-
-The additive `f01a2b3c4d5e` reconciliation baseline creates historical
-`orders`/`order_items`; the normal chain builds the complete schema. Money
-columns contain integer minor units (kopecks) at head.
-
-## Existing production database procedure
-
-Do not run this procedure without a backup and reviewed schema dump.
-
-1. Stop application writes and make a verified backup.
-2. Inspect `alembic_version`; compare actual objects to models and migrations.
-3. If the legacy DB has `managers`, `orders`, and `order_items` but no version,
-   stamp only `d678cecfa969` after verifying the managers schema.
-4. Review migration SQL and the reconciliation checks.
-5. Pay special attention to `d38f9a21bc54`: it assumes historical monetary
-   integers are rubles and multiplies them by 100 while converting to BIGINT.
-6. Restore a production backup into disposable staging PostgreSQL and run
-   `alembic upgrade head` there first.
-7. Validate row counts, totals, foreign keys, constraints, and smoke tests.
-8. Only then schedule the production upgrade.
-
-Never blindly stamp `head`: stamping does not create missing customer, draft,
-cursor, or constraint objects.
-
-## Required environment variables
-
-See `.env.example`. Staging requires PostgreSQL, MoySklad read access,
-Telegram, Gmail OAuth paths, a strong internal API token, and a polling
-interval. `MOYSKLAD_WHOLESALE_PRICE_TYPE=Цена продажи` is the confirmed
-wholesale mapping. Retail pricing remains unconfigured and must never fall
-back to wholesale.
+Real Gmail OAuth, production migrations/deployment, Tilda connection, delivery
+orders and MoySklad writes require their separate activation steps.

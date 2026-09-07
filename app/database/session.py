@@ -27,6 +27,10 @@ elif sslmode == "disable":
 engine = create_async_engine(
     url,
     echo=False,
+    pool_pre_ping=True,
+    pool_size=5,
+    max_overflow=5,
+    pool_timeout=15,
     connect_args=connect_args,
 )
 

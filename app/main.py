@@ -1,4 +1,14 @@
 import logging
+from contextlib import asynccontextmanager
+from app.config.settings import settings
+
+
+@asynccontextmanager
+async def lifespan(app):
+    settings.validate_runtime()
+    yield
+    from app.database.session import engine
+    await engine.dispose()
 
 from fastapi import Depends, FastAPI, HTTPException
 from app.api.auth import require_debug_access, require_internal_api_token
@@ -31,8 +41,14 @@ from app.services.moysklad_order_service import (
 
 app = FastAPI(
     title="OhMySmell API",
-    version="0.1.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
+from app.api.public import router as public_router
+app.include_router(public_router)
+from app.api.safety import install_error_handlers, RequestSafetyMiddleware
+install_error_handlers(app)
+app.add_middleware(RequestSafetyMiddleware)
 from app.services.customer_resolution_service import (
     CustomerResolutionError,
     CustomerResolutionService,
@@ -89,6 +105,7 @@ def serialize_draft(draft):
         "source": draft.source,
         "status": draft.status,
         "sender_email": draft.sender_email,
+        "contact_details": draft.contact_details,
         "customer_name": draft.customer_name,
         "subject": draft.subject,
         "counterparty_id": draft.counterparty_id,
@@ -130,13 +147,10 @@ def serialize_draft(draft):
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5500",
-        "http://127.0.0.1:5500",
-    ],
+    allow_origins=settings.cors_origins,
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Idempotency-Key", "X-Internal-API-Token"],
 )
 
 
@@ -151,13 +165,15 @@ def root():
 @app.get("/health/db")
 async def health_db():
     is_connected = await check_database_connection()
+    if not is_connected:
+        raise HTTPException(503, detail="Database unavailable")
 
     return {
         "database": "connected" if is_connected else "not connected"
     }
 
 
-@app.post("/orders")
+@app.post("/orders", dependencies=[Depends(require_internal_api_token)])
 async def create_order(order: OrderCreate):
     try:
         customer = await CustomerResolutionService().resolve(order)
@@ -190,7 +206,7 @@ async def create_order(order: OrderCreate):
             validated_order,
         )
     except Exception:
-        logger.exception(
+        logger.warning(
             "Order %s was saved, but Telegram notification failed",
             saved_order.id,
         )
@@ -213,12 +229,12 @@ def health_moysklad():
         "employee_name": employee.get("name"),
     }
 
-@app.get("/products")
-def get_products():
+@app.get("/products", deprecated=True)
+async def get_products():
     service = ProductService()
 
     return {
-        "products": service.get_catalog()
+        "products": await service.get_catalog_async()
     }
 
 @app.get("/stores", dependencies=[Depends(require_internal_api_token)])
@@ -450,3 +466,22 @@ async def finalize_draft_order(draft_id: int):
     except DraftOrderError as error:
         raise HTTPException(status_code=400, detail=str(error))
     return {"success": True, "order": serialize_order(order)}
+
+
+@app.post("/orders/{order_id}/allocations", dependencies=[Depends(require_internal_api_token)])
+async def plan_order_allocations(order_id: int):
+    from app.services.fulfillment_service import FulfillmentService
+    from app.services.stock_allocation import StockAllocationError
+    try:
+        shipments = await FulfillmentService().plan(order_id)
+    except StockAllocationError as error:
+        raise HTTPException(409, detail=str(error)) from error
+    return {"order_id": order_id, "inventory_reserved": False, "shipments": [
+        {"id": s.id, "warehouse_id": s.warehouse_id, "status": s.status,
+         "allocations": [{"order_item_id": a.order_item_id, "qty": a.qty} for a in s.allocations]}
+        for s in shipments]}
+
+
+@app.post("/draft-orders/{draft_id}/items/{item_id}/candidates", dependencies=[Depends(require_internal_api_token)])
+async def propose_draft_candidates(draft_id: int, item_id: int, query: str):
+    return serialize_draft(await DraftOrderService().search_item(draft_id, item_id, query))

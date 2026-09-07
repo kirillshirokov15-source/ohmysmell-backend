@@ -77,7 +77,7 @@ class TestMoney:
         response = Mock()
         response.raise_for_status.return_value = None
         response.json.return_value = {"id": "order-1"}
-        with patch.object(client.session, "post", return_value=response) as post:
+        with patch.object(settings, "external_writes_enabled", True), patch.object(client.session, "post", return_value=response) as post:
             client.create_customer_order(
                 "org", "counterparty", [{"id": "p1", "qty": 2, "price": 9999}]
             )
@@ -328,7 +328,7 @@ class TestFreshSchema:
         from alembic.script import ScriptDirectory
 
         scripts = ScriptDirectory.from_config(Config("alembic.ini"))
-        assert scripts.get_heads() == ["f59b1c43de76"]
+        assert scripts.get_heads() == ["i82c4f76ab09"]
         sales_revision = scripts.get_revision("a84f1b92c301")
         assert sales_revision.dependencies == "f01a2b3c4d5e"
 

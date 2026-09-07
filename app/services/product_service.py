@@ -11,6 +11,7 @@ from app.services.price_service import (
     PriceService,
 )
 from app.services.money import format_rubles
+from app.services.stock_allocation import available_units
 
 
 class ProductService:
@@ -113,7 +114,7 @@ class ProductService:
                 store_href = store_stock.get("meta", {}).get("href")
                 store_id = self._extract_id_from_href(store_href)
 
-                if not store_id:
+                if not store_id or store_id not in active_stores:
                     continue
 
                 stock = store_stock.get("stock", 0) or 0
@@ -125,7 +126,7 @@ class ProductService:
                     "name": store_stock.get("name"),
                     "stock": stock,
                     "reserve": reserve,
-                    "available": max(stock - reserve, 0),
+                    "available": available_units(stock, reserve),
                     "in_transit": in_transit,
                 }
 

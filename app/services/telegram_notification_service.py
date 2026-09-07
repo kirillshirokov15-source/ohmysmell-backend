@@ -1,6 +1,7 @@
 import os
 
-import requests
+import asyncio
+from app.integrations.http_tls import verified_session
 from sqlalchemy import select
 
 from app.database.session import async_session
@@ -42,14 +43,12 @@ async def notify_managers(order_id: int, order: dict) -> None:
     if order.get("comment"):
         message += f"\n\n💬 {order['comment']}"
 
-    for manager in managers:
-        response = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={
-                "chat_id": manager.telegram_id,
-                "text": message,
-            },
-            timeout=20,
-        )
-
-        response.raise_for_status()
+    chat_ids = [manager.telegram_id for manager in managers]
+    def send():
+        with verified_session() as http:
+            for chat_id in chat_ids:
+                response = http.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                    json={"chat_id": chat_id, "text": message[:4000]}, timeout=(5, 20))
+                if not response.ok:
+                    raise RuntimeError(f"Telegram notification HTTP {response.status_code}")
+    await asyncio.to_thread(send)

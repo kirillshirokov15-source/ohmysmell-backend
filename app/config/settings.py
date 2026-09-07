@@ -5,14 +5,42 @@ load_dotenv()
 
 
 class Settings:
+    def validate_runtime(self):
+        if self.environment == "staging" and self.external_writes_enabled:
+            raise ValueError("External writes cannot be enabled in staging")
+        if self.environment == "production":
+            if len(self.internal_api_token) < 32:
+                raise ValueError("Production requires a strong INTERNAL_API_TOKEN")
+            if self.debug_endpoints_enabled:
+                raise ValueError("Production debug endpoints must remain disabled")
+            if not self.cors_origins or any(not origin.startswith("https://") or "localhost" in origin
+                                            or "REPLACE" in origin for origin in self.cors_origins):
+                raise ValueError("Production requires explicit final HTTPS CORS origins")
+        if self.external_writes_enabled and not self.moysklad_organization_id:
+            raise ValueError("External writes require MOYSKLAD_ORGANIZATION_ID")
+
     app_name: str = os.getenv("APP_NAME", "OhMySmell CRM")
     database_url: str = os.getenv("DATABASE_URL", "")
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     moysklad_organization_id: str = os.getenv(
         "MOYSKLAD_ORGANIZATION_ID",
-        "ef8e60b2-c856-11f0-0a80-00b00020eed1",
+        "",
     )
     def __init__(self) -> None:
+        self.environment = os.getenv("APP_ENV", "development")
+        if self.environment not in {"development", "staging", "production"}:
+            raise ValueError("APP_ENV must be development, staging or production")
+        self.cors_origins = [v.strip() for v in os.getenv(
+            "CORS_ORIGINS", "http://localhost:5500,http://127.0.0.1:5500"
+        ).split(",") if v.strip()]
+        if "*" in self.cors_origins:
+            raise ValueError("Explicit CORS origins are required")
+        self.warehouse_ids = tuple(dict.fromkeys(v.strip() for v in os.getenv(
+            "MOYSKLAD_WAREHOUSE_IDS", "").split(",") if v.strip()))
+        self.public_checkout_enabled = os.getenv("PUBLIC_CHECKOUT_ENABLED", "false").lower() == "true"
+        self.delivery_cdek_client_id = os.getenv("CDEK_CLIENT_ID", "")
+        self.delivery_cdek_client_secret = os.getenv("CDEK_CLIENT_SECRET", "")
+        self.delivery_yandex_token = os.getenv("YANDEX_DELIVERY_TOKEN", "")
         self.moysklad_wholesale_price_type = os.getenv(
             "MOYSKLAD_WHOLESALE_PRICE_TYPE",
             "Цена продажи",

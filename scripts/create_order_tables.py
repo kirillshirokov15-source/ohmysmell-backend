@@ -1,17 +1,3 @@
-import asyncio
-
-from app.database.base import Base
-from app.database.session import engine
-
-import app.models
-
-
-async def main():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    print("Order tables created successfully")
-
-
+﻿"""Retired legacy schema writer. Use reviewed Alembic migrations."""
 if __name__ == "__main__":
-    asyncio.run(main())
+    raise SystemExit("Legacy schema mutation is disabled. Use Alembic and docs/OPERATIONS.md.")

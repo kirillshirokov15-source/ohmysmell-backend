@@ -41,13 +41,13 @@ class EmailIngestionWorker:
                 )
             except Exception as error:
                 stats["failed"] += 1
-                logger.exception(
+                logger.warning(
                     '{"event":"email_ingestion_error","message_id":"%s",'
                     '"error_type":"%s"}',
                     message.external_message_id,
                     type(error).__name__,
                 )
-        if batch.next_cursor:
+        if batch.next_cursor and not stats["failed"]:
             await self.cursor_repository.set(
                 self.provider_name, batch.next_cursor
             )
@@ -60,7 +60,7 @@ class EmailIngestionWorker:
             try:
                 await self.run_once()
             except Exception as error:
-                logger.exception(
+                logger.warning(
                     '{"event":"email_poll_error","error_type":"%s"}',
                     type(error).__name__,
                 )

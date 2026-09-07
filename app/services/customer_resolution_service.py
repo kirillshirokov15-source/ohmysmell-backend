@@ -108,6 +108,8 @@ class CustomerResolutionService:
         email: str,
         display_name: str | None = None,
     ) -> CustomerResolution:
+        if not email or "@" not in email or len(email) > 320:
+            raise CustomerResolutionError("Не указан корректный email отправителя")
         email_identity = (
             CustomerIdentityType.EMAIL,
             self.normalize(CustomerIdentityType.EMAIL, email),
@@ -131,9 +133,18 @@ class CustomerResolutionService:
                 identities=[email_identity],
             )
         except DuplicateCustomerIdentityError as error:
-            raise CustomerResolutionError(
-                "Клиент с таким email был создан параллельно; повторите обработку"
-            ) from error
+            customers = await self.repository.find_by_identities(
+                [(email_identity[0], email_identity[1])]
+            )
+            if not customers:
+                raise CustomerResolutionError("Повторите обработку email") from error
+            customer = customers[0]
+            return CustomerResolution(
+                customer_id=customer.id,
+                customer_type=CustomerType(customer.customer_type),
+                moysklad_counterparty_id=customer.moysklad_counterparty_id,
+                identities=self._identity_values(customer),
+            )
         return CustomerResolution(
             customer_id=customer.id,
             customer_type=CustomerType.UNKNOWN,
@@ -174,10 +185,7 @@ class CustomerResolutionService:
             customer = customers[0]
             customer_type = CustomerType(customer.customer_type)
 
-            # Explicit type is treated as verified input and has priority.
-            if order.customer_type_explicit and order.customer_type != customer_type:
-                customer_type = CustomerType(order.customer_type)
-                await self.repository.update_customer_type(customer.id, customer_type)
+            # Existing profiles change only through authenticated manager review.
 
             existing = {
                 (CustomerIdentityType(identity.identity_type), identity.normalized_value)
@@ -221,4 +229,5 @@ class CustomerResolutionService:
             customer_id=customer.id,
             customer_type=customer_type,
             moysklad_counterparty_id=customer.moysklad_counterparty_id,
+            created=True,
         )

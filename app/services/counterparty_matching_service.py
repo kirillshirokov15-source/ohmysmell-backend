@@ -30,7 +30,7 @@ class CounterpartyMatchingService:
                 continue
             for item in self.provider.search_counterparties(query.strip()):
                 item_id = item.get("id")
-                if not item_id:
+                if not item_id or item.get("archived"):
                     continue
                 candidates[item_id] = self._candidate(item)
             if candidates:
@@ -45,7 +45,7 @@ class CounterpartyMatchingService:
             items = await self.async_gateway.search_counterparties(query.strip())
             for item in items:
                 item_id = item.get("id")
-                if item_id:
+                if item_id and not item.get("archived"):
                     candidates[item_id] = self._candidate(item)
             if candidates:
                 break
@@ -58,7 +58,7 @@ class CounterpartyMatchingService:
         return [
             self._candidate(item)
             for item in self.provider.get_recent_counterparties(limit=10)
-            if item.get("id")
+            if item.get("id") and not item.get("archived")
         ][:10]
 
     async def fallback_candidates_async(
@@ -71,5 +71,5 @@ class CounterpartyMatchingService:
         return [
             self._candidate(item)
             for item in recent
-            if item.get("id")
+            if item.get("id") and not item.get("archived")
         ][:10]
