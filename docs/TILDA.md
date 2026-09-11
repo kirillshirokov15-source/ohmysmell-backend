@@ -1,7 +1,8 @@
 # Контракт для Tilda-разработчика: OhMySmell API v1
 
-Tilda пока не подключена. Сайт обращается к HTTPS backend; адрес staging и
-финальный production origin передаст владелец. Токены CRM в браузер не передавать.
+Tilda пока не подключена. Проверенный staging backend:
+`https://ohmysmell-backend-staging-staging.up.railway.app`.
+Финальный production origin задаётся отдельно. Токены CRM в браузер не передавать.
 Схемы: `/openapi.json`, интерактивная спецификация: `/docs`.
 
 ## Каталог
@@ -109,6 +110,22 @@ async function submitSavedRequest() {
 }
 ```
 
+Для staging в примере используйте
+`https://ohmysmell-backend-staging-staging.up.railway.app`.
+В staging включён `PUBLIC_CHECKOUT_ENABLED=true`; разрешены origins
+`http://localhost:5500`, `http://127.0.0.1:5500` и тестовый
+`https://ohmysmell-staging.example.invalid`. Последний — только placeholder для
+preflight, сайт на нём не размещён. Перед подключением Tilda добавьте точный
+HTTPS origin её тестовой страницы в staging `CORS_ORIGINS` и примените redeploy.
+Cookies не используются (`allow_credentials=False`). Internal token не нужен
+ни для каталога, ни для checkout и не должен попадать в Tilda-код.
+
+В этом staging нет Telegram worker/poller: уведомления остаются в локальной
+очереди. Проверить заявку можно через защищённые `/draft-orders` и
+`/draft-orders/{id}` на стороне менеджера. Без розничного прайса local finalize
+отклоняется: подключение сайта возможно в режиме «Цена по запросу / заявка»,
+автоматическую оплату или подтверждённый розничный Order этот контракт не обещает.
+
 ## Перед подключением
 
 1. Передать владельцу точные HTTPS origins опубликованного сайта и preview, если
@@ -118,8 +135,9 @@ async function submitSavedRequest() {
    оплату по `total_minor=null` или до подтверждения цены менеджером.
 4. На staging проверить пагинацию, «Цена по запросу», отсутствие товара, двойной
    submit, timeout/retry, 409, 422, disabled checkout и мобильный UX.
-5. Владелец отдельно включает `PUBLIC_CHECKOUT_ENABLED=true`, настраивает HTTPS,
-   ограничение частоты/защиту от ботов на reverse proxy и production migration.
+5. Для production требуется отдельное разрешение на включение
+   `PUBLIC_CHECKOUT_ENABLED=true`, HTTPS, ограничение частоты/защиту от ботов
+   на reverse proxy и проверенную production migration. Staging checkout уже включён.
 6. Не использовать legacy `/orders` — теперь это защищённый внутренний endpoint.
 
 Никаких изменений Tilda в рамках подготовки backend не выполнялось.

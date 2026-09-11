@@ -25,8 +25,10 @@ STAGING_DATABASE_URL и DATABASE_URL до импорта DB engine, production c
 Читать его только локально, не передавать в браузер/логи/Git.
 
 В отдельном Railway staging deployment DATABASE_URL должен указывать именно на
-staging DB, APP_ENV=staging, EXTERNAL_WRITES_ENABLED=false; использовать отдельный
-Telegram token. Локальные scripts используют исходный DATABASE_URL только для
+staging DB, APP_ENV=staging, EXTERNAL_WRITES_ENABLED=false. Telegram token нужен
+только при отдельном включении уведомлений/bot; API без него сохраняет заявки и
+notification intents. Для bot требуется отдельный staging token.
+Локальные scripts используют исходный DATABASE_URL только для
 проверки различия сред. Не подменять им production для экспериментов.
 
 | Процесс | Команда после явной настройки среды |
@@ -39,7 +41,14 @@ Telegram token. Локальные scripts используют исходный
 Один poller на Telegram token. Staging bot runner очищает pending updates; не
 использовать общий production token при параллельном production poller.
 Dockerfile запускает API непривилегированным пользователем без secrets и auto
-migrations. Docker build/deploy не выполнялись. Workers запускаются отдельно.
+migrations. Проверенный remote staging использует этот Dockerfile; результаты
+приёмки приведены в `docs/REMOTE_STAGING_ACCEPTANCE.md`. Workers запускаются отдельно.
+
+API startup включает INFO-логи только для `app`, отправляя их в stdout.
+`api_request_completed` содержит route template и duration_ms; MoySklad gateway
+пишет duration/cache hit/miss, `/health/db` — `database_health_completed` с
+duration_ms, connected и только классом ошибки. SQL echo и подробные HTTP-логи
+зависимостей не включаются; credentials и текст ошибок подключения не логируются.
 
 ## ENV reference
 
@@ -115,8 +124,8 @@ downgrade новых миграций запрещён; старый money downg
 
 ## Production launch checklist
 
-- Сменить DB credential, отобразившийся в диагностическом traceback во время
-  аудита; обновляет владелец разрешённым способом. В Git секрет не попал.
+- DB credential из прежнего аудита уже rotated перед remote acceptance;
+  повторно не использовать старое значение. В Git секрет не попал.
 - Подтвердить production URL, migration, backup/PITR и rollback.
 - HTTPS, реальные Tilda CORS origins, доверенные proxy headers, ограничение частоты
   и anti-bot checkout на reverse proxy/WAF. CORS не заменяет auth.

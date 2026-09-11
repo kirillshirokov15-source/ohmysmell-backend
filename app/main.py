@@ -6,6 +6,8 @@ from app.config.settings import settings
 @asynccontextmanager
 async def lifespan(app):
     settings.validate_runtime()
+    from app.logging_utils import configure_application_logging
+    configure_application_logging()
     yield
     from app.database.session import engine
     await engine.dispose()

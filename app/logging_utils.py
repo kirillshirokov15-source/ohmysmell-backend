@@ -1,5 +1,17 @@
 import json
 import logging
+import sys
+
+
+def configure_application_logging() -> None:
+    """Expose application metrics without enabling verbose dependency logs."""
+    logger = logging.getLogger("app")
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
+        logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 
 def log_event(logger: logging.Logger, event: str, **fields) -> None:

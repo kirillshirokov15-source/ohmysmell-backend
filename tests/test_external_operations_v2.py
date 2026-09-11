@@ -97,3 +97,26 @@ def test_yandex_mock_adapter_does_not_accept_claim_automatically(monkeypatch):
     assert asyncio.run(YandexDeliveryAdapter(session).create(delivery("yandex")))["id"] == "claim-1"
     session.post.assert_called_once()
     assert session.post.call_args.kwargs["params"]["request_id"] == "a" * 32
+
+
+@pytest.mark.parametrize("adapter,provider", [(CDEKDeliveryAdapter, "cdek"), (YandexDeliveryAdapter, "yandex")])
+def test_delivery_without_credentials_never_calls_transport(monkeypatch, adapter, provider):
+    from app.integrations.delivery import DeliveryConfigurationError
+    # Only in this network-blocked unit test, get past the write guard to test
+    # the independent credential gate. No real runtime configuration changes.
+    monkeypatch.setattr(settings, "environment", "development")
+    monkeypatch.setattr(settings, "external_writes_enabled", True)
+    monkeypatch.setattr(settings, "delivery_cdek_client_id", "")
+    monkeypatch.setattr(settings, "delivery_cdek_client_secret", "")
+    monkeypatch.setattr(settings, "delivery_yandex_token", "")
+    session = Mock()
+    with pytest.raises(DeliveryConfigurationError):
+        asyncio.run(adapter(session).create(delivery(provider)))
+    session.post.assert_not_called()
+
+
+def test_manual_courier_returns_local_dispatch_reference(monkeypatch):
+    monkeypatch.setattr(settings, "environment", "development")
+    monkeypatch.setattr(settings, "external_writes_enabled", True)
+    result = asyncio.run(ManualCourierAdapter().create(delivery("manual")))
+    assert result == {"id": "manual:" + "a" * 32, "status": "awaiting_dispatch"}
