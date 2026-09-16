@@ -214,6 +214,17 @@
         "operationId": "create_order_orders_post",
         "parameters": [
           {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "title": "Idempotency-Key"
+            }
+          },
+          {
             "name": "x-internal-api-token",
             "in": "header",
             "required": false,
@@ -851,7 +862,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OrderRead"
+                }
               }
             }
           },
@@ -1446,6 +1459,133 @@
           }
         }
       }
+    },
+    "/orders/{order_id}/actions": {
+      "post": {
+        "summary": "Order Action",
+        "operationId": "order_action_orders__order_id__actions_post",
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Order Id"
+            }
+          },
+          {
+            "name": "x-manager-telegram-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "X-Manager-Telegram-Id"
+            }
+          },
+          {
+            "name": "x-internal-api-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Api-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderAction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orders/{order_id}/events": {
+      "get": {
+        "summary": "Order Events",
+        "operationId": "order_events_orders__order_id__events_get",
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Order Id"
+            }
+          },
+          {
+            "name": "x-internal-api-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Api-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1787,6 +1927,102 @@
         ],
         "title": "LinkCounterpartyRequest"
       },
+      "OrderAction": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "assembling",
+              "assembled",
+              "shipped",
+              "paid",
+              "review",
+              "resolve",
+              "cancel",
+              "delivery"
+            ],
+            "title": "Action"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Expected Revision"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "delivery_method": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "pickup",
+                  "manual",
+                  "cdek",
+                  "yandex"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Method"
+          },
+          "delivery_status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "pending",
+                  "ready",
+                  "dispatched",
+                  "delivered",
+                  "cancelled"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Status"
+          },
+          "delivery_reference": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Reference"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "action",
+          "expected_revision",
+          "idempotency_key"
+        ],
+        "title": "OrderAction"
+      },
       "OrderCreate": {
         "properties": {
           "customer_name": {
@@ -1868,6 +2104,7 @@
             "title": "Items"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "customer_name",
@@ -1899,9 +2136,338 @@
         ],
         "title": "OrderItem"
       },
+      "OrderItemRead": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "product_id": {
+            "type": "string",
+            "title": "Product Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "article": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Article"
+          },
+          "price": {
+            "type": "integer",
+            "title": "Price"
+          },
+          "price_major": {
+            "type": "string",
+            "title": "Price Major"
+          },
+          "item_total": {
+            "type": "integer",
+            "title": "Item Total"
+          },
+          "item_total_major": {
+            "type": "string",
+            "title": "Item Total Major"
+          },
+          "price_minor": {
+            "type": "integer",
+            "title": "Price Minor"
+          },
+          "qty": {
+            "type": "integer",
+            "title": "Qty"
+          },
+          "item_total_minor": {
+            "type": "integer",
+            "title": "Item Total Minor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "product_id",
+          "name",
+          "article",
+          "price",
+          "price_major",
+          "item_total",
+          "item_total_major",
+          "price_minor",
+          "qty",
+          "item_total_minor"
+        ],
+        "title": "OrderItemRead"
+      },
+      "OrderRead": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "customer_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Customer Id"
+          },
+          "customer_name": {
+            "type": "string",
+            "title": "Customer Name"
+          },
+          "customer_type": {
+            "type": "string",
+            "title": "Customer Type"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision"
+          },
+          "fulfillment_status": {
+            "type": "string",
+            "title": "Fulfillment Status"
+          },
+          "payment_status": {
+            "type": "string",
+            "title": "Payment Status"
+          },
+          "needs_review": {
+            "type": "boolean",
+            "title": "Needs Review"
+          },
+          "status_changed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Changed At"
+          },
+          "status_changed_by_manager_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Changed By Manager Id"
+          },
+          "assembling_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assembling At"
+          },
+          "assembled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assembled At"
+          },
+          "shipped_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shipped At"
+          },
+          "paid_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paid At"
+          },
+          "paid_by_manager_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paid By Manager Id"
+          },
+          "payment_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payment Note"
+          },
+          "delivery_method": {
+            "type": "string",
+            "title": "Delivery Method"
+          },
+          "delivery_status": {
+            "type": "string",
+            "title": "Delivery Status"
+          },
+          "delivery_reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Reference"
+          },
+          "phone": {
+            "type": "string",
+            "title": "Phone"
+          },
+          "telegram": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telegram"
+          },
+          "counterparty_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counterparty Id"
+          },
+          "counterparty_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counterparty Name"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "total_minor": {
+            "type": "integer",
+            "title": "Total Minor"
+          },
+          "total_major": {
+            "type": "string",
+            "title": "Total Major"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OrderItemRead"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "customer_id",
+          "customer_name",
+          "customer_type",
+          "source",
+          "status",
+          "revision",
+          "fulfillment_status",
+          "payment_status",
+          "needs_review",
+          "status_changed_at",
+          "status_changed_by_manager_id",
+          "assembling_at",
+          "assembled_at",
+          "shipped_at",
+          "paid_at",
+          "paid_by_manager_id",
+          "payment_note",
+          "delivery_method",
+          "delivery_status",
+          "delivery_reference",
+          "phone",
+          "telegram",
+          "counterparty_id",
+          "counterparty_name",
+          "total",
+          "total_minor",
+          "total_major",
+          "created_at",
+          "items"
+        ],
+        "title": "OrderRead"
+      },
       "OrderSource": {
         "type": "string",
         "enum": [
+          "telegram",
           "email",
           "instagram",
           "website",

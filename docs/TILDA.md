@@ -141,3 +141,13 @@ Cookies не используются (`allow_credentials=False`). Internal toke
 6. Не использовать legacy `/orders` — теперь это защищённый внутренний endpoint.
 
 Никаких изменений Tilda в рамках подготовки backend не выполнялось.
+
+
+## Release candidate contract
+
+Tilda remains unconnected. TODO: exact final Tilda HTTPS origin ? explicit CORS ?
+browser checkout acceptance. Public catalog/request contract stays retail-only;
+missing retail price is shown as price on request, with manager review and no payment.
+Order operational states are internal. Never send X-Internal-API-Token or
+X-Manager-Telegram-ID from Tilda. Client Telegram is an optional intake channel,
+not a replacement storefront. Browser tests remain dependent on the final site.

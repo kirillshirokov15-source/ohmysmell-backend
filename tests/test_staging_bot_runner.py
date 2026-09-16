@@ -115,26 +115,8 @@ def test_staging_runner_requests_pending_update_drop():
     run.assert_called_once_with(drop_pending_updates=True)
 
 
-def test_pending_updates_are_dropped_before_polling_without_database_work():
+def test_legacy_entrypoint_delegates_to_singleton_worker():
     from app.bot import telegram_bot
-
-    events = []
-    bot = SimpleNamespace(
-        delete_webhook=AsyncMock(side_effect=lambda **kwargs: events.append("drop"))
-    )
-    with (
-        patch.object(telegram_bot, "Bot", return_value=bot),
-        patch.object(
-            telegram_bot.dp,
-            "start_polling",
-            AsyncMock(side_effect=lambda *_: events.append("poll")),
-        ),
-        patch.object(telegram_bot, "DraftOrderService") as service,
-        patch.object(telegram_bot, "DraftOrderRepository") as repository,
-    ):
+    with patch("app.bot.runtime.run_worker", new_callable=AsyncMock) as run:
         asyncio.run(telegram_bot.main(drop_pending_updates=True))
-
-    assert events == ["drop", "poll"]
-    bot.delete_webhook.assert_awaited_once_with(drop_pending_updates=True)
-    service.assert_not_called()
-    repository.assert_not_called()
+    run.assert_awaited_once_with("manager", drop_pending_updates=True)

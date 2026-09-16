@@ -94,7 +94,7 @@ class DraftOrderService:
             log_event(
                 logger,
                 "duplicate_email_skipped",
-                message_id=message.external_message_id,
+                action="email_duplicate",
                 draft_id=existing.id,
             )
             return existing
@@ -130,7 +130,7 @@ class DraftOrderService:
         log_event(
             logger,
             "email_parsed",
-            message_id=message.external_message_id,
+            action="email_parse",
             extracted_count=len(extracted_lines),
         )
         matches = [
@@ -334,6 +334,7 @@ class DraftOrderService:
             raise DraftOrderError(str(error)) from error
         if reviewed is None:
             raise DraftOrderError("Draft не найден")
+        log_event(logger, "draft_reviewed", draft_id=draft_id, action="review", result=str(reviewed.status))
         return reviewed
 
     async def set_customer_type(

@@ -61,9 +61,11 @@ class DraftOrderRepository:
             )
             return result.scalar_one_or_none()
 
-    async def list(self, limit: int = 50, offset: int = 0, active_only: bool = False) -> list[DraftOrder]:
+    async def list(self, limit: int = 50, offset: int = 0, active_only: bool = False, status: str | None = None) -> list[DraftOrder]:
         async with async_session() as session:
             query = self._query().order_by(DraftOrder.created_at.desc())
+            if status:
+                query = query.where(DraftOrder.status == status)
             if active_only:
                 query = query.where(DraftOrder.status.in_(["draft", "needs_review", "ready"]))
             result = await session.execute(
@@ -275,6 +277,7 @@ class DraftOrderRepository:
                 source=draft.source,
                 customer_name=draft.customer_name or draft.sender_email,
                 phone=(draft.contact_details or {}).get("phone", ""),
+                telegram=(draft.contact_details or {}).get("telegram"),
                 counterparty_id=draft.counterparty_id,
                 counterparty_name=draft.counterparty_name,
                 comment=(draft.contact_details or {}).get("comment") or f"{draft.source}: {draft.subject or 'без темы'}",

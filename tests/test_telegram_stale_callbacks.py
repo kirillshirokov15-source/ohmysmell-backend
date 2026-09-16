@@ -9,7 +9,7 @@ from aiogram.exceptions import TelegramBadRequest
 def callback_with(answer):
     return SimpleNamespace(
         from_user=SimpleNamespace(id=898019732),
-        data="draft:type:wholesale:2",
+        data="draft:type:wholesale:2:v0",
         answer=answer,
         message=None,
     )
@@ -141,7 +141,7 @@ def test_unexpected_telegram_bad_request_is_not_swallowed():
 
 def editable_callback(message):
     callback = callback_with(AsyncMock())
-    callback.data = "draft:reject:2"
+    callback.data = "draft:reject:2:v0"
     callback.message = message
     return callback
 

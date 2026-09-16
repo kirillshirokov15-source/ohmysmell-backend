@@ -37,7 +37,7 @@ class DraftOrder(Base):
             "customer_type IN ('wholesale', 'retail', 'unknown')",
             name="ck_draft_orders_customer_type",
         ),
-        CheckConstraint("source IN ('email', 'website', 'instagram', 'manual')", name="ck_draft_orders_source"),
+        CheckConstraint("source IN ('email', 'website', 'instagram', 'manual', 'telegram')", name="ck_draft_orders_source"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

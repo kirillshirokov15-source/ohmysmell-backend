@@ -16,7 +16,7 @@ def main():
         raise RuntimeError("Fresh schema validation must pass first")
     environment = dict(os.environ, OMS_STAGING_TESTS="1", OMS_STAGING_SCHEMA=report["schema"])
     result = subprocess.run([sys.executable, "-m", "pytest", "tests/test_postgres_staging.py", "-q",
-                             "--tb=short", "--junitxml=.staging-artifacts/staging-tests.xml"], env=environment)
+                             "--tb=short", "--junitxml=.staging-artifacts/staging-tests.xml", *sys.argv[1:]], env=environment)
     raise SystemExit(result.returncode)
 
 

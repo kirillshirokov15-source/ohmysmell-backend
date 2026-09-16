@@ -56,7 +56,12 @@ class CustomerResolutionService:
             CustomerIdentityType.INSTAGRAM,
             CustomerIdentityType.TELEGRAM,
         }:
-            return normalized.removeprefix("@").casefold()
+            normalized = normalized.casefold()
+            for prefix in ("https://t.me/", "http://t.me/", "t.me/", "https://instagram.com/", "https://www.instagram.com/"):
+                if normalized.startswith(prefix):
+                    normalized = normalized[len(prefix):].rstrip("/")
+                    break
+            return normalized.removeprefix("@")
         return normalized.casefold()
 
     def identities_from_order(

@@ -12,7 +12,7 @@ class FulfillmentService:
     def __init__(self, products=None):
         self.products = products or ProductService()
 
-    async def plan(self, order_id: int):
+    async def plan(self, order_id: int, expected_revision=None):
         # No price decision here; stock is never taken from the frontend/cache.
         catalog = await self.products.get_catalog_async()
         async with async_session() as session, session.begin():
@@ -20,6 +20,10 @@ class FulfillmentService:
                      .options(selectinload(Order.items)).with_for_update())).scalar_one_or_none()
             if not order:
                 raise StockAllocationError("Заказ не найден")
+            if expected_revision is not None and order.revision != expected_revision:
+                raise StockAllocationError("???????? ????????; ???????? ?????")
+            if order.fulfillment_status != "new" or order.needs_review:
+                raise StockAllocationError("????????????? ?????????? ? ???? ?????????")
             existing = list((await session.execute(select(Shipment)
                 .where(Shipment.order_id == order_id)
                 .options(selectinload(Shipment.allocations)))).scalars())

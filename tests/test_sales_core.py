@@ -354,12 +354,14 @@ class OrderCreationTests(unittest.TestCase):
         from app.main import create_order
 
         with (
+            patch("app.repositories.order_repository.get_order_by_request_key", AsyncMock(return_value=None)),
+            patch("app.main.serialize_order", lambda order: {"id": order.id}),
             patch("app.main.CustomerResolutionService", FakeResolutionService),
             patch("app.main.OrderValidationService", FakeValidationService),
             patch("app.main.save_order", fake_save),
             patch("app.main.notify_managers", AsyncMock()),
         ):
-            response = asyncio.run(create_order(make_order()))
+            response = asyncio.run(create_order(make_order(), "unit-key"))
 
         self.assertEqual(response["order_id"], 42)
         self.assertEqual(captured["customer_id"], 77)
@@ -386,6 +388,8 @@ class OrderCreationTests(unittest.TestCase):
         from app.main import create_order
 
         with (
+            patch("app.repositories.order_repository.get_order_by_request_key", AsyncMock(return_value=None)),
+            patch("app.main.serialize_order", lambda order: {"id": order.id}),
             patch("app.main.CustomerResolutionService", FakeResolutionService),
             patch("app.main.OrderValidationService", FakeValidationService),
             patch(
@@ -398,7 +402,7 @@ class OrderCreationTests(unittest.TestCase):
             ),
             patch("app.main.logger.warning") as log_exception,
         ):
-            response = asyncio.run(create_order(make_order()))
+            response = asyncio.run(create_order(make_order(), "unit-key"))
 
         self.assertTrue(response["success"])
         log_exception.assert_called_once()

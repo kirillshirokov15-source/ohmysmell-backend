@@ -163,3 +163,38 @@ downgrade новых миграций запрещён; старый money downg
 [Yandex claims/create](https://yandex.com/support/delivery-profile/ru/api/express/openapi/IntegrationV2ClaimsCreate),
 [OSV API](https://google.github.io/osv.dev/api/). Provider acceptance tests остаются
 отдельным этапом; отсутствие OSV findings не исключает любые возможные уязвимости.
+
+
+## Release candidate worker (supersedes earlier missing-worker notes)
+
+Railway staging worker: `ohmysmell-manager-bot-staging`, same feature branch/repo,
+start `python -m app.bot.runtime`, APP_ENV=staging, BOT_ROLE=manager, one replica.
+DATABASE_URL points to staging, EXTERNAL_WRITES_ENABLED=false, existing manager token.
+Healthcheck `/health` is served on PORT; no public domain is needed. Response includes
+status/role/polling/environment. During replacement, liveness may be 200 while the
+new process waits for the old poller's session lock; polling=false is not readiness.
+Configure overlap=0, draining=15 seconds. On shutdown polling/notification tasks stop,
+the Telegram session closes and the DB lock releases. Connection loss or Telegram
+conflict stops this process. Never run an unmanaged poller against the same token,
+or use another DB to bypass ownership. Local staging_runner uses the same lock.
+
+Notifications run in the manager worker, using the durable draft queue. No Gmail
+worker is started. Sending is at-least-once: a crash after Telegram accepts a message
+may repeat a notification, but buttons/finalize/order effects remain idempotent.
+Inspect worker_ready/worker_stopped/worker_ownership_lost and duration_ms events.
+API, client and manager handlers are separate; DB application services are shared.
+
+Client worker is credential-ready, but needs a separate CLIENT_TELEGRAM_BOT_TOKEN.
+Do not create a production bot service in this acceptance. Runtime deliberately
+refuses APP_ENV=production unless BOT_PRODUCTION_ACTIVATED=true; only controlled
+production activation may set that flag after deployment checks. External writes remain false.
+
+Migration j93d5087bc10 follows i82c4f76ab09. Run fresh schema rehearsal,
+existing staging upgrade and alembic check. Never stamp blindly. This migration
+retains existing data; downgrade intentionally refuses audit deletion.
+
+API tokens and bot tokens are secrets, never put in frontend or logs. Manager actor
+header is accepted only behind internal authentication, not as end-user login.
+The client bot requires its own token; no client action reaches manager handlers.
+SQL logs and Telegram dependency exception logs are suppressed in worker runtime;
+application errors record exception class, never connection strings or raw updates.

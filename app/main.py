@@ -12,9 +12,10 @@ async def lifespan(app):
     from app.database.session import engine
     await engine.dispose()
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Header
 from app.api.auth import require_debug_access, require_internal_api_token
 from app.schemas.order import OrderCreate
+from app.schemas.order_read import OrderRead
 from app.schemas.draft_order import (
     InboundEmailCreate,
     LinkCounterpartyRequest,
@@ -71,6 +72,7 @@ def serialize_order(order):
         "customer_type": order.customer_type,
         "source": order.source,
         "status": order.status,
+        **{key: getattr(order, key, None) for key in ("revision", "fulfillment_status", "payment_status", "needs_review", "status_changed_at", "status_changed_by_manager_id", "assembling_at", "assembled_at", "shipped_at", "paid_at", "paid_by_manager_id", "payment_note", "delivery_method", "delivery_status", "delivery_reference")},
         "phone": order.phone,
         "telegram": order.telegram,
         "counterparty_id": order.counterparty_id,
@@ -101,6 +103,7 @@ def serialize_order(order):
 def serialize_draft(draft):
     return {
         "id": draft.id,
+        "revision": draft.revision,
         "inbound_message_id": draft.inbound_message_id,
         "customer_id": draft.customer_id,
         "customer_type": draft.customer_type,
@@ -176,7 +179,16 @@ async def health_db():
 
 
 @app.post("/orders", dependencies=[Depends(require_internal_api_token)])
-async def create_order(order: OrderCreate):
+async def create_order(order: OrderCreate, idempotency_key: str = Header(min_length=1, max_length=128)):
+    import hashlib
+    from app.repositories.order_repository import get_order_by_request_key
+    from app.services.checkout_service import CheckoutConflict
+    digest = hashlib.sha256(order.model_dump_json().encode()).hexdigest()
+    existing = await get_order_by_request_key(idempotency_key)
+    if existing:
+        if existing.request_hash != digest:
+            raise HTTPException(409, detail="???? ??????? ??? ???????????")
+        return {"success": True, "order_id": existing.id, "status": existing.status, "order": serialize_order(existing)}
     try:
         customer = await CustomerResolutionService().resolve(order)
     except CustomerResolutionError as error:
@@ -200,7 +212,11 @@ async def create_order(order: OrderCreate):
             detail=str(error),
         )
 
-    saved_order = await save_order(validated_order)
+    validated_order.update(_request_key=idempotency_key, _request_hash=digest)
+    try:
+        saved_order = await save_order(validated_order)
+    except CheckoutConflict as error:
+        raise HTTPException(409, detail=str(error)) from error
 
     try:
         await notify_managers(
@@ -217,7 +233,7 @@ async def create_order(order: OrderCreate):
         "success": True,
         "order_id": saved_order.id,
         "status": "new",
-        "order": validated_order,
+        "order": serialize_order(saved_order),
     }
 
 @app.get("/health/moysklad", dependencies=[Depends(require_internal_api_token)])
@@ -351,7 +367,7 @@ async def get_orders():
     return {"orders": [serialize_order(order) for order in await list_orders()]}
 
 
-@app.get("/orders/{order_id}", dependencies=[Depends(require_internal_api_token)])
+@app.get("/orders/{order_id}", response_model=OrderRead, dependencies=[Depends(require_internal_api_token)])
 async def get_order_details(order_id: int):
     order = await get_order(order_id)
     if order is None:
@@ -487,3 +503,24 @@ async def plan_order_allocations(order_id: int):
 @app.post("/draft-orders/{draft_id}/items/{item_id}/candidates", dependencies=[Depends(require_internal_api_token)])
 async def propose_draft_candidates(draft_id: int, item_id: int, query: str):
     return serialize_draft(await DraftOrderService().search_item(draft_id, item_id, query))
+
+
+from app.services.order_operations import OrderAction, OrderOperations, OperationError, ManagerDenied
+from fastapi import Header
+
+
+@app.post("/orders/{order_id}/actions", response_model=OrderRead, dependencies=[Depends(require_internal_api_token)])
+async def order_action(order_id: int, payload: OrderAction, x_manager_telegram_id: int = Header()):
+    try:
+        return serialize_order(await OrderOperations().act(order_id, x_manager_telegram_id, payload))
+    except ManagerDenied as error:
+        raise HTTPException(403, detail=str(error)) from error
+    except OperationError as error:
+        raise HTTPException(409, detail=str(error)) from error
+
+
+@app.get("/orders/{order_id}/events", dependencies=[Depends(require_internal_api_token)])
+async def order_events(order_id: int):
+    return {"events": [{"id": e.id, "manager_id": e.manager_id, "action": e.action,
+        "before": e.before, "after": e.after, "created_at": e.created_at}
+        for e in await OrderOperations().events(order_id)]}

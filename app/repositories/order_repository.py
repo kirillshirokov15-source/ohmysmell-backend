@@ -8,7 +8,18 @@ from app.services.order_lifecycle import OrderStatus, ensure_order_transition
 
 async def create_order(validated_order: dict) -> Order:
     async with async_session() as session:
+        key = validated_order.get("_request_key")
+        if key:
+            from app.services.checkout_service import transaction_lock, CheckoutConflict
+            await transaction_lock(session, "direct-order:" + key)
+            existing = (await session.execute(select(Order).where(Order.request_key == key)
+                .options(selectinload(Order.items)))).scalar_one_or_none()
+            if existing:
+                if existing.request_hash != validated_order["_request_hash"]:
+                    raise CheckoutConflict("???? ??????? ??? ???????????")
+                return existing
         order = Order(
+            request_key=key, request_hash=validated_order.get("_request_hash"),
             customer_name=validated_order["customer_name"],
             phone=validated_order["phone"],
             customer_id=validated_order.get("customer_id"),
@@ -50,14 +61,17 @@ async def get_order(order_id: int) -> Order | None:
         return result.scalar_one_or_none()
 
 
-async def list_orders(limit: int = 50, offset: int = 0) -> list[Order]:
+async def list_orders(limit: int = 50, offset: int = 0, category: str | None = None) -> list[Order]:
     async with async_session() as session:
-        result = await session.execute(
-            select(Order)
-            .options(selectinload(Order.items))
-            .order_by(Order.created_at.desc())
-            .limit(min(max(limit, 1), 100)).offset(max(offset, 0))
-        )
+        query = select(Order).options(selectinload(Order.items))
+        if category in {"new", "assembling", "assembled", "shipped", "cancelled"}:
+            query = query.where(Order.fulfillment_status == category)
+        elif category in {"paid", "unpaid"}:
+            query = query.where(Order.payment_status == category, Order.fulfillment_status != "cancelled")
+        elif category == "review":
+            query = query.where(Order.needs_review.is_(True))
+        result = await session.execute(query.order_by(Order.id.desc())
+            .limit(min(max(limit, 1), 100)).offset(max(offset, 0)))
         return list(result.scalars().unique().all())
 
 
@@ -108,3 +122,9 @@ async def set_moysklad_order(
         await session.refresh(order)
 
         return order
+
+
+async def get_order_by_request_key(key):
+    async with async_session() as session:
+        return (await session.execute(select(Order).where(Order.request_key == key)
+            .options(selectinload(Order.items)))).scalar_one_or_none()

@@ -1,3 +1,5 @@
+> RC extension: manager/client/order operations are described in MANAGER_BOT.md, CLIENT_BOT.md and ORDER_LIFECYCLE.md. The historical acceptance below predates these changes; current RC evidence is appended after staging validation.
+
 # Remote staging acceptance — 2026-09-11
 
 **Результат: staging backend принят для подключения Tilda в режиме заявок

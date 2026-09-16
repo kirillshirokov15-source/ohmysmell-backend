@@ -79,7 +79,7 @@ async def safe_callback_answer(callback: CallbackQuery, *args, **kwargs) -> bool
             logger,
             "telegram_callback_stale",
             action="ignored",
-            callback_data=callback.data,
+            action_source="callback",
             telegram_user_id=(
                 callback.from_user.id if callback.from_user else None
             ),
@@ -118,6 +118,9 @@ async def safe_edit_message(
     return True
 
 async def check_access(message: Message) -> bool:
+    if getattr(getattr(message, "chat", None), "type", "private") != "private":
+        await message.answer("???????? ?????? ??? ? ?????.")
+        return False
     if not await manager_repository.is_active_by_telegram_id(
         message.from_user.id
     ):
@@ -156,13 +159,7 @@ async def new_orders_handler(message: Message):
     if not await check_access(message):
         return
 
-    drafts = await DraftOrderRepository().list(limit=10, active_only=True)
-    if not drafts:
-        await message.answer("Новых черновиков нет.")
-    for draft in drafts:
-        await message.answer(build_draft_card(draft), reply_markup=InlineKeyboardMarkup.model_validate(build_draft_keyboard(draft)))
-    if len(drafts) == 10:
-        await message.answer("Показаны 10 последних. /drafts 10 — следующая страница.")
+    await show_order_list(message, "new", 0)
 
 
 @dp.message(F.text == "📋 Все заказы")
@@ -170,10 +167,7 @@ async def all_orders_handler(message: Message):
     if not await check_access(message):
         return
 
-    from app.repositories.order_repository import list_orders
-    from app.services.telegram_display import telegram_rubles
-    orders = await list_orders(limit=20)
-    await message.answer("\n".join(f"№{o.id} · {o.customer_name[:80]} · {telegram_rubles(o.total)} · {o.status}" for o in orders)[:4000] or "Заказов пока нет.")
+    await show_order_list(message, "all", 0)
 
 
 @dp.message(F.text == "👥 Контрагенты")
@@ -290,11 +284,15 @@ async def draft_callback_handler(callback: CallbackQuery):
             action=action,
             draft_id=draft_id,
         )
+        if action not in {"refresh", "ambiguous"} and not (parts[-1].startswith("v") and parts[-1][1:].isdigit()):
+            raise DraftOrderError("???????? ????????; ???????? ????????")
         service = DraftOrderService()
-        if parts[-1].startswith("v") and parts[-1][1:].isdigit():
+        if hasattr(service, "repository") and parts[-1].startswith("v") and parts[-1][1:].isdigit():
             service.repository.expected_revision = int(parts[-1][1:])
         draft = None
-        if action == "type":
+        if action == "refresh":
+            draft = await DraftOrderRepository().get(draft_id)
+        elif action == "type":
             customer_type = CustomerType(parts[2])
             draft = await service.set_customer_type(draft_id, customer_type)
         elif action == "reject":
@@ -318,6 +316,20 @@ async def draft_callback_handler(callback: CallbackQuery):
             text += f"\n\nПоиск товара: /match {draft_id} НОМЕР_ПОЗИЦИИ название или артикул"
             if callback.message:
                 await callback.message.answer(text)
+        elif action == "pick":
+            current = await service._get_required(draft_id)
+            item = next((i for i in current.items if i.id == int(parts[3])), None)
+            candidate_index = int(parts[4])
+            if not item or candidate_index < 0 or candidate_index >= len(item.candidates):
+                raise DraftOrderError("??????? ?????? ???????")
+            draft = await service.resolve_product(draft_id, item.id, item.candidates[candidate_index]["id"])
+        elif action == "cp":
+            current = await service._get_required(draft_id)
+            candidate_index = int(parts[3])
+            if candidate_index < 0 or candidate_index >= len(current.counterparty_candidates):
+                raise DraftOrderError("??????? ??????????? ???????")
+            candidate = current.counterparty_candidates[candidate_index]
+            draft = await service.link_counterparty(draft_id, candidate["id"], candidate.get("name") or candidate["id"])
         elif action == "product":
             item_id = int(parts[3])
             product_id = parts[4]
@@ -350,6 +362,7 @@ async def draft_callback_handler(callback: CallbackQuery):
                 logger,
                 "telegram_manager_action",
                 action=action,
+                manager_id=telegram_user_id,
                 draft_id=draft_id,
                 order_id=order.id,
             )
@@ -407,13 +420,217 @@ async def draft_callback_handler(callback: CallbackQuery):
 
 
 async def main(*, drop_pending_updates: bool = False):
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)
-    if drop_pending_updates:
-        await bot.delete_webhook(drop_pending_updates=True)
-        print("Pending Telegram updates: DROPPED")
-        print("Telegram polling: STARTING")
-    await dp.start_polling(bot)
+    from app.bot.runtime import run_worker
+    await run_worker("manager", drop_pending_updates=drop_pending_updates)
 
 
 def run_bot(*, drop_pending_updates: bool = False):
     asyncio.run(main(drop_pending_updates=drop_pending_updates))
+
+from app.services.manager_workspace import order_card, order_keyboard, shipments_for, FULFILLMENT_LABELS
+from app.services.order_operations import OrderOperations, OrderAction, OperationError
+from app.repositories.order_repository import get_order, list_orders
+from aiogram import BaseMiddleware
+
+
+class ManagerRecoveryMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        started = perf_counter()
+        message = event.message if isinstance(event, CallbackQuery) else event
+        if getattr(getattr(message, "chat", None), "type", "private") != "private":
+            return
+        try:
+            return await handler(event, data)
+        except Exception as error:
+            log_event(logger, "manager_handler_failed", result=type(error).__name__)
+            message = event.message if isinstance(event, CallbackQuery) else event
+            if message and hasattr(message, "answer"):
+                try:
+                    await message.answer("Сервис временно недоступен. Обновите карточку перед повтором; выполненное действие сохранено.")
+                except Exception:
+                    pass
+        finally:
+            log_event(logger, "manager_handler_completed", action="callback" if isinstance(event, CallbackQuery) else "message",
+                duration_ms=_duration_ms(started))
+
+
+dp.message.outer_middleware(ManagerRecoveryMiddleware())
+dp.callback_query.outer_middleware(ManagerRecoveryMiddleware())
+
+
+async def show_order_list(message, category, offset):
+    orders = await list_orders(limit=10, offset=offset, category=category)
+    rows = [[{"text": f"№{o.id} · {FULFILLMENT_LABELS[o.fulfillment_status]} · {o.customer_name[:30]}",
+              "callback_data": f"order:refresh:{o.id}:{o.revision}"}] for o in orders]
+    if offset:
+        rows.append([{"text": "Назад", "callback_data": f"orders:{category}:{max(0, offset-10)}"}])
+    if len(orders) == 10:
+        rows.append([{"text": "Далее", "callback_data": f"orders:{category}:{offset+10}"}])
+    await message.answer("Заказы — выберите карточку:" if orders else "Заказов в разделе нет.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@dp.message(F.text.in_({"Требуют проверки", "Готовые заявки", "В сборке", "Собранные", "Отгруженные", "Неоплаченные", "Оплаченные", "Отменённые", "Поиск заказа"}))
+async def workspace_section(message):
+    if not await check_access(message):
+        return
+    if message.text == "Поиск заказа":
+        await message.answer("/order НОМЕР — заказ; /draft НОМЕР — заявка; /drafts — все активные заявки.")
+    elif message.text in {"Требуют проверки", "Готовые заявки"}:
+        status = "ready" if message.text == "Готовые заявки" else "needs_review"
+        await show_draft_list(message, status, 0)
+        if status == "needs_review":
+            await show_order_list(message, "review", 0)
+    else:
+        category = {"В сборке": "assembling", "Собранные": "assembled", "Отгруженные": "shipped",
+            "Неоплаченные": "unpaid", "Оплаченные": "paid", "Отменённые": "cancelled"}[message.text]
+        await show_order_list(message, category, 0)
+
+
+async def show_draft_list(message, status, offset):
+    drafts = await DraftOrderRepository().list(limit=10, offset=offset, status=status)
+    rows = [[{"text": f"Заявка №{d.id} · {(d.customer_name or 'Клиент')[:40]}",
+        "callback_data": f"draft:refresh:{d.id}"}] for d in drafts]
+    if offset:
+        rows.append([{"text": "Назад", "callback_data": f"draftpage:{status}:{max(0,offset-10)}"}])
+    if len(drafts) == 10:
+        rows.append([{"text": "Далее", "callback_data": f"draftpage:{status}:{offset+10}"}])
+    await message.answer("Заявки — выберите карточку:" if drafts else "Заявок в разделе нет.", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@dp.callback_query(F.data.startswith("orders:"))
+@dp.callback_query(F.data.startswith("draftpage:"))
+async def workspace_page(callback):
+    if not await safe_callback_answer(callback):
+        return
+    if not await manager_repository.is_active_by_telegram_id(callback.from_user.id):
+        return
+    kind, category, offset = callback.data.split(":")
+    if kind == "orders":
+        await show_order_list(callback.message, category, max(0, int(offset)))
+    else:
+        await show_draft_list(callback.message, category, max(0, int(offset)))
+
+
+@dp.message(Command("order", "draft"))
+async def find_order(message):
+    if not await check_access(message):
+        return
+    try:
+        command, identifier = message.text.split()
+        identifier = int(identifier)
+    except (ValueError, AttributeError):
+        await message.answer("Формат: /order НОМЕР или /draft НОМЕР")
+        return
+    if command.split("@")[0] == "/draft":
+        draft = await DraftOrderRepository().get(identifier)
+        if not draft:
+            await message.answer("Заявка не найдена.")
+            return
+        await message.answer(build_draft_card(draft), reply_markup=InlineKeyboardMarkup.model_validate(build_draft_keyboard(draft)))
+    else:
+        order = await get_order(identifier)
+        if not order:
+            await message.answer("Заказ не найден.")
+            return
+        plans = await shipments_for(order.id)
+        await message.answer(order_card(order, plans), reply_markup=InlineKeyboardMarkup.model_validate(order_keyboard(order, plans)))
+
+
+@dp.callback_query(F.data.startswith("order:"))
+async def order_callback(callback):
+    started = perf_counter()
+    if not await safe_callback_answer(callback):
+        return
+    if not await manager_repository.is_active_by_telegram_id(callback.from_user.id):
+        return
+    try:
+        _, action, identifier, version = callback.data.split(":")
+        order_id, revision = int(identifier), int(version)
+        order = await get_order(order_id)
+        if not order:
+            raise OperationError("Заказ не найден.")
+        if action != "refresh" and order.revision != revision:
+            raise OperationError("Карточка устарела. Нажмите «Обновить».")
+        if action == "cancel_confirm":
+            await callback.message.answer("Отменить этот неоплаченный заказ?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                {"text": "Да, отменить", "callback_data": f"order:cancel:{order_id}:{revision}"},
+                {"text": "Оставить", "callback_data": f"order:refresh:{order_id}:{revision}"}]]))
+            return
+        if action == "allocate":
+            from app.services.fulfillment_service import FulfillmentService
+            await FulfillmentService().plan(order_id, expected_revision=revision)
+        elif action != "refresh":
+            extra = {}
+            if action.startswith("delivery_"):
+                extra["delivery_method"] = action.removeprefix("delivery_")
+                action = "delivery"
+            elif action == "delivered":
+                extra["delivery_status"] = "delivered"
+                action = "delivery"
+            request = OrderAction(action=action, expected_revision=revision,
+                idempotency_key=f"tg:{callback.from_user.id}:{callback.data}", **extra)
+            order = await OrderOperations().act(order_id, callback.from_user.id, request)
+        plans = await shipments_for(order_id)
+        text, keyboard = order_card(order, plans), InlineKeyboardMarkup.model_validate(order_keyboard(order, plans))
+        try:
+            await safe_edit_message(callback.message, text, draft_id=0, reply_markup=keyboard)
+        except TelegramBadRequest:
+            await callback.message.answer(text, reply_markup=keyboard)
+        log_event(logger, "manager_order_callback", order_id=order_id, manager_id=callback.from_user.id,
+            action=action, result="success", duration_ms=_duration_ms(started))
+    except (ValueError, OperationError) as error:
+        await callback.message.answer(str(error) if isinstance(error, OperationError) else "Действие недоступно. Обновите карточку.")
+    except Exception as error:
+        from app.services.stock_allocation import StockAllocationError
+        if isinstance(error, StockAllocationError):
+            await callback.message.answer("Не удалось распределить заказ: проверьте товары и доступные остатки.")
+        else:
+            log_event(logger, "manager_order_callback", result=type(error).__name__, duration_ms=_duration_ms(started))
+            await callback.message.answer("Сервис временно недоступен. Обновите карточку; сохранённые действия не дублируются.")
+
+@dp.message(Command("payment", "tracking"))
+async def operational_note(message):
+    if not await check_access(message):
+        return
+    try:
+        command, identifier, note = message.text.split(maxsplit=2)
+        order = await get_order(int(identifier))
+        if not order:
+            raise OperationError("Заказ не найден.")
+        args = {"action": "paid", "note": note} if command.split("@")[0] == "/payment" else {"action": "delivery", "delivery_reference": note}
+        request = OrderAction(expected_revision=order.revision, idempotency_key=f"msg:{message.chat.id}:{message.message_id}", **args)
+        updated = await OrderOperations().act(order.id, message.from_user.id, request)
+        plans = await shipments_for(order.id)
+        await message.answer(order_card(updated, plans), reply_markup=InlineKeyboardMarkup.model_validate(order_keyboard(updated, plans)))
+    except (ValueError, OperationError) as error:
+        await message.answer(str(error) if isinstance(error, OperationError) else "Формат: /payment НОМЕР примечание; /tracking НОМЕР номер_доставки")
+
+
+@dp.message(Command("items"))
+async def all_order_items(message):
+    if not await check_access(message):
+        return
+    try:
+        order = await get_order(int(message.text.split()[1]))
+    except (ValueError, IndexError):
+        order = None
+    if not order:
+        await message.answer("Формат: /items НОМЕР существующего заказа")
+        return
+    from app.services.telegram_display import telegram_rubles
+    lines = [f"Заказ №{order.id} — все позиции:"]
+    for item in order.items:
+        lines.append(f"{item.name} · {item.qty} × {telegram_rubles(item.price)} = {telegram_rubles(item.item_total)}")
+    for index, plan in enumerate(await shipments_for(order.id), 1):
+        lines.append(f"Склад {index}: {plan.warehouse_id}")
+        names = {item.id: item.name for item in order.items}
+        lines.extend(f"{names[a.order_item_id]} · {a.qty} шт." for a in plan.allocations)
+    chunk = ""
+    for line in lines:
+        if len(chunk)+len(line)+1 > 3900:
+            await message.answer(chunk)
+            chunk = ""
+        chunk += line + "\n"
+    if chunk:
+        await message.answer(chunk)

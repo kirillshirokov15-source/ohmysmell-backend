@@ -117,6 +117,7 @@ def main() -> None:
 
     # These imports must remain after activate_staging_config: repositories and
     # async sessions then bind only to the validated staging database.
+    settings.environment = "staging"
     launch_staging_bot()
 
 

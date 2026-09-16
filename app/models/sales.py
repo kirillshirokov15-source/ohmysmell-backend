@@ -8,6 +8,7 @@ class CustomerType(StrEnum):
 
 
 class OrderSource(StrEnum):
+    TELEGRAM = "telegram"
     EMAIL = "email"
     INSTAGRAM = "instagram"
     WEBSITE = "website"
@@ -22,6 +23,7 @@ class CustomerIdentityType(StrEnum):
 
 
 SOURCE_CUSTOMER_TYPE_DEFAULTS = {
+    OrderSource.TELEGRAM: CustomerType.UNKNOWN,
     OrderSource.WEBSITE: CustomerType.RETAIL,
     OrderSource.INSTAGRAM: CustomerType.RETAIL,
     OrderSource.EMAIL: CustomerType.UNKNOWN,

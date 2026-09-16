@@ -40,3 +40,14 @@ remains in manager review until its own price is configured.
 
 Real Gmail OAuth, production migrations/deployment, Tilda connection, delivery
 orders and MoySklad writes require their separate activation steps.
+
+
+Release candidate operations: [Manager bot](docs/MANAGER_BOT.md),
+[Client bot](docs/CLIENT_BOT.md), [Order/payment lifecycle](docs/ORDER_LIFECYCLE.md).
+The standalone worker command is `python -m app.bot.runtime`; set BOT_ROLE=manager
+or client (different tokens). The API never polls Telegram. PostgreSQL advisory
+ownership prevents two managed pollers; /health reports role/readiness without secrets.
+Manager workflow supports local fulfillment, payment recording and delivery tracking.
+External writes remain disabled. Client intake always goes through manager review.
+Internal POST /orders now requires Idempotency-Key; actions require a manager actor
+and expected revision. See the updated OpenAPI snapshot.

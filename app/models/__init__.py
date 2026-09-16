@@ -1,4 +1,5 @@
 from app.models.manager import Manager
+from app.models.operations import OrderEvent, ClientConversation, ClientUpdate
 from app.models.customer import Customer, CustomerIdentity
 from app.models.draft_order import DraftOrder, DraftOrderItem
 from app.models.inbound_message import InboundMessage

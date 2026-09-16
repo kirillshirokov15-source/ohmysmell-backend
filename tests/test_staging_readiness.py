@@ -258,7 +258,7 @@ class TestTelegramCallbacks:
             if item.callback is telegram_bot.draft_callback_handler
         )
         matched, _ = asyncio.run(handler.check(SimpleNamespace(
-            data="draft:type:wholesale:2"
+            data="draft:type:wholesale:2:v0"
         )))
         not_matched, _ = asyncio.run(handler.check(SimpleNamespace(
             data="other:type:wholesale:2"
@@ -285,7 +285,7 @@ class TestTelegramCallbacks:
         )))
         callback = SimpleNamespace(
             from_user=SimpleNamespace(id=1),
-            data="draft:reject:5",
+            data="draft:reject:5:v0",
             answer=AsyncMock(),
             message=None,
         )
@@ -328,7 +328,7 @@ class TestFreshSchema:
         from alembic.script import ScriptDirectory
 
         scripts = ScriptDirectory.from_config(Config("alembic.ini"))
-        assert scripts.get_heads() == ["i82c4f76ab09"]
+        assert scripts.get_heads() == ["j93d5087bc10"]
         sales_revision = scripts.get_revision("a84f1b92c301")
         assert sales_revision.dependencies == "f01a2b3c4d5e"
 

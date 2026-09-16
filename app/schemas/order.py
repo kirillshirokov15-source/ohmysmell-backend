@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, ConfigDict
 
 from app.models.sales import (
     CustomerType,
@@ -13,6 +13,7 @@ class OrderItem(BaseModel):
 
 
 class OrderCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     _customer_type_explicit: bool = PrivateAttr(default=False)
 
     customer_name: str = Field(min_length=1, max_length=255)

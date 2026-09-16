@@ -44,6 +44,8 @@ def build_draft_card(draft: DraftOrder) -> str:
             )
 
     contact = getattr(draft, "contact_details", None) or {}
+    if contact.get("telegram"):
+        lines.append(f"Telegram: {contact['telegram']}")
     if contact.get("phone"):
         lines.append(f"Телефон: {contact['phone']}")
     if contact.get("comment"):
@@ -86,7 +88,7 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
         },
     ]]
     for item in draft.items:
-        for candidate in item.candidates[:3]:
+        for candidate_index, candidate in enumerate(item.candidates[:3]):
             selected = item.product_id == candidate.get("id")
             reference = candidate.get("article") or (
                 f"оценка {candidate.get('score')}"
@@ -100,16 +102,16 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
                     f"{candidate.get('name', 'Товар')[:28]}"
                 ),
                 "callback_data": (
-                    f"draft:product:{draft.id}:{item.id}:{candidate['id']}"
+                    f"draft:pick:{draft.id}:{item.id}:{candidate_index}"
                 ),
             }])
-    for candidate in draft.counterparty_candidates[:3]:
+    for candidate_index, candidate in enumerate(draft.counterparty_candidates[:3]):
         rows.append([{
             "text": (
                 "Контрагент: "
                 f"{(candidate.get('name') or 'Без имени')[:25]}"
             ),
-            "callback_data": f"draft:counterparty:{draft.id}:{candidate['id']}",
+            "callback_data": f"draft:cp:{draft.id}:{candidate_index}",
         }])
     if not draft.counterparty_id and not draft.counterparty_candidates:
         rows.append([{
@@ -139,6 +141,7 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
         "callback_data": f"draft:reject:{draft.id}",
     })
     rows.append(final_actions)
+    rows.append([{"text": "????????", "callback_data": f"draft:refresh:{draft.id}"}])
     if hasattr(draft, "revision") and isinstance(draft.revision, int):
         for row in rows:
             for button in row:

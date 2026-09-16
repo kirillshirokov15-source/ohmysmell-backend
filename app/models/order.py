@@ -8,6 +8,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    Boolean,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -26,9 +27,13 @@ class Order(Base):
             name="ck_orders_customer_type",
         ),
         CheckConstraint(
-            "source IN ('email', 'instagram', 'website', 'manual')",
+            "source IN ('email', 'instagram', 'website', 'manual', 'telegram')",
             name="ck_orders_source",
         ),
+        CheckConstraint("fulfillment_status IN ('new', 'assembling', 'assembled', 'shipped', 'cancelled')", name="ck_orders_fulfillment"),
+        CheckConstraint("payment_status IN ('unpaid', 'paid')", name="ck_orders_payment"),
+        CheckConstraint("delivery_method IN ('unselected', 'pickup', 'manual', 'cdek', 'yandex')", name="ck_orders_delivery_method"),
+        CheckConstraint("delivery_status IN ('pending', 'ready', 'dispatched', 'delivered', 'cancelled')", name="ck_orders_delivery_status"),
     )
 
     id: Mapped[int] = mapped_column(
@@ -39,6 +44,24 @@ class Order(Base):
         String(255),
         nullable=False,
     )
+
+    request_key: Mapped[str | None] = mapped_column(String(128), unique=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64))
+    revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    fulfillment_status: Mapped[str] = mapped_column(String(20), default="new", server_default="new", index=True)
+    payment_status: Mapped[str] = mapped_column(String(20), default="unpaid", server_default="unpaid", index=True)
+    needs_review: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    status_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status_changed_by_manager_id: Mapped[int | None] = mapped_column(ForeignKey("managers.id"))
+    assembling_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    assembled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    shipped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    paid_by_manager_id: Mapped[int | None] = mapped_column(ForeignKey("managers.id"))
+    payment_note: Mapped[str | None] = mapped_column(String(1000))
+    delivery_method: Mapped[str] = mapped_column(String(20), default="unselected", server_default="unselected")
+    delivery_status: Mapped[str] = mapped_column(String(20), default="pending", server_default="pending")
+    delivery_reference: Mapped[str | None] = mapped_column(String(255))
 
     customer_type: Mapped[CustomerType] = mapped_column(
         String(20),

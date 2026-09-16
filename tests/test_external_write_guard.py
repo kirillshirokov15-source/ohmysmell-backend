@@ -203,7 +203,7 @@ def test_russian_labels_keep_callback_data_unchanged():
     assert by_text["Выбрать товар"] == "draft:ambiguous:22"
     assert by_text["Отклонить"] == "draft:reject:22"
     candidate = next(button for button in buttons if "ART-1" in button["text"])
-    assert candidate["callback_data"] == "draft:product:22:7:product-uuid"
+    assert candidate["callback_data"] == "draft:pick:22:7:0"
 
 
 def test_draft_card_is_fully_localized_and_formats_minor_units():
