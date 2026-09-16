@@ -1,4 +1,4 @@
-﻿# Incident runbook
+# Incident runbook
 
 All current commands target staging; production actions require separate approval.
 Never enable external writes as a recovery step.
@@ -13,7 +13,7 @@ Never enable external writes as a recovery step.
 | Old callback | Revision changed | Refresh card; no mutation from expired/versionless callback |
 | Send/edit timeout | Check DB/action audit | Refresh/status; saved action survives Telegram failure |
 | Email degraded | email_poll_failed / email_ingestion_error | Cursor stays at last complete batch; restart replays unique IDs |
-| Invalid email keeps batch pending | Failed message ID, authorized DB inspection | Correct source/parser input under review; never skip a cursor blindly |
+| Invalid email keeps batch pending | Failed message_ref, authorized provider/DB inspection | Correct source/parser input under review; never skip a cursor blindly |
 | External operation inflight/uncertain | external_operations key + provider document | Reconcile by stable externalCode/request_id; no automatic resend |
 | Migration failure | Recorded version + transaction result | Stop rollout; restore rehearsal/forward repair; never blind stamp |
 
@@ -29,8 +29,8 @@ HTTP timeout is 20 s. Set drain >=45 s. Hard kill releases PostgreSQL connection
 locks; atomic transactions roll back, committed requests replay safely.
 
 Alert hooks (no provider activated): ERROR api_failure, worker_startup_failed,
-worker_ownership_lost, email_poll_failed, email_ingestion_error, failed callbacks;
-health/readiness failure 2 minutes; repeated latency >1 s manager actions or >3 s
+email_poll_failed, email_ingestion_error, failed callbacks;
+worker_ownership_lost event; health/readiness failure 2 minutes; repeated latency >1 s manager actions or >3 s
 matching. Catalog latency is measured separately. Notification queue oldest pending
 >5 minutes should alert; delivery is at-least-once, duplicate messages are possible.
 Optional Sentry is preinstalled but MONITORING_ENABLED=false; no DSN/network now.

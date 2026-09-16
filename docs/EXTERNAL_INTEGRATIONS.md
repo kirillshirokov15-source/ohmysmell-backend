@@ -20,7 +20,7 @@ production variables. Application code and entrypoints are already provided.
 - Smoke: `python -m app.scripts.gmail_smoke_test`; confirm account privately and no writes.
   Launch `python -m app.workers.email_runtime`, one replica, /health and /ready.
   Send one test order email, verify one draft, restart, verify unchanged draft ID
-  and saved cursor. History 404 reboots listing; message uniqueness prevents duplicates.
+  and saved cursor. History 404 rescans INBOX including already-read messages; durable IDs prevent duplicates.
 - Disable: stop only email service; preserve token/cursor, revoke OAuth if compromised.
 
 ## Tilda
@@ -105,7 +105,3 @@ production variables. Application code and entrypoints are already provided.
   configure health/readiness and log/queue alerts from INCIDENT_RUNBOOK.md.
 - Disable MONITORING_ENABLED=false/remove DSN/redeploy. No external telemetry sent
   during internal acceptance; adapter validated with fake initialization/transport.
-
-History expiry recovery scans all INBOX, including messages already read by the
-owner during downtime, then deduplicates durable Gmail message IDs. Initial startup
-still uses GMAIL_INITIAL_QUERY. The cursor is captured before the recovery listing.

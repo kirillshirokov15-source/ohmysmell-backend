@@ -1,130 +1,104 @@
-# Remote staging release candidate acceptance
+﻿# Remote staging — final internal readiness acceptance
 
-Дата: 2026-09-16. Проверенный application commit: `8faf4d526173aa214489b1599f52286585885b60`.
-Последующий documentation checkpoint сохраняет тот же application tree; финальные
-local/GitHub/Railway HEAD и health фиксируются в deployment receipt после push.
+2026-09-16. Application `888ce5626ec0a48d61ea21d4246b7058722ec007`.
+Project eloquent-wisdom, environment staging, feature/sales-core-v2.
+Final docs-only HEAD/health receipt: `.staging-artifacts/internal_final_receipt.json`.
 
-## Scope and services
-
-Project `eloquent-wisdom`, environment `staging`, branch `feature/sales-core-v2`.
-
-| Service | Назначение |
+| Service | Runtime |
 |---|---|
-| ohmysmell-backend-staging | FastAPI; https://ohmysmell-backend-staging-staging.up.railway.app |
-| ohmysmell-manager-bot-staging | Отдельный manager poller + notification loop; @OhMySmell_ManagerBot |
-| Postgres | Существующая staging DB; private-network reference для worker |
+| ohmysmell-backend-staging | FastAPI/Uvicorn only, /health + /ready + /health/db |
+| ohmysmell-manager-bot-staging | python -m app.workers.manager_bot; /health + /ready; one replica; drain45 s |
+| Postgres | Existing staging DB, private network for remote processes |
 
-Worker health: https://ohmysmell-manager-bot-staging-staging.up.railway.app/health
-Ответ: status=ready, role=manager, environment=staging, polling=true,
-external_writes=false. Один replica, один DB advisory lock; второй процесс получил
-false от pg_try_advisory_lock до любого getUpdates. FastAPI polling не импортирует.
+Backend: https://ohmysmell-backend-staging-staging.up.railway.app
+Worker: https://ohmysmell-manager-bot-staging-staging.up.railway.app/health
+Both application deployments SUCCESS. No client/email service created without credentials.
+Production/main untouched. External writes false; no external operation rows or exported
+Order/Shipment IDs. Existing manager notifications are permitted and processed.
 
-Production services/DB и main не изменялись. Gmail OAuth, Tilda, платежи, реальные
-MoySklad customerorder/shipment и delivery API orders не выполнялись.
-EXTERNAL_WRITES_ENABLED=false в обоих сервисах. ExternalOperation и внешние IDs
-Order/Shipment пусты. Telegram send/edit разрешены и проверены.
+## A — Manager
 
-## A — Manager and Order lifecycle
+Synthetic inbound -> draft32 -> local Order14 -> full local warehouse allocation ->
+manual delivery method -> assembling -> assembled -> shipped -> paid. Real API/DB
+checks after every step: revision, amount, actor/timestamps, audit event count.
+Finalize and each action replayed without duplicate effects; stale action rejected.
+MoySklad guard returned disabled. Matching/catalog/stock use existing read-only access.
 
-`python -m scripts.release_candidate_e2e` на финальном application tree:
+## B — Client
 
-- Fake inbound с MARV007 → draft **22**, реальный read-only product matching.
-- Manager classification + заведомо synthetic local counterparty → ready.
-- Finalize → local Order **11**, повтор finalize возвращает тот же Order.
-- Full local allocation → delivery_method=manual → assembling → assembled →
-  shipped → paid. После каждого шага проверены staging DB, revision, immutable total,
-  actor/timestamps и число audit events. Записей внешней интеграции нет.
-- Повтор каждого действия сохраняет прежний effect/event count; stale action → 409.
+Real aiogram Update models -> separate dispatcher -> TelegramMethod calls handled by
+fake BaseSession -> persistent staging DB. /start -> /request -> MARV007;1 -> email
+-> /send -> draft33; unknown type/price remains reviewable. New dispatcher per update,
+duplicate /send returns same request, only sender owns status. Manager API sees the
+request and its email. No live client token or real client bot service claimed.
 
-Дополнительный тест внутри настоящего Railway worker на application commit `4d037be`
-(до добавления ограничений времени ожидания DB в `8faf4d5`):
-synthetic draft **18** → Order **8**, реальный Telegram sendMessage/editMessageText,
-весь fulfillment/payment flow, пять audit events. Повтор paid не меняет paid_at и
-не добавляет event. Проверены email в карточке и полное русское меню.
-Acknowledgement callback синтетический; человеческий tap не симулируется как реальный.
+## C — Retry/restart/concurrency
 
-## B — Client channel
+Real deployment restart from 466fea5 to 888ce56: existing Order12 finalized again via
+draft24 returns same ID; paid action replay preserves paid_at/revision and all five
+audit rows. Unfinished website draft25 remains needs_review. PostgreSQL tests cover
+cancellation before finalize commit (rollback then one order), engine disposal/restart,
+two managers competing to pay, concurrent matching revision, distinct client /send
+messages and identical update duplicates. Singleton lock rejects another session
+without starting a competing poller. Worker stopped/ready events checked on rollout.
 
-Fake client transport, отдельный client token отсутствует:
-/start → /request → товары/qty → email → /send → draft **23** в реальной staging DB.
-Unknown type и отсутствие цены сохраняются; manager HTTP endpoint видит source=telegram.
-Повтор update возвращает тот же номер. /status доступен только исходному sender.
-Клиентские handlers изолированы; manager callback отклоняется отдельным dispatcher.
+## D — Failure injection / API security
 
-PostgreSQL tests дополнительно подтверждают сохранение диалога между экземплярами
-service, reuse существующего customer по подтверждённому телефону и отсутствие
-identity takeover при введённом вручную контакте. Лишний Customer не создаётся.
+261 unit tests +14 real PostgreSQL tests (+7 subtests). Mocks cover DB unavailable,
+MoySklad timeout/401/429/500, Telegram timeout/bad request/edit failure, stale callbacks,
+email replay and crash before cursor save, expired Gmail history404, input/ownership,
+insufficient stock, missing price/counterparty and unavailable/guarded delivery.
+Gmail history expiry rescans INBOX including read messages. No cursor advance on
+incomplete batch. External uncertain writes require manual reconciliation.
 
-## C — API, duplicate/security acceptance
+API acceptance on 466fea5: 60 requests/209 assertions, website draft25, email draft26,
+local Order13. Later application changes are Gmail recovery/client polling ordering;
+final A/B/C and final deployment smoke run on 888ce56 and its docs-only successor.
+Public/internal boundaries, CORS, debug404, idempotency, tampering, integer money,
+retail review and stock checks pass. New OpenAPI includes errors, enum status fields,
+bounded IDs/query/pagination, and typed draft response schemas.
 
-Полный повтор прежнего remote API acceptance на `4d037be`: **60 HTTP requests / 209 assertions**.
-Каталог, pagination, stock formula, retail price null без wholesale fallback,
-checkout/replay/conflict, input tampering, auth, debug routes и CORS прошли.
-Synthetic website draft **19**, email draft **20**, direct Order **10**.
-Прямой POST /orders теперь требует Idempotency-Key. External export заблокирован.
-OpenAPI snapshot обновлён, order detail содержит fulfillment/payment/delivery/email.
+OSV: 57 pinned dependencies, 0 known findings. pip check, compileall, secret scan,
+git diff --check green. Latest inspected backend logs:87 lines, ERROR0, traceback0,
+api_failure0, TelegramConflictError0, known secrets0. Railway stderr INFO level
+classification is not an application ERROR. One pending notification warning is an
+expected handoff to the manager worker; queue completion checked separately.
 
-## Performance
+## E — Backup/restore and migrations
 
-Однократные измерения, не load-test и не p95. Worker — реальный Railway процесс
-на `4d037be`, настоящие Telegram send/edit, но synthetic callback acknowledgement.
-Public API и локальные handler probes повторены на `8faf4d5`.
+Native pg_dump REPEATABLE READ snapshot of public:19 tables,259 rows. Restored into
+new DB; row hashes, column metadata, sequences and head verified. Empty DB upgrade,
+historical i82 restore+upgrade and Alembic check pass. j93 destructive downgrade
+refused on disposable DB. Four generated test databases removed; live staging never
+restored over. Independent synthetic fixture schema create/preview/cleanup passes;
+unknown existing records untouched. See BACKUP_RESTORE.md for exact commands/hash.
+Migration head remains j93d5087bc10; no new DB migration in this task.
 
-| Операция | ms |
-|---|---:|
-| Manager menu, два Telegram send | 390.94 |
-| Order list + send | 214.63 |
-| Order card + send | 282.06 |
-| Начать сборку callback + edit | 343.52 |
-| Заказ собран callback + edit | 428.06 |
-| Отгружен callback + edit | 277.42 |
-| Оплачен callback + edit | 297.73 |
-| Read-only catalog внутри worker | 2738.31 |
-| Product matching через public staging API | 3800.12 |
-| Fulfillment API actions, workstation→Railway | 266–376 |
-| Payment API action, workstation→Railway | 272.93 |
+## Repeatable performance
 
-Локальный workstation→public PostgreSQL handler probe показал меню 1857 ms,
-список 2488 ms, карточку 6369 ms: эти значения включают множество дальних DB trips.
-Remote worker использует private DB network и показывает приведённые выше 215–428 ms.
-Карточки/статусы не вызывают MoySklad. Stock freshness не ослаблялась ради скорости.
+`python -m scripts.matching_benchmark`: five synthetic inbound matching requests,
+shared synthetic customer, includes HTTP+DB+matching:3390.64,1131.54,1838.38,1222.66,
+1428.38 ms; median1428.38 ms. Probe drafts27–31. Not consistently >3 s; no speculative
+optimization or stock cache introduced. Product catalog cache remains TTL60 s.
 
-## Database, tests and observability
+Final A flow API: assembling563.04, assembled309.30, shipped388.14, paid294.05 ms.
+Single initial matching3222.14 ms, warehouse allocation2394.60 ms (live stock read).
+Local handler fake-send probe via public DB: menu1934/list2829/card6759 ms; this
+is not remote worker user latency. Worker uses private DB. Prior accepted real
+Telegram send/edit baseline inside Railway on 4d037be: menu390.94/list214.63/card282.06,
+actions277.42–428.06/paid297.73 ms. Human callback acknowledgement not claimed;
+manager send/edit were real, callback inputs synthetic. No live client measurement.
 
-- `j93d5087bc10`: additive operational fields/audit/client persistence/source.
-- Fresh schema upgrade head + alembic check: passed.
-- Existing staging upgrade + read-only Alembic check: passed, no model drift.
-- Unit: **226 passed**, 11 opt-in PostgreSQL tests пропускаются в unit run;
-  дополнительные 7 subtests. PostgreSQL suite отдельно: **11 passed**, 281.89 s.
-  Всего **237 passed** в двух наборах, без двойного подсчёта skipped tests.
-- compileall, git diff --check и secret scan: passed, credential findings=0.
-- Проверены one/two-store split, insufficient stock, partial rejection, concurrent
-  finalize/actions/checkout/email, actor permissions, callback expiry/replay/errors.
-- Structured startup исправлен для запуска python -m; events идут в app.bot.runtime.
-  Lifecycle/action logs содержат IDs/action/duration/result, без email/phone/token.
-- Notification queue обработана: pending=0 на remote worker acceptance.
-- No TelegramConflictError, traceback, external writes или leaked known secrets в
-  проверенных логах. Обычные Uvicorn INFO на stderr Railway помечает level=error;
-  это не application failure. Ожидаемый warning API о pending notification до
-  обработки отдельным worker не считается провалом сохранения заявки.
+## Remaining gates and evidence
 
-Во время работы были временные timeout подключения к публичной DB и один прерванный
-локальный прогон, ожидавший сетевого ответа. Добавлены client-side connect timeout
-10 s, command timeout 30 s, pool timeout 15 s. Итоговый полный PostgreSQL прогон
-прошёл: 11/11. Railway config flags первоначально не применились из-за stdin
-priority CLI; исправлено JSON patch, затем verified effective command и health.
-Все итоговые сценарии повторены после исправлений.
+Only external account/configuration/origin/live acceptance and separately approved
+production/write activation remain in scope. Credentials do not replace ordinary
+per-order carrier tariff/route/package input. First live warehouse empty; two-store
+split verified by tests. Missing retail price routes request to manager review.
+Notifications at-least-once may duplicate a message after failure, never order effects.
 
-## Remaining external gates
-
-Отдельный client token; Gmail OAuth/worker; final Tilda origin/CORS/browser flow;
-production secrets/infrastructure/backup and controlled activation. Retail price
-mapping нужен только для priced retail, review intake уже работает. Первый live
-warehouse пуст, поэтому live split не заявлен; автоматический split пройден.
-Отдельно остаётся разрешение на будущие внешние writes/delivery/payment integrations.
-
-Evidence (ignored local `.staging-artifacts`): release_candidate_e2e.json,
-manager_live_e2e.json, remote_acceptance.json, worker_logs_redacted.jsonl,
-remote_logs_summary.json, validation.json, staging-tests.xml, rc_services.json,
-rc_final_receipt.json. Secret/key artifacts не публиковать; оба временных SSH public
-keys приёмки удалены из Railway, локальные private/public key files также удалены.
+Ignored evidence: release_candidate_e2e.json, restart_validation.json,
+remote_acceptance.json, matching_benchmark.json, backup_restore.json,
+staging-tests.xml, dependencies.json, remote_logs_summary.json, worker_logs_redacted.jsonl,
+internal_final_receipt.json. Backups/PII/secret files stay outside git. No temporary SSH
+keys were created for this continuation; prior acceptance keys had been removed.
