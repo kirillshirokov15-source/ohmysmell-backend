@@ -1,6 +1,8 @@
 # External integration connection checklists
 
-No integration below was activated by this readiness task. Production/main untouched.
+Gmail controlled read-only staging acceptance is now complete locally (2026-09-16).
+Remote worker acceptance is recorded separately in FINISH_REPORT.md. Other external
+integrations below remain disabled. Production/main untouched.
 Keep EXTERNAL_WRITES_ENABLED=false until a separate write activation decision.
 Commands run in the intended service environment; never copy the staging DB into
 production variables. Application code and entrypoints are already provided.
@@ -10,17 +12,43 @@ production variables. Application code and entrypoints are already provided.
 - Credentials: Google OAuth desktop client JSON + authorized user token JSON with
   exactly https://www.googleapis.com/auth/gmail.readonly; owner consent required.
 - Env: GMAIL_CREDENTIALS_FILE, GMAIL_TOKEN_FILE, GMAIL_USER_ID=me,
-  GMAIL_INITIAL_QUERY, EMAIL_POLL_INTERVAL=60, DATABASE_URL, APP_ENV;
+  GMAIL_INITIAL_QUERY, GMAIL_ALLOWED_MESSAGE_IDS, EMAIL_POLL_INTERVAL=60, DATABASE_URL, APP_ENV;
   MOYSKLAD_TOKEN/price mapping for product matching. Production additionally
   EMAIL_PRODUCTION_ACTIVATED=true after approval. Internal API token/CORS not needed.
-- Put client JSON on a restricted persistent volume; run
+- Put client JSON outside the repository in a restricted directory; run
   `python -m app.scripts.gmail_oauth` once in an interactive owner-controlled session.
-  Transfer authorized token to the worker volume without printing it. Runtime may
-  refresh/rewrite that file; do not use ephemeral container storage for it.
+  Transfer authorized token without printing it. Runtime may refresh/rewrite that file.
+- Railway alternative (implemented): GMAIL_CREDENTIALS_JSON_BASE64 and
+  GMAIL_TOKEN_JSON_BASE64 are SECRET variables containing base64 of the respective
+  JSON files. Upload via Railway Variables UI or CLI `variable set KEY --stdin
+  --skip-deploys` with captured output, never values in arguments. Set paths to
+  /tmp/ohmysmell-gmail/gmail-credentials.json and /tmp/ohmysmell-gmail/gmail-token.json.
+  Runtime validates JSON/scopes and reconstructs missing files with mode 0600 inside
+  a 0700 directory. Existing refreshed token files are preserved. Ephemeral restart
+  reconstructs from the secret containing the refresh token; rotating/revoking OAuth
+  requires updating that secret. Base64 is encoding, not encryption; protect it as a token.
+- Staging requires explicit GMAIL_ALLOWED_MESSAGE_IDS (comma-separated IDs). The same
+  allowlist applies to first intake, history polling and expired-history recovery.
+  GMAIL_INITIAL_QUERY alone is NOT a history filter. Current acceptance permits only
+  one controlled message; expanding intake requires a separately approved selector.
+- Runtime derives a cursor key from account + selector (hashed, no email in logs).
+  Existing legacy `gmail` cursor is left intact. A changed selector starts its own
+  cursor; durable external message IDs still deduplicate. One account per DB remains
+  the supported topology. Do not manually reset cursors.
 - Smoke: `python -m app.scripts.gmail_smoke_test`; confirm account privately and no writes.
   Launch `python -m app.workers.email_runtime`, one replica, /health and /ready.
   Send one test order email, verify one draft, restart, verify unchanged draft ID
-  and saved cursor. History 404 rescans INBOX including already-read messages; durable IDs prevent duplicates.
+  and saved cursor. History 404 with an allowlist only re-fetches those IDs. Without
+  an allowlist, recovery rescans INBOX including already-read messages.
+- Gmail HTTP transport permits GET only. Stored token scope must be exactly readonly.
+  Requests have a 20-second timeout and verified TLS; explicit OAuth refresh uses
+  bounded connect/read timeouts. Failed polls retain cursor and retry at the configured
+  interval (60 seconds), without a tight retry loop. Revoked authorization fails startup
+  or makes readiness unhealthy; reauthorize deliberately, never modify the live token
+  to simulate failure. Local fakes cover expired/revoked token and 401/429/500.
+- Email service has NO Telegram token. The manager worker delivers its durable
+  notification outbox. Backend and manager do not start Gmail polling. One replica,
+  PostgreSQL advisory ownership, overlap=0, drain=45 seconds, /health and /ready.
 - Disable: stop only email service; preserve token/cursor, revoke OAuth if compromised.
 
 ## Tilda

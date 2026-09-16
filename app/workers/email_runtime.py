@@ -22,9 +22,13 @@ def validate_email():
         raise ValueError("GMAIL_TOKEN_FILE must contain an authorized readonly token")
     if settings.email_poll_interval < 5:
         raise ValueError("EMAIL_POLL_INTERVAL must be at least 5 seconds")
+    if settings.environment == "staging" and not os.getenv("GMAIL_ALLOWED_MESSAGE_IDS", "").strip():
+        raise ValueError("Staging Gmail requires explicit allowed message IDs")
 
 
 async def run(worker=None):
+    from app.integrations.email.secret_files import prepare_secret_files
+    prepare_secret_files()
     validate_email()
     configure_application_logging()
     from app.monitoring import configure_monitoring
@@ -36,7 +40,8 @@ async def run(worker=None):
         from app.integrations.email.gmail_provider import GmailEmailProvider
         provider = GmailEmailProvider()
         provider.service = await asyncio.to_thread(provider._build_service)
-        worker = EmailIngestionWorker(provider=provider)
+        cursor_key = await asyncio.to_thread(provider.cursor_key)
+        worker = EmailIngestionWorker(provider=provider, provider_name=cursor_key)
     stop, failed = asyncio.Event(), asyncio.Event()
     restore_signals = install_stop_signals(asyncio.get_running_loop(), stop)
     state = {"status": "starting", "role": "email", "environment": settings.environment, "ready": False}

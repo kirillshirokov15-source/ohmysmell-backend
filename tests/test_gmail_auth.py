@@ -77,7 +77,7 @@ def test_interactive_flow_uses_configured_paths_with_spaces(gmail_paths):
 
 def test_expired_token_refreshes_and_is_saved(gmail_paths):
     _, token_path = gmail_paths
-    token_path.write_text("{}", encoding="utf-8")
+    token_path.write_text(__import__("json").dumps({"scopes": list(GMAIL_SCOPES)}), encoding="utf-8")
     credentials = Mock(
         expired=True,
         refresh_token="refresh-secret",
@@ -118,6 +118,25 @@ def test_auth_helper_does_not_log_secrets(gmail_paths, capsys):
     output = capsys.readouterr()
     assert "TOKEN_SECRET" not in output.out + output.err
     assert "refresh-secret" not in output.out + output.err
+
+
+def test_revoked_refresh_stops_without_interactive_oauth(gmail_paths, capsys):
+    import json
+    from google.auth.exceptions import RefreshError
+    _, token_path = gmail_paths
+    token_path.write_text(json.dumps({"scopes": list(GMAIL_SCOPES)}), encoding="utf-8")
+    credentials = Mock(expired=True, refresh_token="PRIVATE", valid=False)
+    credentials.refresh.side_effect = RefreshError("PRIVATE")
+    with (
+        patch("google.oauth2.credentials.Credentials.from_authorized_user_file", return_value=credentials),
+        patch("google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file") as interactive,
+        patch.object(gmail_auth, "_save_credentials") as save,
+    ):
+        with pytest.raises(RefreshError):
+            gmail_auth.load_gmail_credentials(allow_interactive=False)
+        interactive.assert_not_called()
+        save.assert_not_called()
+    assert "PRIVATE" not in capsys.readouterr().out
 
 
 def test_oauth_cli_only_invokes_explicit_interactive_auth(monkeypatch, capsys):

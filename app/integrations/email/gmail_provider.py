@@ -1,5 +1,8 @@
 import asyncio
 import base64
+import hashlib
+import os
+import re
 from datetime import datetime, timezone
 from email.utils import parseaddr
 from html.parser import HTMLParser
@@ -42,9 +45,37 @@ class _HTMLTextExtractor(HTMLParser):
         )
 
 
+class ReadOnlyHttp:
+    """Gmail API transport cannot send/modify/delete, even via an accidental SDK call.
+    OAuth refresh runs inside AuthorizedHttp, independently of Gmail operations.
+    """
+    def __init__(self, http):
+        self.http = http
+
+    def request(self, uri, method="GET", *args, **kwargs):
+        if method.upper() != "GET":
+            raise RuntimeError("Gmail transport permits GET only")
+        return self.http.request(uri, method, *args, **kwargs)
+
+    def close(self):
+        self.http.close()
+
+
 class GmailEmailProvider:
-    def __init__(self, service=None) -> None:
+    def __init__(self, service=None, *, allowed_message_ids=None) -> None:
         self.service = service
+        values = allowed_message_ids if allowed_message_ids is not None else os.getenv("GMAIL_ALLOWED_MESSAGE_IDS", "").split(",")
+        self.allowed_message_ids = tuple(sorted({v.strip() for v in values if v.strip()}))
+        if any(not re.fullmatch(r"[a-fA-F0-9]{1,64}", value) for value in self.allowed_message_ids):
+            raise ValueError("Invalid Gmail message selector")
+
+    def cursor_key(self) -> str:
+        """Scope cursors to authenticated account AND selector, without logging email."""
+        if self.service is None:
+            self.service = self._build_service()
+        account = self.service.users().getProfile(userId=settings.gmail_user_id).execute()["emailAddress"].strip().casefold()
+        scope = account + "\n" + (",".join(self.allowed_message_ids) or "inbox:" + settings.gmail_initial_query)
+        return "gmail:" + hashlib.sha256(scope.encode()).hexdigest()[:40]
 
     async def fetch_unprocessed(
         self, cursor: str | None = None
@@ -66,6 +97,8 @@ class GmailEmailProvider:
                 message_ids, next_cursor = self._bootstrap(service, recovery=True)
         else:
             message_ids, next_cursor = self._bootstrap(service)
+        if self.allowed_message_ids:
+            message_ids = [value for value in message_ids if value in self.allowed_message_ids]
         messages = [
             message
             for message_id in message_ids
@@ -87,7 +120,10 @@ class GmailEmailProvider:
         ).execute()
         # After history expiration, unread-only bootstrap can lose messages read
         # by the owner during downtime. Rescan INBOX; durable IDs deduplicate it.
-        message_ids, _ = self._initial_message_ids(service, query="in:inbox" if recovery else None)
+        if self.allowed_message_ids:
+            message_ids = list(self.allowed_message_ids)
+        else:
+            message_ids, _ = self._initial_message_ids(service, query="in:inbox" if recovery else None)
         return message_ids, profile.get("historyId")
 
     def _build_service(self):
@@ -96,7 +132,9 @@ class GmailEmailProvider:
         credentials = load_gmail_credentials(allow_interactive=False)
         import httplib2
         from google_auth_httplib2 import AuthorizedHttp
-        return build("gmail", "v1", http=AuthorizedHttp(credentials, http=httplib2.Http(timeout=20)), cache_discovery=False)
+        from app.integrations.http_tls import verified_ca_bundle
+        http = AuthorizedHttp(credentials, http=httplib2.Http(timeout=20, ca_certs=verified_ca_bundle()))
+        return build("gmail", "v1", http=ReadOnlyHttp(http), cache_discovery=False)
 
     def readonly_smoke_check(self, max_messages: int = 5) -> dict:
         service = self.service or self._build_service()

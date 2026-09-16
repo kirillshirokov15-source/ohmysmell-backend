@@ -1,4 +1,5 @@
 import os
+import json
 from pathlib import Path
 
 from app.config.settings import settings
@@ -6,6 +7,16 @@ from app.config.settings import settings
 
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 GMAIL_SCOPES = (GMAIL_READONLY_SCOPE,)
+
+
+def validate_token_scopes(data):
+    if not isinstance(data, dict):
+        raise ValueError("Invalid Gmail token document")
+    scopes = data.get("scopes", [])
+    if isinstance(scopes, str):
+        scopes = scopes.split()
+    if not isinstance(scopes, list) or set(scopes) != set(GMAIL_SCOPES):
+        raise ValueError("Gmail token must grant exactly gmail.readonly")
 
 
 def load_gmail_credentials(*, allow_interactive: bool = False):
@@ -18,6 +29,7 @@ def load_gmail_credentials(*, allow_interactive: bool = False):
 
     credentials = None
     if token_path.exists():
+        validate_token_scopes(json.loads(token_path.read_text(encoding="utf-8-sig")))
         credentials = Credentials.from_authorized_user_file(
             str(token_path), GMAIL_SCOPES
         )
@@ -66,7 +78,9 @@ def _save_credentials(token_path: Path, serialized_credentials: str) -> None:
     token_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = token_path.with_name(f".{token_path.name}.tmp")
     try:
-        temporary_path.write_text(serialized_credentials, encoding="utf-8")
+        descriptor = os.open(temporary_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(serialized_credentials)
         os.replace(temporary_path, token_path)
     finally:
         temporary_path.unlink(missing_ok=True)

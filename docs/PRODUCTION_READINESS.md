@@ -15,8 +15,11 @@ production acceptance: production has not been connected or deployed.
 Manager/catalog/email matching additionally need read-only MOYSKLAD_TOKEN and the
 approved price/warehouse mapping. Client free-text intake does not need MoySklad.
 GMAIL_CREDENTIALS_FILE is needed for initial OAuth, not every worker boot when an
-already-authorized token exists. Email token file must be writable on persistent
-storage for refresh. Backend/client/manager never perform Gmail authorization.
+already-authorized token exists. Email token file must be writable for refresh.
+Use a restricted volume or the implemented secret-env reconstruction described in
+EXTERNAL_INTEGRATIONS.md. GMAIL_TOKEN_JSON_BASE64 and GMAIL_CREDENTIALS_JSON_BASE64
+are secrets; GMAIL_ALLOWED_MESSAGE_IDS is a non-secret controlled intake selector,
+mandatory for staging. Backend/client/manager never perform Gmail authorization.
 
 Common safe defaults: EXTERNAL_WRITES_ENABLED=false, DEBUG_ENDPOINTS_ENABLED=false,
 MONITORING_ENABLED=false, PUBLIC_CHECKOUT_ENABLED=false. Client/email credentials
@@ -40,7 +43,10 @@ one replica, overlap 0, drain 45 s, bounded on-failure restart. Alert on /ready 
 Use the same-environment Postgres private DATABASE_URL reference. Give each bot a
 unique token; do not start a second poller. Email is one account/cursor per database.
 The manager notification loop belongs only to manager worker, never backend/client.
-Future client/email services were deliberately not created/started without tokens.
+Client service remains unstarted without its token. Gmail now has local controlled
+live acceptance; current staging email deployment evidence is in FINISH_REPORT.md.
+Production Gmail activation is still a separate decision. The email service must not
+receive the manager Telegram token; notifications are delivered by the manager outbox.
 
 ## Activation checklist (future, separately authorized)
 
