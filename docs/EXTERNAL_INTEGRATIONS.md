@@ -1,7 +1,7 @@
 # External integration connection checklists
 
-Gmail controlled read-only staging acceptance is now complete locally (2026-09-16).
-Remote worker acceptance is recorded separately in FINISH_REPORT.md. Other external
+Gmail controlled read-only staging acceptance and remote worker restart are complete
+(2026-09-16), with evidence in FINISH_REPORT.md. Other external
 integrations below remain disabled. Production/main untouched.
 Keep EXTERNAL_WRITES_ENABLED=false until a separate write activation decision.
 Commands run in the intended service environment; never copy the staging DB into
@@ -49,6 +49,11 @@ production variables. Application code and entrypoints are already provided.
 - Email service has NO Telegram token. The manager worker delivers its durable
   notification outbox. Backend and manager do not start Gmail polling. One replica,
   PostgreSQL advisory ownership, overlap=0, drain=45 seconds, /health and /ready.
+  Use /health for Railway deployment gating so a replacement can wait for ownership;
+  /ready stays unhealthy until its first successful poll. Alert on /ready separately.
+- Current staging service: ohmysmell-email-worker-staging, Online, one replica.
+  Accepted message -> inbound34/draft34, cursor persisted, replay/restart deduplicated.
+  Leave its current message allowlist intact until additional intake is authorized.
 - Disable: stop only email service; preserve token/cursor, revoke OAuth if compromised.
 
 ## Tilda

@@ -43,8 +43,9 @@ one replica, overlap 0, drain 45 s, bounded on-failure restart. Alert on /ready 
 Use the same-environment Postgres private DATABASE_URL reference. Give each bot a
 unique token; do not start a second poller. Email is one account/cursor per database.
 The manager notification loop belongs only to manager worker, never backend/client.
-Client service remains unstarted without its token. Gmail now has local controlled
-live acceptance; current staging email deployment evidence is in FINISH_REPORT.md.
+Client service remains unstarted without its token. Gmail controlled live acceptance
+and Railway restart passed; ohmysmell-email-worker-staging is Online (one replica).
+Current staging email deployment evidence is in FINISH_REPORT.md.
 Production Gmail activation is still a separate decision. The email service must not
 receive the manager Telegram token; notifications are delivered by the manager outbox.
 

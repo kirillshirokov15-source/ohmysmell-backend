@@ -1,11 +1,67 @@
 ﻿# OhMySmell — internal readiness completed
 
+## Gmail live staging acceptance — 2026-09-16
+
+**Passed.** Application commit `9f74540689d8bb170a78062fa92ef3a13a2f87eb`,
+feature/sales-core-v2. Production/main/Tilda untouched; EXTERNAL_WRITES_ENABLED=false.
+Account identity confirmed privately; no account address, OAuth value or message
+body is recorded here. Scope: `https://www.googleapis.com/auth/gmail.readonly`.
+
+- OAuth files exist outside the repository, are untracked, and their filenames are
+  covered by .gitignore/.dockerignore. Scope validation + GET-only Gmail transport
+  prevent send/modify/delete/archive. TLS verification remains enabled.
+- Only controlled message `1a0aad59fceb36b1` was ingested. It was already read;
+  labels remained unchanged. Allowlist applies to bootstrap, history and recovery.
+- Real provider/parser/customer/matching/price/counterparty/draft path used the
+  verified staging DB. First run: received=1, processed=1, failed=0.
+  Inbound **34**, draft **34**, customer **33**, status **needs_review**,
+  customer_type **unknown**, counterparty absent (0 candidates).
+- Chanel qty=2 remains ambiguous: CHNL010 first, CHNL018 second; no silent selection.
+  Marvis qty=3 matched MARV007. Draft prices/total are null because customer type is
+  unknown. Separate read-only pricing check returned wholesale **56000 minor units**;
+  retail missing-price handling did not fall back to wholesale.
+- Message historyId **339416**; saved account/selector cursor **339454** under
+  `gmail:7946a9349bce24507fc6d322b2b1643f21a3172c`. No manual cursor UPDATE.
+- Next poll received=0, processed=0, failed=0. Direct replay through the same ingestion
+  service returned draft34. Inbound/draft/customer counts increased once only; Order
+  count stayed 14. Relevant PostgreSQL unique constraints checked.
+- One immediate notification to the single active manager succeeded; outbox remained
+  sent/attempts=0 across retries/restarts. Card/keyboard checked, no callbacks performed.
+  This proves one send in this run, not exactly-once Telegram delivery under every
+  possible crash (notification outbox remains at-least-once).
+- Two independent local runtime starts loaded the saved cursor, completed empty polls,
+  excluded a second advisory-lock owner and stopped through the installed signal
+  handler. Railway redeploy also logged worker_stopped and resumed empty polling.
+- **ohmysmell-email-worker-staging Online**, service
+  `56306c0e-ff3a-4b34-89e7-856c27d76da5`, one replica, explicit email_runtime entrypoint,
+  staging private Postgres reference, no Telegram token, writes=false. OAuth secret env
+  reconstructs private files at boot; secret transfer and resolved DB identity verified.
+  Deployment healthcheck /health permits singleton handoff; /ready requires successful
+  recent polling. Remote polls measured 114–213 ms (empty batches, not parsing latency).
+- Backend/manager /health and /ready: 200. Internal request without auth: 401;
+  debug endpoint: 404. Remote logs: no tracebacks or known secret matches.
+- **295 tests passed: 281 unit +14 PostgreSQL, plus 7 subtests**. Includes revoked/expired
+  token, 401/429/500 recovery, history expiration, selector isolation, token scope,
+  blocked writes, secret reconstruction and existing crash/replay regressions.
+  Failures used mocks; the real account/token was not deliberately broken.
+  Compileall, Alembic current/check, secret scan, diff check passed. Head remains
+  `j93d5087bc10`; no migration needed.
+
+Controlled Gmail acceptance has no remaining blocker. Remote worker intentionally
+polls ONLY the accepted message ID. Normal mailbox intake is not enabled; expanding
+the allowlist requires approval of the next controlled message(s). A second email was
+unnecessary to prove persisted history polling/restart/idempotency.
+Ignored local evidence: `.staging-artifacts/gmail_*.json`, `email_*.json`.
+Final deployment SHA is verified after documentation push.
+
+## Historical internal-readiness checkpoint
+
 Дата: 2026-09-16. Ветка feature/sales-core-v2.
 Проверенный application checkpoint: `888ce5626ec0a48d61ea21d4246b7058722ec007`.
 Финальный documentation commit сохраняет application tree; local/GitHub/Railway HEAD
 и health фиксируются в `.staging-artifacts/internal_final_receipt.json` после push.
-Production/main не изменены. EXTERNAL_WRITES_ENABLED=false. Новые внешние credentials
-не подключались, клиентский/email remote worker не запускались.
+На этом историческом checkpoint production/main не изменены, external writes=false;
+Gmail live acceptance и remote email worker добавлены позже и описаны выше.
 
 ## Результат
 
@@ -71,7 +127,8 @@ worker использует private DB network. Подробности в REMOTE
 
 ## Границы и оставшиеся подключения
 
-- Gmail OAuth отсутствует; readonly runtime/fakes готовы, нужен live account acceptance.
+- Gmail readonly live acceptance пройден; staging email worker работает с одним
+  разрешённым message ID. Production mailbox activation — отдельное решение.
 - Tilda отсутствует; нужен exact origin/domain и browser checkout acceptance.
 - Отдельного client token нет; код/runtime/transport/PG tests готовы, нужен live bot.
 - Delivery adapters и operator validate/prepare/submit command готовы. Нужны credentials
@@ -97,7 +154,7 @@ worker использует private DB network. Подробности в REMOTE
 - [x] Synthetic fixtures/preview/owned cleanup и retention policy.
 - [x] Unit/PG/E2E/dependency/security checks и staging deploy.
 - [x] Per-process production template, incident/runbooks, connection checklists.
-- [ ] Gmail credentials -> OAuth/live acceptance -> email activation.
+- [x] Gmail credentials -> OAuth/live staging acceptance -> isolated email worker.
 - [ ] Exact Tilda origin/domain -> browser checkout acceptance.
 - [ ] Separate client token -> live client acceptance.
 - [ ] Delivery credentials/account configuration -> controlled live acceptance.
