@@ -1,185 +1,92 @@
-> RC extension: manager/client/order operations are described in MANAGER_BOT.md, CLIENT_BOT.md and ORDER_LIFECYCLE.md. The historical acceptance below predates these changes; current RC evidence is appended after staging validation.
+# Release candidate — OhMySmell
 
-# OhMySmell — FINISH REPORT
+Дата: 2026-09-16. Ветка: feature/sales-core-v2. Application checkpoint: 8faf4d5.
+Production и main не изменялись. EXTERNAL_WRITES_ENABLED=false в API и worker.
 
-Дата: 2026-09-07. Ветка: feature/sales-core-v2.
+## Что готово
 
-Подготовлен и проверен законченный staging sales core с versioned website intake,
-manager review, локальными заказами и fulfillment plans. Основная staging DB
-обновлена. Production DB/deployment, Tilda, реальный Gmail OAuth и внешние
-бизнес-записи не затрагивались. Это готовность в разрешённом staging scope;
-production activation остаётся контролируемым отдельным этапом.
+- Manager Telegram workspace: русское меню, review/ready drafts, новые/в сборке/
+  собранные/отгруженные/отменённые Orders, paid/unpaid, поиск и страницы списков.
+- Карточка: имя, email, телефон/Telegram, source, customer type, контрагент,
+  товары/qty/цены/итог, складские планы, сборка/оплата/доставка. Большие заказы:
+  `/items ID`. После finalize — «Открыть заказ».
+- Fulfillment new → assembling → assembled → shipped; independent unpaid → paid.
+  Actor/timestamps, paid_at/paid_by_manager_id, payment_note, audit events.
+  Проблема/проверка блокирует сборку. Отмена до оплаты/отгрузки — с подтверждением.
+- Delivery method/reference/status хранятся локально. Выбор СДЭК/Яндекс не вызывает API.
+- Client channel: /start → /request → товары/qty → контакт → /send → номер;
+  /status только для своей заявки, /manager для связи. Persistent conversation,
+  update deduplication, existing identity priority, неизвестный тип — manager review.
+- Role separation: отдельные dispatchers/tokens. Клиентские callback никогда не
+  достигают manager handlers. Цена и privileged status не принимаются от клиента.
+- Idempotency: finalize, direct internal Order, operational actions и client updates.
+  Row locks, revision checks, durable audit, concurrency tests. Все суммы — копейки.
+- Два склада: полный deterministic split, недостаток отклоняется атомарно,
+  складские блоки показываются менеджеру; внешних резервов нет.
+- Runtime: отдельный Railway manager service, одна replica и DB session lock на bot ID,
+  health/structured startup, controlled shutdown, отдельная очередь уведомлений.
+  FastAPI не запускает Telegram polling. API catalog/checkout и OpenAPI сохранены.
 
-## 1. Что готово
+## Проверки
 
-- Audit кода, архитектуры, DB, API, concurrency, security, integrations и performance.
-- Закрыт публичный legacy /orders, запрещены frontend price/type authority и
-  изменение существующего профиля через checkout.
-- Customer/identities, email/channel intake, matching, integer pricing, draft review,
-  local finalize/reject, persisted website idempotency и warehouse allocation.
-- Telegram списки, карточки, поиск товара /match, pagination /drafts, versioned
-  callbacks, early ACK, async auth/HTTP, no-op и stale callback handling.
-- Guarded customerorder/demand payloads, persistent external-operation journal,
-  delivery models/service/adapters, notification retry queue.
-- Tilda contract, OpenAPI snapshot, environment/deployment/migration/rollback runbooks.
-- Устранены 1474 отслеживаемых файла venv из Git index, сам venv сохранён. Исправлен
-  UTF-16 requirements.txt; обновлены уязвимые зависимости.
+Итоговые результаты и измерения: [Remote acceptance](REMOTE_STAGING_ACCEPTANCE.md).
+**237 tests passed**: 226 unit и 11 PostgreSQL; дополнительно 7 subtests.
+Unit suite, PostgreSQL suite, compileall, fresh migration rehearsal, existing staging
+upgrade, read-only Alembic check и diff/secret checks пройдены.
 
-## 2. Итоговая архитектура
+Миграция: j93d5087bc10 после i82c4f76ab09. Additive order fields/indexes, audit,
+client conversations/updates, source=telegram. Без stamp и destructive downgrade.
+Email карточки — read-only projection, новая identity для него не создаётся.
 
-Channels → Customer/Identity → matching → PriceService → InboundMessage/Draft →
-manager review → local Order → stock snapshot → Shipment/WarehouseAllocation.
-Website использует тот же draft/review/finalize core и отдельную atomic checkout
-idempotency boundary. ExternalOperation отделяет локальный intent от будущего
-guarded HTTP. Подробнее и схема: [ARCHITECTURE.md](ARCHITECTURE.md).
+## Остались подключения и activation
 
-## 3. Реализованные flows
+1. Gmail: отдельные OAuth client/token, consent владельца, read-only ingestion smoke,
+   включение отдельного email worker и проверка duplicate/cursor recovery.
+2. Tilda: финальная страница и exact HTTPS origin → CORS → browser checkout smoke.
+   В браузере только public catalog/checkout и persistent Idempotency-Key.
+3. Credentials/config: production DB/internal token/manager token и manager allowlist;
+   отдельный client Telegram token для включения дополнительного live канала;
+   retail price mapping, если нужен priced retail Order вместо заявки с review.
+4. Controlled production activation: отдельное разрешение, backup/restore и migration
+   rehearsal на копии, restricted runtime role, final origin, ingress rate limits,
+   monitoring/alerts, one worker replica, BOT_PRODUCTION_ACTIVATED=true только тогда.
+   Canary checkout/manager workflow с external writes=false, наблюдение и rollback.
 
-| Flow | Результат |
-|---|---|
-| FakeEmail / Gmail readonly architecture | Parsed lines, customer, matching, pricing, draft |
-| Unknown customer / ambiguous product / missing price | Controlled review |
-| Exact article/code/name, localized suffix | Однозначный match; fuzzy только кандидаты |
-| Telegram/internal manager review | Тип клиента, товар, контрагент, reject/finalize |
-| Concurrent finalize / duplicate email | Один Order / один draft |
-| Website catalog/checkout | Server stock/price validation, 202 review, durable replay |
-| Retail без price type | total_minor=null, без wholesale fallback |
-| Два склада | Persisted split plans, one Shipment per order/store |
-| MoySklad export | Guard + pure payload + durable intent; fake-tested |
-| CDEK/Yandex/manual | Local delivery draft, guarded adapters; fake-tested |
-| Instagram/Telegram client | Adapter contracts + trusted ingest_channel, без live transport |
-| Notification recovery | Durable queue, lease, retry/backoff, at-least-once delivery |
+MoySklad writes, настоящие CDEK/Yandex orders и платежи не включены. Их будущая
+активация требует отдельной приёмки и разрешения. Payment tracking здесь — только
+ручная отметка факта оплаты менеджером, без банка и эквайринга.
 
-## 4. Tests и validation
+## Known limitations
 
-- **168 unit/contract tests passed**, 7 subtests passed; 6 PostgreSQL tests штатно
-  skipped в обычном запуске, чтобы исключить случайный доступ к реальной DB.
-- **6/6 opt-in PostgreSQL integration tests passed** в изолированной staging schema;
-  последний запуск 96,69 секунды. Совокупно 174 теста + 7 subtests.
-- Полный pytest, compileall app/tests/alembic/scripts, git diff --check — прошли.
-- Fresh Alembic upgrade head и строгий alembic check — прошли на PostgreSQL с нуля.
-- Upgrade/check основной staging DB — прошли, head i82c4f76ab09.
-- pip check — no broken requirements. OSV: 56 pinned dependencies, 0 findings
-  после aiohttp 3.14.3, cryptography 50.0.0, pyasn1 0.6.4.
-- Скан reviewable Git tree на существующие local credentials — 0 findings.
+- Нет отдельного client token: клиентские updates проверены fake transport с реальной
+  staging DB, запуск client service не выполнялся. Код/runtime готовы.
+- Розничного прайса нет: клиент получает заявку с проверкой, оптовая цена не раскрывается.
+- Первый live склад пуст: live two-store split не воспроизводится; fakes/PostgreSQL
+  подтверждают split и отказ частичного плана. Реальные остатки не менялись.
+- Telegram callbacks в E2E синтетические, send/edit настоящие. Человеческое нажатие
+  физической Telegram-кнопки не выдается за проведённый тест.
+- Notifications at-least-once: после аварии возможен повтор сообщения, но не повтор
+  изменения заказа. Local warehouse plan не является внешним резервом.
+- Production инфраструктура и поведение не проверялись и не активировались.
 
-Тестовая защита запрещает реальную HTTP-сеть и DB connections в unit tests.
-Изначально один устаревший mock попытался открыть DB; соединение было заблокировано,
-но pytest показал credential в traceback. Исправлены ранняя подстановка фиктивного
-DB URL и безопасный traceback. **Этот DB credential необходимо сменить до production
-activation.** Он не записан в код, tests, docs или Git; ротация не выполнялась.
+## Exact checklist
 
-## 5. Performance
+- [x] Manager daily workspace и русские ошибки/контекстные кнопки.
+- [x] Fulfillment/payment/delivery fields, timestamps, actor, audit.
+- [x] Client request/status/contact layer и role separation.
+- [x] Customer normalization и приоритет существующего профиля.
+- [x] Race/idempotency/stale callbacks/concurrent finalize.
+- [x] Warehouse one/two/insufficient/full allocation tests.
+- [x] Isolated manager staging worker, health, singleton ownership.
+- [x] API/OpenAPI/security/secret checks.
+- [x] Fresh и existing staging migration checks.
+- [x] Unit/PostgreSQL tests и staging A/B/C E2E.
+- [x] Real Telegram send/edit и performance measurements.
+- [x] Documentation, feature branch push, staging deploy.
+- [ ] Gmail OAuth и email worker activation.
+- [ ] Final Tilda origin/CORS/browser acceptance.
+- [ ] Недостающие production/channel credentials и бизнес-конфигурация.
+- [ ] Отдельно разрешённая controlled production activation.
 
-| Измерение | Результат |
-|---|---|
-| set_customer_type до дополнительной оптимизации, без пула | 10 066,88 ms; 7 SELECT, 9 SQL statements |
-| Финальный set_customer_type, с пулом | 3 505,70 ms; 4 SELECT, 7 SQL statements |
-| Live read catalog, 401 товар | 2 629,96 ms |
-| Live email ingestion | 14 559,04 ms |
-| Live finalize + повторный finalize вместе | 12 736,86 ms |
-
-Замеры из локального Windows до Railway, не SLA production. Первые две цифры
-отражают и SQL optimization, и включение пула, поэтому это не чистое сравнение
-одного изменения. Live E2E снят до последнего удаления лишней загрузки при finalize.
-Реальный Telegram client ACK RTT не измерялся; порядок early ACK/async auth и
-отсутствие blocking I/O покрыты тестами. Полные action durations всё ещё зависят
-от удалённой DB и МойСклад. Размещать runtime рядом с DB; мониторить p50/p95.
-
-## 6. Staging E2E
-
-Live read-only МойСклад: **401 active catalog product, 2 склада, 1 организация,
-1 price type**. FakeEmail processed=1, failed=0 → **draft №4 → Order №2**,
-**720 000 minor units = 7 200 RUB**. Повторный finalize вернул тот же Order.
-MoySklad order ID NULL. Создан один local shipment plan; реальный split на два
-склада проверен отдельным PostgreSQL тестом с детерминированным stock fixture.
-**Одно Telegram-уведомление доставлено**. Реальных MoySklad documents не создано.
-
-Website ASGI E2E с реальной staging DB/catalog: GET 200, checkout 202,
-retail total null, identical replay, changed payload 409, internal без token 401,
-с token 200. Создана отдельная помеченная STAGING WEBSITE TEST заявка.
-
-Итог основной staging DB: 3 customers, 4 drafts, 2 orders. Исходный Order №1
-сохранён: **1 328 000 minor units**, MoySklad ID NULL. Невалидных order item money
-строк — 0. Собственные audit schemas и помеченные test records сохранены.
-
-## 7. ENV variables
-
-Полный справочник и defaults: [OPERATIONS.md — ENV](OPERATIONS.md#env-reference),
-образец: [.env.example](../.env.example). Секреты не приводятся в отчёте.
-Staging API token создан локально в игнорируемом файле; основной .env не переписан.
-
-## 8. Database migrations
-
-Три additive revisions поверх f59b1c43de76:
-g60a2d54ef87 → h71b3e65fa98 → **i82c4f76ab09**.
-Контакты website не теряются при finalize, schema/defaults соответствуют metadata.
-Money CHECK constraints добавлены NOT VALID, защищают новые записи; historical
-validation остаётся отдельным migration gate. Destructive downgrade запрещён.
-
-## 9–10. API contract и инструкция Tilda-разработчику
-
-Передать [TILDA.md](TILDA.md) и [openapi.json](openapi.json).
-Маршруты: GET /api/v1/catalog, POST /api/v1/checkout. Контракт содержит payload,
-response/error schemas, CORS, integer money, idempotency/retry и пример JavaScript.
-Сайт получает только public data; internal token и MoySklad credentials ему не нужны.
-
-## 11. Какие credentials ещё нужны
-
-- Доступ владельца Gmail, OAuth client JSON и token с gmail.readonly.
-- CDEK client ID/secret, Yandex Delivery token, согласованные tariff/address/packaging.
-- Отдельные production internal/Telegram secrets, проверенные DB credentials.
-- Credentials/API доступ Instagram, если решено подключать этот transport.
-- Доступ к отдельному Railway staging API deployment, если нужен удалённый staging
-  URL: текущий API E2E выполнен локально через ASGI с реальной staging DB.
-
-## 12. После получения Tilda
-
-Сопоставить product IDs, настроить реальные CORS origins, подключить catalog и
-checkout, проверить мобильный UX/errors/retry, «Цена по запросу» и отсутствие
-автоматической оплаты неопределённой цены. Изменений сайта пока не выполнялось.
-
-## 13. Перед production
-
-Ротация раскрытого DB credential; historical migration rehearsal; реальные origins,
-runtime secrets, backup/alerts/WAF; согласованная retail pricing policy и warehouse
-priority. Запуск worker/poller с отдельными токенами. Provider acceptance и
-разрешение внешних writes выполняются отдельно. Docker build/deploy не проверялись.
-
-## 14–16. Migration checklist, launch checklist и rollback
-
-Полные пошаговые процедуры находятся в [OPERATIONS.md](OPERATIONS.md).
-Не делать blind stamp, не применять рубли→копейки повторно, не делать автоматический
-money downgrade, не повторять uncertain external POST без reconciliation.
-Rollback сохраняет новые заявки и внешние operation intents; восстановление DB
-не отменяет документы во внешних системах.
-
-## 17. Known limitations
-
-- Retail price пока отсутствует: менеджерская проверка вместо полноценной покупки
-  с оплатой. Новая pricing policy не придумана.
-- Allocation — локальный план без stock reservation; перед реальным export нужна
-  свежая stock check и согласованный reservation flow, возможна конкуренция с
-  другими каналами продаж МойСклад.
-- Delivery adapters требуют реальных credentials, полных provider payloads и
-  acceptance tests; quotes/tracking/cancellation не заявлены как готовые flows.
-- Provider POST uncertain/inflight требует оператора; exactly-once external delivery
-  не обещается. Telegram notifications могут повториться после crash.
-- Постоянно некорректное email требует разбора; cursor сохраняется, поэтому
-  проблемный batch повторяется. Dedicated dead-letter manager UI пока отсутствует.
-- Bot имеет bounded lists и поиск товаров; это рабочий manager interface, не
-  отдельная web CRM. Полный клиентский login, оплата и frontend находятся вне scope.
-- Product cache process-local, не распределённый; large-scale нагрузочные тесты
-  и production latency не измерялись. Rate limiting/anti-bot должны быть на edge.
-- Новый код не был deployed в production или удалённый Railway API service.
-  Staging DB и локальный API against staging проверены; bot poller не перезапускался.
-
-## 18. Recommended next actions
-
-1. Сменить раскрытый DB credential и безопасно обновить его у владельца.
-2. Передать Tilda-разработчику контракт; подтвердить retail price и warehouse priority.
-3. Поднять отдельный staging API runtime, notification worker и отдельный bot token
-   для приёмки готового сайта; не использовать production deployment для теста.
-4. Провести historical production migration rehearsal и launch checklist.
-5. После отдельного разрешения выполнить provider canary и включать внешние flows
-   последовательно, с journal reconciliation и проверкой stock.
+Инструкции: [Manager](MANAGER_BOT.md), [Client](CLIENT_BOT.md),
+[Lifecycle](ORDER_LIFECYCLE.md), [Operations](OPERATIONS.md), [Tilda](TILDA.md).

@@ -208,3 +208,14 @@ Reference: https://github.com/railwayapp/cli/blob/master/src/commands/environmen
 
 Checkpoint schema check: `python -m scripts.staging_check` is read-only and verifies
 STAGING_DATABASE_URL differs from the local DATABASE_URL before connecting.
+
+Current worker health endpoint (staging-only):
+https://ohmysmell-manager-bot-staging-staging.up.railway.app/health
+It exposes only readiness/role/environment/polling/write-guard state. The worker
+uses the staging Postgres private-network reference; it has no application HTTP API.
+
+DB recovery: async connections have a 10-second connect timeout and a 30-second
+command timeout, in addition to the 15-second pool timeout. This bounds waits on
+lost-network responses, which PostgreSQL statement_timeout alone cannot bound.
+The caller receives the existing safe Russian recovery error; retry uses the same
+idempotency key or a refreshed card. No blind retry of external requests is added.
