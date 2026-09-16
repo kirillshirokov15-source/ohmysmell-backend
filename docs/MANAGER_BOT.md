@@ -32,3 +32,12 @@
 История OrderEvent хранит actor, action, before/after, timestamp и idempotency key.
 HTTP actor header доверен только internal API caller; internal token никогда не
 передаётся клиентам. Кнопки клиента в этом dispatcher отсутствуют.
+
+## Recovery and process readiness
+
+Explicit command: `python -m app.workers.manager_bot` (legacy app.bot.runtime with
+BOT_ROLE=manager remains supported). SIGTERM, ownership loss and polling conflict
+close the worker. API does not launch it. /health is liveness; /ready confirms
+polling startup and DB ownership. After redeploy use the existing card: revision
+and idempotency key are in PostgreSQL, not process memory. Two managers paying
+concurrently cannot create two audit transitions. See INCIDENT_RUNBOOK.md.

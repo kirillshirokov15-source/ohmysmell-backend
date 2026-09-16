@@ -1,7 +1,6 @@
 """Future Instagram/client Telegram adapters submit this trusted server envelope.
 
-Telegram client identity uses the existing manual source until a dedicated source
-is approved; it remains independent of customer_type. Adapters authenticate and
+Telegram client identity uses the dedicated telegram source; it remains independent of customer_type. Adapters authenticate and
 verify sender identities before entering the sales core.
 """
 from dataclasses import dataclass

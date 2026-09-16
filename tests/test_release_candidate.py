@@ -138,7 +138,7 @@ def test_client_dispatcher_cannot_invoke_manager_actions():
     service = SimpleNamespace(handle=AsyncMock())
     dp = create_dispatcher(service)
     callback = SimpleNamespace(data="order:paid:1:0", answer=AsyncMock())
-    asyncio.run(dp.callback_query.handlers[0].callback(callback))
+    asyncio.run(dp.sub_routers[0].callback_query.handlers[0].callback(callback))
     callback.answer.assert_awaited_once()
     service.handle.assert_not_awaited()
 
@@ -149,7 +149,7 @@ def test_client_rejects_someone_elses_contact():
     dp = create_dispatcher(service)
     message = SimpleNamespace(chat=SimpleNamespace(type="private"), from_user=SimpleNamespace(id=1),
         contact=SimpleNamespace(user_id=2), answer=AsyncMock())
-    asyncio.run(dp.message.handlers[0].callback(message))
+    asyncio.run(dp.sub_routers[0].message.handlers[0].callback(message))
     service.handle.assert_not_awaited()
 
 
@@ -157,7 +157,7 @@ def test_client_ignores_group_messages():
     from app.bot.client_bot import create_dispatcher
     service = SimpleNamespace(handle=AsyncMock())
     dp = create_dispatcher(service)
-    asyncio.run(dp.message.handlers[0].callback(SimpleNamespace(chat=SimpleNamespace(type="group"))))
+    asyncio.run(dp.sub_routers[0].message.handlers[0].callback(SimpleNamespace(chat=SimpleNamespace(type="group"))))
     service.handle.assert_not_awaited()
 
 

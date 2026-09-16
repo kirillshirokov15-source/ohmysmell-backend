@@ -8,14 +8,21 @@ async def lifespan(app):
     settings.validate_runtime()
     from app.logging_utils import configure_application_logging
     configure_application_logging()
+    from app.monitoring import configure_monitoring
+    configure_monitoring()
     yield
     from app.database.session import engine
     await engine.dispose()
 
-from fastapi import Depends, FastAPI, HTTPException, Header
+from fastapi import Depends, FastAPI, HTTPException, Header, Path, Query
+from app.schemas.api_error import APIError
+from typing import Annotated
+
+RecordId = Annotated[int, Path(gt=0, le=2147483647)]
 from app.api.auth import require_debug_access, require_internal_api_token
 from app.schemas.order import OrderCreate
 from app.schemas.order_read import OrderRead
+from app.schemas.draft_read import DraftRead, DraftListRead
 from app.schemas.draft_order import (
     InboundEmailCreate,
     LinkCounterpartyRequest,
@@ -46,6 +53,7 @@ app = FastAPI(
     title="OhMySmell API",
     version="1.0.0",
     lifespan=lifespan,
+    responses={code: {"model": APIError} for code in (400, 401, 403, 404, 409, 413, 422, 503)},
 )
 from app.api.public import router as public_router
 app.include_router(public_router)
@@ -177,6 +185,16 @@ async def health_db():
     return {
         "database": "connected" if is_connected else "not connected"
     }
+
+
+@app.get("/health")
+async def health_live():
+    return {"status": "alive"}
+
+
+@app.get("/ready")
+async def readiness():
+    return await health_db()
 
 
 @app.post("/orders", dependencies=[Depends(require_internal_api_token)])
@@ -314,7 +332,7 @@ def debug_counterparties(search: str):
     dependencies=[Depends(require_internal_api_token)],
 )
 async def assign_counterparty(
-    order_id: int,
+    order_id: RecordId,
     counterparty_id: str,
     counterparty_name: str,
 ):
@@ -341,7 +359,7 @@ async def assign_counterparty(
     "/orders/{order_id}/moysklad",
     dependencies=[Depends(require_internal_api_token)],
 )
-async def create_order_in_moysklad(order_id: int):
+async def create_order_in_moysklad(order_id: RecordId):
     service = MoySkladOrderService()
 
     try:
@@ -364,12 +382,12 @@ async def create_order_in_moysklad(order_id: int):
 
 
 @app.get("/orders", dependencies=[Depends(require_internal_api_token)])
-async def get_orders():
-    return {"orders": [serialize_order(order) for order in await list_orders()]}
+async def get_orders(limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=1000000)):
+    return {"orders": [serialize_order(order) for order in await list_orders(limit=limit, offset=offset)]}
 
 
 @app.get("/orders/{order_id}", response_model=OrderRead, dependencies=[Depends(require_internal_api_token)])
-async def get_order_details(order_id: int):
+async def get_order_details(order_id: RecordId):
     order = await get_order(order_id)
     if order is None:
         raise HTTPException(status_code=404, detail="Заказ не найден")
@@ -378,6 +396,7 @@ async def get_order_details(order_id: int):
 
 @app.post(
     "/internal/email/messages",
+    response_model=DraftRead,
     dependencies=[Depends(require_internal_api_token)],
 )
 async def ingest_email_message(payload: InboundEmailCreate):
@@ -396,17 +415,18 @@ async def ingest_email_message(payload: InboundEmailCreate):
     return serialize_draft(draft)
 
 
-@app.get("/draft-orders", dependencies=[Depends(require_internal_api_token)])
-async def get_draft_orders():
-    drafts = await DraftOrderRepository().list()
+@app.get("/draft-orders", response_model=DraftListRead, dependencies=[Depends(require_internal_api_token)])
+async def get_draft_orders(limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=1000000)):
+    drafts = await DraftOrderRepository().list(limit=limit, offset=offset)
     return {"draft_orders": [serialize_draft(draft) for draft in drafts]}
 
 
 @app.get(
     "/draft-orders/{draft_id}",
+    response_model=DraftRead,
     dependencies=[Depends(require_internal_api_token)],
 )
-async def get_draft_order(draft_id: int):
+async def get_draft_order(draft_id: RecordId):
     draft = await DraftOrderRepository().get(draft_id)
     if draft is None:
         raise HTTPException(status_code=404, detail="Draft не найден")
@@ -415,10 +435,11 @@ async def get_draft_order(draft_id: int):
 
 @app.post(
     "/draft-orders/{draft_id}/customer-type",
+    response_model=DraftRead,
     dependencies=[Depends(require_internal_api_token)],
 )
 async def set_draft_customer_type(
-    draft_id: int, payload: SetCustomerTypeRequest
+    draft_id: RecordId, payload: SetCustomerTypeRequest
 ):
     if payload.customer_type == "unknown":
         raise HTTPException(status_code=400, detail="Нужно выбрать wholesale или retail")
@@ -433,10 +454,11 @@ async def set_draft_customer_type(
 
 @app.post(
     "/draft-orders/{draft_id}/items/{item_id}/match",
+    response_model=DraftRead,
     dependencies=[Depends(require_internal_api_token)],
 )
 async def resolve_draft_product(
-    draft_id: int, item_id: int, payload: ResolveProductRequest
+    draft_id: RecordId, item_id: RecordId, payload: ResolveProductRequest
 ):
     try:
         draft = await DraftOrderService().resolve_product(
@@ -449,10 +471,11 @@ async def resolve_draft_product(
 
 @app.post(
     "/draft-orders/{draft_id}/counterparty",
+    response_model=DraftRead,
     dependencies=[Depends(require_internal_api_token)],
 )
 async def link_draft_counterparty(
-    draft_id: int, payload: LinkCounterpartyRequest
+    draft_id: RecordId, payload: LinkCounterpartyRequest
 ):
     try:
         draft = await DraftOrderService().link_counterparty(
@@ -465,9 +488,10 @@ async def link_draft_counterparty(
 
 @app.post(
     "/draft-orders/{draft_id}/reject",
+    response_model=DraftRead,
     dependencies=[Depends(require_internal_api_token)],
 )
-async def reject_draft_order(draft_id: int):
+async def reject_draft_order(draft_id: RecordId):
     try:
         draft = await DraftOrderService().reject(draft_id)
     except DraftOrderError as error:
@@ -479,7 +503,7 @@ async def reject_draft_order(draft_id: int):
     "/draft-orders/{draft_id}/finalize",
     dependencies=[Depends(require_internal_api_token)],
 )
-async def finalize_draft_order(draft_id: int):
+async def finalize_draft_order(draft_id: RecordId):
     try:
         order = await DraftOrderService().finalize(draft_id)
     except DraftOrderError as error:
@@ -488,7 +512,7 @@ async def finalize_draft_order(draft_id: int):
 
 
 @app.post("/orders/{order_id}/allocations", dependencies=[Depends(require_internal_api_token)])
-async def plan_order_allocations(order_id: int):
+async def plan_order_allocations(order_id: RecordId):
     from app.services.fulfillment_service import FulfillmentService
     from app.services.stock_allocation import StockAllocationError
     try:
@@ -501,8 +525,8 @@ async def plan_order_allocations(order_id: int):
         for s in shipments]}
 
 
-@app.post("/draft-orders/{draft_id}/items/{item_id}/candidates", dependencies=[Depends(require_internal_api_token)])
-async def propose_draft_candidates(draft_id: int, item_id: int, query: str):
+@app.post("/draft-orders/{draft_id}/items/{item_id}/candidates", response_model=DraftRead, dependencies=[Depends(require_internal_api_token)])
+async def propose_draft_candidates(draft_id: RecordId, item_id: RecordId, query: str = Query(min_length=1, max_length=300)):
     return serialize_draft(await DraftOrderService().search_item(draft_id, item_id, query))
 
 
@@ -511,7 +535,7 @@ from fastapi import Header
 
 
 @app.post("/orders/{order_id}/actions", response_model=OrderRead, dependencies=[Depends(require_internal_api_token)])
-async def order_action(order_id: int, payload: OrderAction, x_manager_telegram_id: int = Header()):
+async def order_action(order_id: RecordId, payload: OrderAction, x_manager_telegram_id: int = Header()):
     try:
         return serialize_order(await OrderOperations().act(order_id, x_manager_telegram_id, payload))
     except ManagerDenied as error:
@@ -521,7 +545,7 @@ async def order_action(order_id: int, payload: OrderAction, x_manager_telegram_i
 
 
 @app.get("/orders/{order_id}/events", dependencies=[Depends(require_internal_api_token)])
-async def order_events(order_id: int):
+async def order_events(order_id: RecordId):
     return {"events": [{"id": e.id, "manager_id": e.manager_id, "action": e.action,
         "before": e.before, "after": e.after, "created_at": e.created_at}
         for e in await OrderOperations().events(order_id)]}

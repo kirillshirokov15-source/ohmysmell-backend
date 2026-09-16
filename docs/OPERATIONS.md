@@ -219,3 +219,19 @@ command timeout, in addition to the 15-second pool timeout. This bounds waits on
 lost-network responses, which PostgreSQL statement_timeout alone cannot bound.
 The caller receives the existing safe Russian recovery error; retry uses the same
 idempotency key or a refreshed card. No blind retry of external requests is added.
+
+## Internal readiness runbooks
+
+Use BACKUP_RESTORE.md for native pg_dump/pg_restore and migration disaster rehearsal;
+INCIDENT_RUNBOOK.md for restart/recovery; PRODUCTION_READINESS.md for per-process
+variables and future Railway services; EXTERNAL_INTEGRATIONS.md for connection
+steps; DATA_RETENTION.md for PII and manifest-protected synthetic cleanup.
+Backend /health is dependency-free, /ready and /health/db run SELECT 1 only.
+Bot /ready checks ownership/startup; email /ready additionally requires a recent
+complete batch. Railway health path stays /health for singleton handover.
+HTTP reads use connect/read timeouts and at most two safe GET/HEAD retries for
+429/502/503/504. 401 and POST status failures are not blindly retried. Gmail has
+20 s HTTP timeout and retries via the cursor-preserving poll loop; refresh 5/20 s.
+Delivery/MoySklad writes persist an operation intent and stop at uncertain results.
+PostgreSQL psycopg2 remains intentionally used by Alembic/maintenance, asyncpg by
+runtime; retired direct-DDL scripts refuse execution. No cosmetic service rewrite.

@@ -371,7 +371,7 @@ async def draft_callback_handler(callback: CallbackQuery):
             outcome = "success"
             return
         else:
-            logger.warning("Unknown Telegram draft callback action: %s", action)
+            log_event(logger, "unknown_callback_action", result="rejected")
             outcome = "unknown_action"
             return
         log_event(
@@ -438,7 +438,7 @@ class ManagerRecoveryMiddleware(BaseMiddleware):
         try:
             return await handler(event, data)
         except Exception as error:
-            log_event(logger, "manager_handler_failed", result=type(error).__name__)
+            log_event(logger, "manager_handler_failed", level=logging.ERROR, result=type(error).__name__)
             message = event.message if isinstance(event, CallbackQuery) else event
             if message and hasattr(message, "answer"):
                 try:

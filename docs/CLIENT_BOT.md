@@ -31,3 +31,14 @@ Unknown остаётся unknown; профиль имеет приоритет �
 
 Клиент не может читать чужие заявки, менять тип клиента, передавать цены,
 отмечать оплату или вызывать manager callback. Все callback отклоняются.
+
+## Internal readiness additions
+
+Explicit command: `python -m app.workers.client_bot`. It fixes the client role even
+if BOT_ROLE is accidentally set to manager. Real aiogram Update/TelegramMethod
+contract tests use fake BaseSession; PostgreSQL E2E recreates dispatcher/service
+between messages and after engine disposal, including concurrent distinct /send.
+Email contacts are stored in sender_email/contact_details and visible to manager;
+no unverified customer identity is created from them. /ready is 503 until the
+singleton owns polling; /health remains live during a deployment handover.
+See EXTERNAL_INTEGRATIONS.md for exact token/live acceptance steps.

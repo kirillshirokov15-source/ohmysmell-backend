@@ -11,6 +11,7 @@ GMAIL_SCOPES = (GMAIL_READONLY_SCOPE,)
 def load_gmail_credentials(*, allow_interactive: bool = False):
     """Load/refresh Gmail credentials, optionally running desktop OAuth once."""
     from google.auth.transport.requests import Request
+    from app.integrations.http_tls import verified_session
     from google.oauth2.credentials import Credentials
 
     token_path = _configured_path(settings.gmail_token_file, "GMAIL_TOKEN_FILE")
@@ -23,7 +24,12 @@ def load_gmail_credentials(*, allow_interactive: bool = False):
 
     changed = False
     if credentials and credentials.expired and credentials.refresh_token:
-        credentials.refresh(Request())
+        class BoundedRequest(Request):
+            def __call__(self, *args, **kwargs):
+                kwargs["timeout"] = (5, 20)
+                return super().__call__(*args, **kwargs)
+        with verified_session() as session:
+            credentials.refresh(BoundedRequest(session=session))
         changed = True
 
     if not credentials or not credentials.valid:

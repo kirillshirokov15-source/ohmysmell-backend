@@ -1,0 +1,5 @@
+"""Explicit client-only entrypoint; requires CLIENT_TELEGRAM_BOT_TOKEN."""
+from app.bot.runtime import main
+
+if __name__ == "__main__":
+    main("client")

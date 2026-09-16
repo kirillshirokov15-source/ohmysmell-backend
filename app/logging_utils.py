@@ -14,6 +14,6 @@ def configure_application_logging() -> None:
     logger.propagate = False
 
 
-def log_event(logger: logging.Logger, event: str, **fields) -> None:
+def log_event(logger: logging.Logger, event: str, *, level=logging.INFO, **fields) -> None:
     safe_fields = {key: value for key, value in fields.items() if value is not None}
-    logger.info(json.dumps({"event": event, **safe_fields}, ensure_ascii=False))
+    logger.log(level, json.dumps({"event": event, **safe_fields}, ensure_ascii=False))

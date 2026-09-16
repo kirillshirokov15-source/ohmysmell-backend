@@ -76,6 +76,8 @@ class ClientChannel:
                 draft_id = int(text.split()[1])
             except (IndexError, ValueError):
                 return "Формат: /status НОМЕР_ЗАЯВКИ"
+            if not 1 <= draft_id <= 2147483647:
+                return "Заявка не найдена среди ваших заявок."
             draft = await session.get(DraftOrder, draft_id)
             # Ownership is the original verified sender, not a supplied phone/email.
             if not draft or draft.source != "telegram" or (draft.contact_details or {}).get("telegram") != str(tid):
@@ -156,9 +158,9 @@ class ClientChannel:
         session.add(inbound)
         await session.flush()
         draft = DraftOrder(inbound_message_id=inbound.id, customer_id=customer.id, source="telegram",
-            customer_type=customer.customer_type, sender_email="", customer_name=name, subject="Заявка Telegram",
+            customer_type=customer.customer_type, sender_email=data["contact"] if "@" in data["contact"] else "", customer_name=name, subject="Заявка Telegram",
             status="needs_review", counterparty_id=customer.moysklad_counterparty_id, counterparty_candidates=[],
-            contact_details={"telegram": str(tid), "phone": data["contact"] if "@" not in data["contact"] else "", "contact_verified": bool(data.get("verified_phone"))},
+            contact_details={"telegram": str(tid), "phone": data["contact"] if "@" not in data["contact"] else "", "email": data["contact"] if "@" in data["contact"] else "", "contact_verified": bool(data.get("verified_phone"))},
             review_notes="Подтвердите контакт, тип клиента, товары, цены и наличие.")
         for item in data["items"]:
             draft.items.append(DraftOrderItem(raw_product_text=item["name"], qty=item["qty"], match_status="not_found", candidates=[]))

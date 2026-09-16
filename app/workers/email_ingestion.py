@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import hashlib
 
 from app.config.settings import settings
 from app.integrations.email.gmail_provider import GmailEmailProvider
@@ -29,24 +30,21 @@ class EmailIngestionWorker:
         batch = await self.provider.fetch_unprocessed(cursor)
         stats = {"received": len(batch.messages), "processed": 0, "failed": 0}
         for message in batch.messages:
-            log_event(logger, "email_received", message_id=message.external_message_id)
+            message_ref = hashlib.sha256(message.external_message_id.encode()).hexdigest()[:24]
+            log_event(logger, "email_received", message_ref=message_ref)
             try:
                 draft = await self.pipeline.ingest_email(message)
                 stats["processed"] += 1
                 log_event(
                     logger,
                     "email_ingested",
-                    message_id=message.external_message_id,
+                    message_ref=message_ref,
                     draft_id=draft.id,
                 )
             except Exception as error:
                 stats["failed"] += 1
-                logger.warning(
-                    '{"event":"email_ingestion_error","message_id":"%s",'
-                    '"error_type":"%s"}',
-                    message.external_message_id,
-                    type(error).__name__,
-                )
+                log_event(logger, "email_ingestion_error", level=logging.ERROR,
+                          message_ref=message_ref, result=type(error).__name__)
         if batch.next_cursor and not stats["failed"]:
             await self.cursor_repository.set(
                 self.provider_name, batch.next_cursor
@@ -68,9 +66,10 @@ class EmailIngestionWorker:
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO)
-    await EmailIngestionWorker().run_forever()
+    from app.workers.email_runtime import run
+    await run()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    from app.workers.email_runtime import main as entrypoint
+    entrypoint()

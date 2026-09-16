@@ -22,8 +22,8 @@ def validate_worker(role):
         raise ValueError("Unknown worker role")
     if settings.environment == "production" and os.getenv("BOT_PRODUCTION_ACTIVATED", "false").lower() != "true":
         raise ValueError("Production worker requires explicit activation")
-    settings.validate_runtime()
-    if settings.external_writes_enabled:
+    settings.validate_runtime(role)
+    if settings.external_writes_enabled and settings.environment != "production":
         raise ValueError("Worker requires external writes disabled")
     key = "TELEGRAM_BOT_TOKEN" if role == "manager" else "CLIENT_TELEGRAM_BOT_TOKEN"
     token = os.getenv(key, "")
@@ -53,20 +53,28 @@ class OwnedBot(Bot):
 async def run_worker(role="manager", *, drop_pending_updates=False):
     token = validate_worker(role)
     configure_application_logging()
+    from app.monitoring import configure_monitoring
+    from app.workers.lifecycle import install_stop_signals
+    configure_monitoring()
     logging.getLogger("aiogram").setLevel(logging.CRITICAL)
     from app.database.session import engine
     failure = asyncio.Event()
+    stop = asyncio.Event()
+    restore_signals = install_stop_signals(asyncio.get_running_loop(), stop)
     bot = OwnedBot(token, failure)
     if role == "manager":
         from app.bot.telegram_bot import dp
     else:
         from app.bot.client_bot import create_dispatcher
         dp = create_dispatcher()
-    state = {"status": "starting", "role": role, "environment": settings.environment, "polling": False, "external_writes": False}
+    state = {"status": "starting", "role": role, "environment": settings.environment, "polling": False, "external_writes": settings.external_writes_enabled}
     async def health(_):
         return web.json_response(state, status=503 if failure.is_set() else 200)
+    async def ready(_):
+        return web.json_response(state, status=200 if state["polling"] and not failure.is_set() else 503)
     server = web.Application()
     server.router.add_get("/health", health)
+    server.router.add_get("/ready", ready)
     runner = web.AppRunner(server)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8081"))).start()
@@ -75,8 +83,10 @@ async def run_worker(role="manager", *, drop_pending_updates=False):
     try:
         async with engine.connect() as connection:
             state["status"] = "waiting_for_poller_lock"
-            log_event(logger, "worker_starting", role=role, environment=settings.environment, external_writes=False)
+            log_event(logger, "worker_starting", role=role, environment=settings.environment, external_writes=settings.external_writes_enabled)
             while not await connection.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": lock_key}):
+                if stop.is_set():
+                    return
                 await asyncio.sleep(2)
             await connection.commit()
             # Never remove somebody else's webhook silently.
@@ -96,14 +106,15 @@ async def run_worker(role="manager", *, drop_pending_updates=False):
                 log_event(logger, "worker_ownership_lost", role=role, result="stopping")
             await bot.get_me()
             state.update(status="ready", polling=True)
-            log_event(logger, "worker_ready", role=role, external_writes=False, polling_instances=1)
-            polling = asyncio.create_task(dp.start_polling(bot, handle_as_tasks=True, tasks_concurrency_limit=8, close_bot_session=False))
+            log_event(logger, "worker_ready", role=role, external_writes=settings.external_writes_enabled, polling_instances=1)
+            polling = asyncio.create_task(dp.start_polling(bot, handle_signals=False, handle_as_tasks=True, tasks_concurrency_limit=8, close_bot_session=False))
             watch = asyncio.create_task(watchdog())
             tasks = [polling, watch]
+            tasks.append(asyncio.create_task(stop.wait()))
             if role == "manager":
                 from app.workers.notifications import main as notifications
                 tasks.append(asyncio.create_task(notifications()))
-            done, _ = await asyncio.wait(tasks[:2], return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
             if not polling.done():
@@ -120,17 +131,18 @@ async def run_worker(role="manager", *, drop_pending_updates=False):
         await bot.session.close()
         await runner.cleanup()
         await engine.dispose()
+        restore_signals()
         log_event(logger, "worker_stopped", role=role)
     if failure.is_set():
         raise RuntimeError("Polling ownership lost")
 
 
-def main():
+def main(role=None):
     try:
-        asyncio.run(run_worker(os.getenv("BOT_ROLE", "manager")))
+        asyncio.run(run_worker(role or os.getenv("BOT_ROLE", "manager")))
     except Exception as error:
         configure_application_logging()
-        log_event(logger, "worker_startup_failed", result=type(error).__name__)
+        log_event(logger, "worker_startup_failed", level=logging.ERROR, result=type(error).__name__)
         raise SystemExit(1)
 
 

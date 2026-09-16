@@ -51,3 +51,17 @@ Manager workflow supports local fulfillment, payment recording and delivery trac
 External writes remain disabled. Client intake always goes through manager review.
 Internal POST /orders now requires Idempotency-Key; actions require a manager actor
 and expected revision. See the updated OpenAPI snapshot.
+
+## Internal readiness continuation
+
+Independent launchers: `python -m app.workers.manager_bot`,
+`python -m app.workers.client_bot`, `python -m app.workers.email_runtime`.
+Backend remains Uvicorn only. `/health` is liveness, `/ready` is readiness.
+Workers do not require unrelated backend CORS/internal tokens.
+
+Operations: [Production configuration](docs/PRODUCTION_READINESS.md),
+[External connection checklists](docs/EXTERNAL_INTEGRATIONS.md),
+[Backup/restore rehearsal](docs/BACKUP_RESTORE.md),
+[Incident response](docs/INCIDENT_RUNBOOK.md), [PII and test fixtures](docs/DATA_RETENTION.md).
+Production template: `deploy/production.env.example`; prepared future services:
+`deploy/worker-services.json`. Optional monitoring is disabled by default.

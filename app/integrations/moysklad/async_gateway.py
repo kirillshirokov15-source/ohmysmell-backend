@@ -58,6 +58,7 @@ class AsyncMoySkladGateway:
             log_event(
                 logger,
                 "moysklad_call_completed",
+                level=logging.ERROR,
                 operation=operation,
                 outcome="error",
                 duration_ms=round((perf_counter() - started_at) * 1000, 2),

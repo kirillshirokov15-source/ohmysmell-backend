@@ -5,16 +5,20 @@ load_dotenv()
 
 
 class Settings:
-    def validate_runtime(self):
+    def validate_runtime(self, process="backend"):
+        if process not in {"backend", "manager", "client", "email"}:
+            raise ValueError("Unknown process role")
+        if not self.database_url:
+            raise ValueError("DATABASE_URL is required")
         if self.environment == "staging" and self.external_writes_enabled:
             raise ValueError("External writes cannot be enabled in staging")
         if self.environment == "production":
-            if len(self.internal_api_token) < 32:
+            if process == "backend" and len(self.internal_api_token) < 32:
                 raise ValueError("Production requires a strong INTERNAL_API_TOKEN")
             if self.debug_endpoints_enabled:
                 raise ValueError("Production debug endpoints must remain disabled")
-            if not self.cors_origins or any(not origin.startswith("https://") or "localhost" in origin
-                                            or "REPLACE" in origin for origin in self.cors_origins):
+            if process == "backend" and (not self.cors_origins or any(not origin.startswith("https://") or "localhost" in origin
+                                            or "REPLACE" in origin for origin in self.cors_origins)):
                 raise ValueError("Production requires explicit final HTTPS CORS origins")
         if self.external_writes_enabled and not self.moysklad_organization_id:
             raise ValueError("External writes require MOYSKLAD_ORGANIZATION_ID")

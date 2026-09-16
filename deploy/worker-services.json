@@ -1,0 +1,20 @@
+﻿{
+  "client": {
+    "startCommand": "python -m app.workers.client_bot",
+    "healthcheckPath": "/health",
+    "numReplicas": 1,
+    "overlapSeconds": 0,
+    "drainingSeconds": 45,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
+  },
+  "email": {
+    "startCommand": "python -m app.workers.email_runtime",
+    "healthcheckPath": "/health",
+    "numReplicas": 1,
+    "overlapSeconds": 0,
+    "drainingSeconds": 45,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
+  }
+}

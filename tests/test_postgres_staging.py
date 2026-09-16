@@ -333,3 +333,87 @@ def test_unverified_client_contact_routes_existing_profile_without_identity_take
             assert await session.scalar(select(func.count()).select_from(CustomerIdentity).where(CustomerIdentity.identity_type == "telegram", CustomerIdentity.normalized_value == str(tid))) == 0
         await engine.dispose()
     asyncio.run(run())
+
+
+def test_finalize_crash_rolls_back_then_retry_once(staging_sessions, monkeypatch):
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy import select, func
+    from app.models.order import Order
+    from app.repositories.draft_order_repository import DraftOrderRepository
+    factory, engine = staging_sessions
+    async def run():
+        draft = await ready_draft()
+        original = AsyncSession.commit
+        async def crash(self):
+            raise asyncio.CancelledError()
+        monkeypatch.setattr(AsyncSession, "commit", crash)
+        with pytest.raises(asyncio.CancelledError):
+            await DraftOrderRepository().finalize(draft.id)
+        monkeypatch.setattr(AsyncSession, "commit", original)
+        async with factory() as session:
+            assert await session.scalar(select(func.count()).select_from(Order).where(Order.customer_id == draft.customer_id)) == 0
+        first = await DraftOrderRepository().finalize(draft.id)
+        await engine.dispose()  # Simulated process connection teardown, persisted state retained.
+        second = await DraftOrderRepository().finalize(draft.id)
+        assert first.id == second.id
+        await engine.dispose()
+    asyncio.run(run())
+
+
+def test_two_managers_pay_once_and_concurrent_match_rejects_stale(staging_sessions):
+    from app.models.manager import Manager
+    from app.models.operations import OrderEvent
+    from app.services.order_operations import OrderOperations, OrderAction, OperationError
+    from app.repositories.draft_order_repository import DraftOrderRepository
+    from app.services.order_lifecycle import InvalidOrderTransitionError
+    from sqlalchemy import select, func
+    factory, engine = staging_sessions
+    async def run():
+        tid = int(uuid4().hex[:12], 16)
+        async with factory() as session, session.begin():
+            session.add_all([Manager(telegram_id=tid+i, name="SYNTHETIC two managers", is_active=True) for i in range(2)])
+        draft = await ready_draft()
+        order = await DraftOrderRepository().finalize(draft.id)
+        results = await asyncio.gather(*(OrderOperations().act(order.id, tid+i,
+            OrderAction(action="paid", expected_revision=0, idempotency_key=f"manager:{tid+i}")) for i in range(2)), return_exceptions=True)
+        assert sum(isinstance(r, OperationError) for r in results) == 1
+        async with factory() as session:
+            assert await session.scalar(select(func.count()).select_from(OrderEvent).where(OrderEvent.order_id == order.id)) == 1
+        other = await ready_draft()
+        repositories = [DraftOrderRepository(), DraftOrderRepository()]
+        for repo in repositories: repo.expected_revision = 0
+        results = await asyncio.gather(*(repo.set_item_candidates(other.id, other.items[0].id, []) for repo in repositories), return_exceptions=True)
+        assert sum(isinstance(r, InvalidOrderTransitionError) for r in results) == 1
+        await engine.dispose()
+    asyncio.run(run())
+
+
+def test_client_transport_restart_email_and_double_submit(staging_sessions):
+    from aiogram import Bot
+    from aiogram.types import Update
+    from tests.telegram_transport import TelegramSession
+    from app.bot.client_bot import create_dispatcher
+    from app.models.draft_order import DraftOrder
+    from sqlalchemy import select, func
+    factory, engine = staging_sessions
+    async def run():
+        tid = int(uuid4().hex[:12], 16)
+        transport = TelegramSession(); bot = Bot("123456:FAKE_LOCAL_TEST_TOKEN", session=transport)
+        email = f"synthetic-{tid}@example.invalid"
+        async def send(number, value):
+            update = Update.model_validate({"update_id": number, "message": {"message_id": number, "date": 1,
+                "chat": {"id": tid, "type": "private"}, "from": {"id": tid, "is_bot": False, "first_name": "SYNTHETIC"}, "text": value}})
+            await create_dispatcher().feed_update(bot, update)  # New dispatcher/service each update.
+        for number, value in enumerate(["/start", "/request", "Свеча; 2", email], 1):
+            await send(number, value)
+        await engine.dispose()
+        await asyncio.gather(send(5, "/send"), send(6, "/send"), send(5, "/send"))
+        async with factory() as session:
+            drafts = list((await session.execute(select(DraftOrder).where(DraftOrder.sender_email == email))).scalars())
+            assert len(drafts) == 1 and drafts[0].contact_details["email"] == email
+            draft_id = drafts[0].id
+        await send(7, f"/status {draft_id}")
+        await send(8, "/manager")
+        assert "передана просьба" in transport.calls[-1].text
+        await bot.session.close(); await engine.dispose()
+    asyncio.run(run())

@@ -36,3 +36,12 @@ Payment note хранится в заказе, не попадает в operatio
 client_conversations, client_updates, расширение source=telegram. Старые заказы
 получают new/unpaid; ранее rejected получают cancelled. Историческую фактическую
 оплату/отгрузку нельзя угадать: она отмечается менеджером по проверенным данным.
+
+## Restart guarantees
+
+A process failure before finalize commit rolls back Order and its link; retry
+creates one order. Failure after commit reuses finalized_order_id. Operational
+idempotency and revision/audit are persisted together; two managers based on the
+same revision cannot both mutate. A lost Telegram reply does not roll back a
+committed business action. Refresh/own-status lookup is the recovery path.
+External uncertain operations require reconciliation; no automatic replayed write.

@@ -45,7 +45,6 @@ def order_card(order, shipments=()):
             lines.append(f"• {item.name[:100] if item else allocation.order_item_id}: {allocation.qty} шт.")
     if not shipments:
         lines.append("Распределение по складам ещё не выполнено.")
-    lines.append(f"Версия: {order.revision}")
     text = "\n".join(lines)
     return text if len(text) <= 4000 else text[:3850] + f"\nВсе позиции и склады: /items {order.id}"
 

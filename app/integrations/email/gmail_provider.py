@@ -52,7 +52,9 @@ class GmailEmailProvider:
         return await asyncio.to_thread(self._fetch_sync, cursor)
 
     def _fetch_sync(self, cursor: str | None) -> EmailFetchBatch:
-        service = self.service or self._build_service()
+        if self.service is None:
+            self.service = self._build_service()
+        service = self.service
         if cursor:
             try:
                 message_ids, next_cursor = self._message_ids_from_history(
@@ -90,7 +92,9 @@ class GmailEmailProvider:
         from googleapiclient.discovery import build
 
         credentials = load_gmail_credentials(allow_interactive=False)
-        return build("gmail", "v1", credentials=credentials, cache_discovery=False)
+        import httplib2
+        from google_auth_httplib2 import AuthorizedHttp
+        return build("gmail", "v1", http=AuthorizedHttp(credentials, http=httplib2.Http(timeout=20)), cache_discovery=False)
 
     def readonly_smoke_check(self, max_messages: int = 5) -> dict:
         service = self.service or self._build_service()
