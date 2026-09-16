@@ -14,7 +14,7 @@ from sqlalchemy import text
 from app.config.settings import settings
 from app.logging_utils import configure_application_logging, log_event
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("app.bot.runtime")
 
 
 def validate_worker(role):

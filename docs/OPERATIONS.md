@@ -198,3 +198,13 @@ header is accepted only behind internal authentication, not as end-user login.
 The client bot requires its own token; no client action reaches manager handlers.
 SQL logs and Telegram dependency exception logs are suppressed in worker runtime;
 application errors record exception class, never connection strings or raw updates.
+
+Noninteractive Railway CLI 5.52.1: environment edit reads JSON stdin before flags.
+Pass an explicit patch through stdin and verify committed=true plus the effective
+serviceManifest.deploy.startCommand/healthcheckPath. A zero exit code with
+"No changes to apply" is not evidence of configuration. The staging worker must
+show worker_ready, role=manager, polling_instances=1 and /health polling=true.
+Reference: https://github.com/railwayapp/cli/blob/master/src/commands/environment/edit.rs
+
+Checkpoint schema check: `python -m scripts.staging_check` is read-only and verifies
+STAGING_DATABASE_URL differs from the local DATABASE_URL before connecting.
