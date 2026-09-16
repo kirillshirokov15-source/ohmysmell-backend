@@ -22,12 +22,11 @@ def validate_email():
         raise ValueError("GMAIL_TOKEN_FILE must contain an authorized readonly token")
     if settings.email_poll_interval < 5:
         raise ValueError("EMAIL_POLL_INTERVAL must be at least 5 seconds")
-    if settings.environment == "staging" and not os.getenv("GMAIL_ALLOWED_MESSAGE_IDS", "").strip():
-        raise ValueError("Staging Gmail requires explicit allowed message IDs")
-    if settings.environment == "production" and not (
-        os.getenv("GMAIL_ALLOWED_MESSAGE_IDS", "").strip() or os.getenv("GMAIL_ORDER_QUERY", "").strip()
-    ):
-        raise ValueError("Production Gmail requires an explicit intake selector")
+    ids = os.getenv("GMAIL_ALLOWED_MESSAGE_IDS", "").strip()
+    query = os.getenv("GMAIL_ORDER_QUERY", "").strip()
+    query_activated = os.getenv("GMAIL_QUERY_INTAKE_ENABLED", "false").lower() == "true"
+    if settings.environment in {"staging", "production"} and not ids and not (query and query_activated):
+        raise ValueError("Gmail requires explicit allowed message IDs or an activated order query")
 
 
 async def run(worker=None):

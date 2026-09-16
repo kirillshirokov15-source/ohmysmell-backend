@@ -1,6 +1,69 @@
 ﻿# OhMySmell — internal readiness completed
 
-## Gmail live staging acceptance — 2026-09-16
+## Gmail channel policy and second live acceptance — 2026-09-16
+
+Application commit `048852de6b5214d75ceff498d1abcdbffa006a83`.
+Confirmed rule: **Email/Gmail -> wholesale; Website -> retail**, independent of the
+existing customer profile. Conflicting profiles are preserved and recorded in
+`contact_details.customer_type_policy`, structured lifecycle logs and manager card.
+No Gmail customer-type confirmation; old type callbacks and API mutations are blocked.
+Retail never falls back to wholesale pricing. Tilda itself remains disconnected.
+
+New controlled message `1a0ab06fcdc683b8` was ingested by the Railway email worker:
+**received=1, processed=1, failed=0** (3357.77 ms, including cold MoySklad reads).
+Inbound **35**, draft **35**, existing customer **33**; the customer's unknown profile
+was preserved while the draft became wholesale automatically. Status needs_review
+only for unresolved product/counterparty, not customer type.
+
+| Item | Qty | Match | Price minor | Item total minor |
+|---|---:|---|---:|---:|
+| MARV007 | 3 | matched | 56000 | 168000 |
+| Chanel | 2 | ambiguous: CHNL010 first, CHNL018 second | null | null |
+
+Draft total is null; no ambiguous product was selected. Manager card rendering shows
+`Тип клиента: Оптовый`, `Источник: Email`, correct rubles, no customer-type buttons.
+Previously delivered Telegram messages are snapshots: use «Обновить» or `/draft 35`
+to render current UI. No manager callbacks were executed by acceptance scripts.
+One notification outbox row is sent/attempts=1; replay did not send again.
+
+Message historyId **339459**, persisted cursor **339525**, key
+`gmail:faa7dd43e6d39a16be6937ceb8e7fd172f4619cc`. The first and repeated reads left labels
+unchanged (including UNREAD). Direct pipeline replay returned the same draft. Railway
+restart loaded the cursor and completed received=0/processed=0/failed=0 (193.48 ms).
+No duplicate Customer/Draft/Order; total Order count remains 14.
+
+Old controlled draft **34** was repriced through the application review service:
+wholesale, revision1, MARV007=56000, Chanel unresolved. Customer profile unchanged,
+no extra notification, no direct SQL data patch. Finalized orders were not rewritten.
+
+**314 tests passed: 297 unit +17 PostgreSQL, plus 7 subtests.** PostgreSQL suite includes
+retail-profile/email conflict, preserved audit snapshot, legacy reprice, channel callback
+guard, website/wholesale-profile retail pricing and concurrent duplicate email.
+Query tests cover history expiration, label arrival, delayed search indexing,
+commit acknowledgement, selector intersection, query failure and restart replay.
+Compileall, Alembic current/check, secret scan and diff check pass. No migration;
+head remains `j93d5087bc10`. Backend/manager health/readiness=200, internal auth=401,
+debug=404; email worker Online, one polling instance, no known secret leaks/tracebacks.
+
+Mass intake **remains disabled**. Staging allowlist contains only the new test ID.
+GMAIL_ORDER_QUERY is implemented but unset; query-only intake additionally requires
+GMAIL_QUERY_INTAKE_ENABLED=true, currently disabled. Read-only audit of 25 headers could not
+verify a deterministic business selector; the mailbox has zero custom labels.
+Owner's “95% orders; plain questions without product/article/price are inquiries”
+requires semantic inspection and does not define a safe Gmail search predicate.
+Unparsed mail stays needs_review, cannot finalize, and its card says question or mail
+without product lines. No automatic inquiry classifier is claimed.
+
+Proposed future selector: `label:OMS-Wholesale-Orders after:<approved-Unix-epoch>`
+(provider additionally enforces INBOX). Required from owner: exact dedicated label
+or verified order alias, representative anonymized orders and inquiries, cutover time
+and historical backfill policy, then approval of a read-only selection preview.
+No label was created/applied by the integration. See EXTERNAL_INTEGRATIONS.md.
+Production/main, Gmail writes and MoySklad/delivery writes remain untouched/disabled.
+Ignored evidence: `gmail_wholesale_acceptance.json`, `gmail_wholesale_first_poll.json`,
+`gmail_wholesale_preflight.json`, `gmail_legacy_reprice.json`, `email_remote_receipt.json`.
+
+## Historical Gmail acceptance before channel-policy change — 2026-09-16
 
 **Passed.** Application commit `9f74540689d8bb170a78062fa92ef3a13a2f87eb`,
 feature/sales-core-v2. Production/main/Tilda untouched; EXTERNAL_WRITES_ENABLED=false.

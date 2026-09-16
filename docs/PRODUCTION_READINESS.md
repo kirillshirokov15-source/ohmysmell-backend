@@ -19,9 +19,10 @@ already-authorized token exists. Email token file must be writable for refresh.
 Use a restricted volume or the implemented secret-env reconstruction described in
 EXTERNAL_INTEGRATIONS.md. GMAIL_TOKEN_JSON_BASE64 and GMAIL_CREDENTIALS_JSON_BASE64
 are secrets; GMAIL_ALLOWED_MESSAGE_IDS is a non-secret controlled intake selector,
-mandatory for staging. Backend/client/manager never perform Gmail authorization.
-Production email requires an approved GMAIL_ORDER_QUERY or explicit canary IDs as
-well as the activation gate. No whole-INBOX default is accepted by that runtime.
+used for controlled staging. Backend/client/manager never perform Gmail authorization.
+Staging/production email requires explicit canary IDs or an approved GMAIL_ORDER_QUERY
+with GMAIL_QUERY_INTAKE_ENABLED=true (default false). Production has an additional
+activation gate. No whole-INBOX default is accepted by that runtime.
 Email order type is wholesale and website order type retail independently of the
 existing customer profile; channel/profile conflicts are recorded without profile edits.
 
@@ -50,6 +51,8 @@ The manager notification loop belongs only to manager worker, never backend/clie
 Client service remains unstarted without its token. Gmail controlled live acceptance
 and Railway restart passed; ohmysmell-email-worker-staging is Online (one replica).
 Current staging email deployment evidence is in FINISH_REPORT.md.
+Second controlled acceptance confirms automatic wholesale pricing and profile isolation;
+intake still permits one test message only. No safe business selector is confirmed yet.
 Production Gmail activation is still a separate decision. The email service must not
 receive the manager Telegram token; notifications are delivered by the manager outbox.
 

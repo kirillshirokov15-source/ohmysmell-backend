@@ -123,6 +123,27 @@ def test_staging_worker_requires_explicit_selector(tmp_path, monkeypatch):
         validate_email()
 
 
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_query_only_intake_requires_separate_activation(tmp_path, monkeypatch, environment):
+    from app.workers.email_runtime import validate_email
+    token = tmp_path / "token.json"
+    token.write_text("{}")
+    monkeypatch.setattr(settings, "environment", environment)
+    monkeypatch.setattr(settings, "gmail_token_file", str(token))
+    monkeypatch.setattr(settings, "external_writes_enabled", False)
+    monkeypatch.setenv("EMAIL_PRODUCTION_ACTIVATED", "true")
+    monkeypatch.delenv("GMAIL_ALLOWED_MESSAGE_IDS", raising=False)
+    monkeypatch.setenv("GMAIL_ORDER_QUERY", "label:Orders after:1789516800")
+    monkeypatch.delenv("GMAIL_QUERY_INTAKE_ENABLED", raising=False)
+    with pytest.raises(ValueError, match="activated order query"):
+        validate_email()
+    monkeypatch.setenv("GMAIL_QUERY_INTAKE_ENABLED", "true")
+    validate_email()
+    monkeypatch.setenv("GMAIL_ORDER_QUERY", "")
+    with pytest.raises(ValueError):
+        validate_email()
+
+
 @pytest.mark.parametrize("mode", ["bootstrap", "history", "expired"])
 def test_order_query_remains_active_across_history_and_recovery(mode, monkeypatch):
     service = Mock()

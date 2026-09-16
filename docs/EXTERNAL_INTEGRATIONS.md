@@ -28,7 +28,7 @@ production variables. Application code and entrypoints are already provided.
   a 0700 directory. Existing refreshed token files are preserved. Ephemeral restart
   reconstructs from the secret containing the refresh token; rotating/revoking OAuth
   requires updating that secret. Base64 is encoding, not encryption; protect it as a token.
-- Staging requires explicit GMAIL_ALLOWED_MESSAGE_IDS (comma-separated IDs). The same
+- Controlled staging uses GMAIL_ALLOWED_MESSAGE_IDS (comma-separated IDs). The same
   allowlist applies to first intake, history polling and expired-history recovery.
   GMAIL_INITIAL_QUERY alone is NOT a history filter. Current acceptance permits only
   one controlled message; expanding intake requires a separately approved selector.
@@ -38,7 +38,9 @@ production variables. Application code and entrypoints are already provided.
   wholesale prices immediately. No manager type confirmation. Website is always RETAIL.
 - Prepared optional GMAIL_ORDER_QUERY is an additional Gmail search predicate, enforced
   within INBOX on bootstrap, normal polling and expired-history recovery. If IDs and
-  query are both present they intersect. Production refuses startup with neither.
+  query are both present they intersect. Query-only intake in staging/production
+  requires GMAIL_QUERY_INTAKE_ENABLED=true explicitly. Otherwise a missing ID allowlist
+  fails startup. The flag defaults false; current staging does not enable it.
   Query failure fails closed; it never falls back to the whole inbox. Selector change
   gets a new account/selector cursor. Query text is configuration, never logged.
 - Query mode reconciles matching IDs each poll to tolerate delayed search indexing and
@@ -52,6 +54,8 @@ production variables. Application code and entrypoints are already provided.
   no custom labels in that sample. Twelve subjects contain order/заказ, including
   controlled tests. This does NOT verify any sender/domain/subject/recipient as a
   safe production selector. Historical bodies were not ingested or logged.
+  A separate readonly labels.list audit confirmed zero custom labels in the mailbox;
+  the proposed OMS-Wholesale-Orders label does not exist yet.
 - Owner says about 95% are orders, and a question without product/article/price is
   an inquiry. That is a semantic content rule, not a reliable Gmail search predicate.
   A question may name a product; an order may have no price. Do not filter solely on
@@ -64,6 +68,11 @@ production variables. Application code and entrypoints are already provided.
   Need representative anonymized orders AND inquiries, the exact label/alias, the
   cutover timestamp/backfill policy and approval of the selection preview. Until then
   retain the controlled ID allowlist; do not enable unfiltered INBOX intake.
+  Once approved: set the exact query, set GMAIL_QUERY_INTAKE_ENABLED=true, remove the
+  test-only IDs and redeploy only the intended email worker. Observe the selected
+  canary/restart/cursor before expanding further. Roll back by restoring the test IDs
+  and flag=false or stopping email service. Production also requires its own separate
+  activation gate; enabling a query never enables external writes.
   Gmail search/history contracts: [messages.list](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/list),
   [history.list](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.history/list).
 - Runtime derives a cursor key from account + selector (hashed, no email in logs).
@@ -87,7 +96,9 @@ production variables. Application code and entrypoints are already provided.
   Use /health for Railway deployment gating so a replacement can wait for ownership;
   /ready stays unhealthy until its first successful poll. Alert on /ready separately.
 - Current staging service: ohmysmell-email-worker-staging, Online, one replica.
-  Accepted message -> inbound34/draft34, cursor persisted, replay/restart deduplicated.
+  Latest accepted message -> inbound35/draft35, automatically wholesale, MARV007=56000;
+  Chanel remains ambiguous. Cursor persisted, replay/restart deduplicated. Previous
+  controlled draft34 was repriced through review without changing the customer profile.
   Leave its current message allowlist intact until additional intake is authorized.
 - Disable: stop only email service; preserve token/cursor, revoke OAuth if compromised.
 
