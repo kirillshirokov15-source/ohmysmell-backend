@@ -52,7 +52,7 @@ async def ready_draft():
     from app.models.sales import CustomerType
     uid = uuid4().hex
     customer = await CustomerRepository().create(CustomerType.WHOLESALE, "STAGING AUDIT " + uid, [])
-    return await DraftOrderRepository().create({"external_message_id": "audit:" + uid,
+    return await DraftOrderRepository().create({"source": "manual", "external_message_id": "audit:" + uid,
         "sender_email": uid + "@example.invalid", "body_text": "Product x4",
         "received_at": datetime.now(timezone.utc), "customer_id": customer.id,
         "customer_type": "wholesale", "counterparty_id": "cp-" + uid,
@@ -121,7 +121,82 @@ def test_concurrent_duplicate_email_is_idempotent(staging_sessions):
         message = replace(message, sender_email=uuid4().hex + "@example.invalid")
         drafts = await asyncio.gather(*(service().ingest_email(message) for _ in range(5)))
         assert len({d.id for d in drafts}) == 1
-        assert drafts[0].customer_type == "unknown"
+        assert drafts[0].customer_type == "wholesale"
+        assert drafts[0].items[0].price == 9999
+        await engine.dispose()
+    asyncio.run(run())
+
+
+def test_email_channel_conflict_review_and_legacy_reprice(staging_sessions):
+    from app.models.customer import Customer, CustomerIdentity
+    from app.repositories.draft_order_repository import DraftOrderRepository
+    from app.services.draft_order_service import DraftOrderService
+    from app.services.product_matching_service import ProductMatchingService
+    from app.services.price_service import PriceService
+    from app.services.order_lifecycle import InvalidOrderTransitionError
+    from tests.test_email_pipeline import email_message
+    from dataclasses import replace
+    factory, engine = staging_sessions
+    async def run():
+        email = uuid4().hex + "@example.invalid"
+        async with factory() as session, session.begin():
+            customer = Customer(customer_type="retail", display_name="Synthetic conflict")
+            customer.identities.append(CustomerIdentity(identity_type="email", normalized_value=email, original_value=email))
+            session.add(customer)
+        service = DraftOrderService(matching_service=ProductMatchingService(SimpleNamespace(get_products=lambda: [
+            {"id": "p1", "name": "Product", "salePrices": [{"value": 56000, "priceType": {"name": "W"}}]}])),
+            price_service=PriceService({"wholesale": "W"}),
+            counterparty_service=SimpleNamespace(candidates_async=AsyncMock(return_value=[])), notifier=AsyncMock())
+        draft = await service.ingest_email(replace(email_message(uuid4().hex, "Product x3"), sender_email=email))
+        assert draft.customer_type == "wholesale" and draft.items[0].price == 56000
+        assert draft.items[0].item_total == 168000
+        assert draft.contact_details["customer_type_policy"]["profile_conflict"]
+        repository = DraftOrderRepository()
+        with pytest.raises(InvalidOrderTransitionError):
+            await repository.set_customer_type(draft.id, "retail")
+        reviewed = await service.review(draft.id)
+        assert reviewed.contact_details["customer_type_policy"]["profile_conflict"]
+        # Represent a pre-policy row, only in this isolated test schema.
+        from app.models.draft_order import DraftOrder
+        async with factory() as session, session.begin():
+            legacy = await session.get(DraftOrder, draft.id)
+            legacy.customer_type = "unknown"
+        restored = await service.review(draft.id)
+        assert restored.customer_type == "wholesale" and restored.items[0].price == 56000
+        assert restored.revision == draft.revision + 1
+        async with factory() as session:
+            assert (await session.get(Customer, customer.id)).customer_type == "retail"
+        service.notifier.assert_awaited_once()
+        await engine.dispose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("retail_price", [None, 99000])
+def test_website_channel_keeps_retail_for_wholesale_profile(staging_sessions, retail_price):
+    from app.models.customer import Customer, CustomerIdentity
+    from app.models.draft_order import DraftOrder
+    from app.services.checkout_service import CheckoutService
+    from app.schemas.checkout import CheckoutCreate
+    from tests.test_readiness_v2 import checkout_payload
+    from sqlalchemy import select
+    factory, engine = staging_sessions
+    async def run():
+        email = uuid4().hex + "@example.invalid"
+        async with factory() as session, session.begin():
+            customer = Customer(customer_type="wholesale", display_name="Synthetic website conflict")
+            customer.identities.append(CustomerIdentity(identity_type="email", normalized_value=email, original_value=email))
+            session.add(customer)
+        catalog = AsyncMock(return_value=[{"id": "p1", "name": "Product", "price": retail_price,
+            "stocks": [{"id": "w1", "stock": 100, "reserve": 0}]}])
+        payload = CheckoutCreate(**{**checkout_payload(), "email": email})
+        await CheckoutService(SimpleNamespace(get_catalog_async=catalog)).submit(payload, uuid4().hex)
+        catalog.assert_awaited_once_with(customer_type="retail")
+        async with factory() as session:
+            draft = (await session.execute(select(DraftOrder).where(DraftOrder.customer_id == customer.id))).scalar_one()
+            assert draft.customer_type == "retail"
+            assert draft.contact_details["customer_type_policy"]["profile_conflict"]
+            assert (draft.total is None) == (retail_price is None)
+            assert (await session.get(Customer, customer.id)).customer_type == "wholesale"
         await engine.dispose()
     asyncio.run(run())
 

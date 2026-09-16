@@ -100,7 +100,8 @@ class FakeDraftRepository:
             external_message_id=data["external_message_id"],
             customer_id=data["customer_id"],
             customer_type=data["customer_type"],
-            source="email",
+            source=data.get("source", "email"),
+            contact_details=data.get("contact_details", {}),
             status=data["status"],
             sender_email=data["sender_email"],
             customer_name=data["customer_name"],
@@ -270,13 +271,13 @@ class TestEmailCustomerResolution:
         )
         assert result.customer_type == CustomerType.RETAIL
 
-    def test_new_email_customer_is_unknown(self):
+    def test_new_email_customer_is_wholesale(self):
         result = asyncio.run(
             CustomerResolutionService(FakeCustomerRepository()).resolve_email(
                 "new@example.com"
             )
         )
-        assert result.customer_type == CustomerType.UNKNOWN
+        assert result.customer_type == CustomerType.WHOLESALE
 
 
 class TestDraftOrderPipeline:
@@ -305,11 +306,13 @@ class TestDraftOrderPipeline:
         missing_price = [dict(complete[0], price=None, item_total=None)]
         assert calculate_draft_total(missing_price) is None
 
-    def test_unknown_customer_needs_review(self):
+    def test_unknown_profile_email_is_wholesale_without_type_review(self):
         service, _, _ = draft_service(CustomerType.UNKNOWN)
         draft = asyncio.run(service.ingest_email(email_message()))
         assert draft.status == OrderStatus.NEEDS_REVIEW
-        assert "тип клиента" in draft.review_notes
+        assert "тип клиента" not in draft.review_notes
+        assert draft.customer_type == CustomerType.WHOLESALE
+        assert draft.items[0].price == 15000
 
     def test_ambiguous_item_needs_review(self):
         service, _, _ = draft_service(
@@ -331,11 +334,11 @@ class TestDraftOrderPipeline:
         assert draft.status == OrderStatus.READY
         assert draft.total == 15000
 
-    def test_manager_confirmation_wholesale_updates_customer(self):
-        service, repository, _ = draft_service(
+    def test_manual_confirmation_wholesale_updates_customer(self):
+        service, repository, customer = draft_service(
             CustomerType.UNKNOWN, "counterparty-1"
         )
-        draft = asyncio.run(service.ingest_email(email_message()))
+        draft = asyncio.run(service._ingest_resolved_email(email_message(), customer.resolution, source="manual"))
         reviewed = asyncio.run(
             service.set_customer_type(draft.id, CustomerType.WHOLESALE)
         )
@@ -344,7 +347,7 @@ class TestDraftOrderPipeline:
         assert reviewed.status == OrderStatus.READY
         assert reviewed.total == 15000
 
-    def test_wholesale_confirmation_and_product_resolution_reprice_items(self):
+    def test_email_automatic_wholesale_and_product_resolution_reprice_items(self):
         products = [
             {
                 "id": "chanel-real",
@@ -389,9 +392,9 @@ class TestDraftOrderPipeline:
             "Marvis Classic Strong Mint 85 ml x3"
         ))))
 
-        wholesale = asyncio.run(
-            service.set_customer_type(draft.id, CustomerType.WHOLESALE)
-        )
+        wholesale = draft
+        assert draft.customer_type == CustomerType.WHOLESALE
+        assert repository.customer_updated_to is None
         chanel, marvis = wholesale.items
         assert chanel.match_status == ProductMatchStatus.AMBIGUOUS
         assert chanel.price is None

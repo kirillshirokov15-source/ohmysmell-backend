@@ -24,6 +24,10 @@ def validate_email():
         raise ValueError("EMAIL_POLL_INTERVAL must be at least 5 seconds")
     if settings.environment == "staging" and not os.getenv("GMAIL_ALLOWED_MESSAGE_IDS", "").strip():
         raise ValueError("Staging Gmail requires explicit allowed message IDs")
+    if settings.environment == "production" and not (
+        os.getenv("GMAIL_ALLOWED_MESSAGE_IDS", "").strip() or os.getenv("GMAIL_ORDER_QUERY", "").strip()
+    ):
+        raise ValueError("Production Gmail requires an explicit intake selector")
 
 
 async def run(worker=None):

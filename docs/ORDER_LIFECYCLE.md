@@ -2,6 +2,16 @@
 
 Technical `Order.status` сохранён отдельно от операций менеджера.
 
+Тип заказа определяется каналом: `email → wholesale`, `website → retail`.
+Тип существующего Customer — отдельный профиль, он не переопределяет это правило
+и не меняется молча. Snapshot `contact_details.customer_type_policy` сохраняет
+source/profile_type/order_type/profile_conflict; конфликт виден менеджеру и в логах
+создания draft. Для прочих каналов сохраняется прежняя логика профиля/review.
+Подмена типа через старый callback или internal draft endpoint блокируется в сервисе
+и под DB lock. Review старого незакрытого draft применяет новое правило и пересчитывает
+цены атомарно, увеличивая revision при изменении типа; закрытые Order не переписываются.
+Retail без настроенной retail price остаётся на проверке, wholesale fallback запрещён.
+
 | Область | Состояния |
 |---|---|
 | Draft | draft → needs_review ↔ ready → new (finalized); rejected |

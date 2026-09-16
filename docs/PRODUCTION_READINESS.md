@@ -20,6 +20,10 @@ Use a restricted volume or the implemented secret-env reconstruction described i
 EXTERNAL_INTEGRATIONS.md. GMAIL_TOKEN_JSON_BASE64 and GMAIL_CREDENTIALS_JSON_BASE64
 are secrets; GMAIL_ALLOWED_MESSAGE_IDS is a non-secret controlled intake selector,
 mandatory for staging. Backend/client/manager never perform Gmail authorization.
+Production email requires an approved GMAIL_ORDER_QUERY or explicit canary IDs as
+well as the activation gate. No whole-INBOX default is accepted by that runtime.
+Email order type is wholesale and website order type retail independently of the
+existing customer profile; channel/profile conflicts are recorded without profile edits.
 
 Common safe defaults: EXTERNAL_WRITES_ENABLED=false, DEBUG_ENDPOINTS_ENABLED=false,
 MONITORING_ENABLED=false, PUBLIC_CHECKOUT_ENABLED=false. Client/email credentials

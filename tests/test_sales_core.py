@@ -173,15 +173,15 @@ class OrderSchemaTests(unittest.TestCase):
     def test_source_defaults(self):
         for source, expected in (
             ("instagram", CustomerType.RETAIL),
-            ("email", CustomerType.UNKNOWN),
+            ("email", CustomerType.WHOLESALE),
             ("manual", CustomerType.UNKNOWN),
         ):
             with self.subTest(source=source):
                 self.assertEqual(make_order(source=source).customer_type, expected)
 
-    def test_explicit_customer_type_has_priority(self):
+    def test_website_channel_overrides_explicit_customer_type(self):
         order = make_order(source="website", customer_type="wholesale")
-        self.assertEqual(order.customer_type, CustomerType.WHOLESALE)
+        self.assertEqual(order.customer_type, CustomerType.RETAIL)
         self.assertTrue(order.customer_type_explicit)
 
     def test_empty_order_is_rejected(self):
@@ -209,7 +209,7 @@ class CustomerResolutionTests(unittest.TestCase):
         for source, expected in (
             ("website", CustomerType.RETAIL),
             ("instagram", CustomerType.RETAIL),
-            ("email", CustomerType.UNKNOWN),
+            ("email", CustomerType.WHOLESALE),
             ("manual", CustomerType.UNKNOWN),
         ):
             with self.subTest(source=source):
@@ -365,7 +365,7 @@ class OrderCreationTests(unittest.TestCase):
 
         self.assertEqual(response["order_id"], 42)
         self.assertEqual(captured["customer_id"], 77)
-        self.assertEqual(captured["customer_type"], CustomerType.WHOLESALE)
+        self.assertEqual(captured["customer_type"], CustomerType.RETAIL)
 
     def test_telegram_failure_does_not_fail_saved_order(self):
         class FakeResolutionService:

@@ -90,6 +90,7 @@ def test_russian_labels_preserve_technical_callback_data():
     from app.services.draft_telegram_service import build_draft_keyboard
 
     draft = SimpleNamespace(
+        source="manual",
         id=2,
         status="needs_review",
         counterparty_id=None,

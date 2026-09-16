@@ -34,6 +34,9 @@ class EmailIngestionWorker:
             log_event(logger, "email_received", message_ref=message_ref)
             try:
                 draft = await self.pipeline.ingest_email(message)
+                acknowledge = getattr(self.provider, "acknowledge", None)
+                if acknowledge is not None:
+                    acknowledge(message.external_message_id)
                 stats["processed"] += 1
                 log_event(
                     logger,

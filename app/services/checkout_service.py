@@ -9,7 +9,7 @@ from app.models.draft_order import DraftOrder, DraftOrderItem
 from app.models.fulfillment import CheckoutRequest
 from app.models.inbound_message import InboundMessage
 from app.models.notification import DraftNotification
-from app.models.sales import CustomerType
+from app.models.sales import CustomerType, customer_type_policy
 from app.services.product_service import ProductService
 from app.services.stock_allocation import allocate
 from app.config.settings import settings
@@ -70,7 +70,7 @@ class CheckoutService:
                 await session.flush()
             # Supplied contact details identify a review request; never prove login
             # or grant a wholesale price. Do not attach new identities automatically.
-            priced = customer.customer_type == "retail" and all(
+            priced = all(
                 products[pid]["price"] is not None for pid in quantities)
             total = sum(products[pid]["price"] * qty for pid, qty in quantities.items()) if priced else None
             if total is not None and total > 9_223_372_036_854_775_807:
@@ -81,10 +81,11 @@ class CheckoutService:
             session.add(inbound)
             await session.flush()
             draft = DraftOrder(inbound_message_id=inbound.id, source="website",
-                customer_id=customer.id, customer_type=customer.customer_type,
+                customer_id=customer.id, customer_type=CustomerType.RETAIL,
                 sender_email=payload.email, customer_name=payload.customer_name,
                 subject="Заявка с сайта", status="needs_review", total=total,
-                contact_details={"phone": payload.phone, "comment": payload.comment},
+                contact_details={"phone": payload.phone, "comment": payload.comment,
+                    "customer_type_policy": customer_type_policy("website", customer.customer_type)},
                 counterparty_id=customer.moysklad_counterparty_id, counterparty_candidates=[],
                 review_notes="Подтвердите контактные данные и условия заказа с клиентом")
             for pid, qty in quantities.items():

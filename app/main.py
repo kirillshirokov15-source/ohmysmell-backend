@@ -213,8 +213,9 @@ async def create_order(order: OrderCreate, idempotency_key: str = Header(min_len
     except CustomerResolutionError as error:
         raise HTTPException(status_code=409, detail=str(error))
 
+    from app.models.sales import order_customer_type
     order = order.model_copy(
-        update={"customer_type": customer.customer_type}
+        update={"customer_type": order_customer_type(order.source, customer.customer_type)}
     )
     service = OrderValidationService()
 

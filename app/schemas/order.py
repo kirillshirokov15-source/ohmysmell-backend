@@ -4,6 +4,7 @@ from app.models.sales import (
     CustomerType,
     OrderSource,
     default_customer_type,
+    channel_customer_type,
 )
 
 
@@ -28,11 +29,11 @@ class OrderCreate(BaseModel):
 
     def model_post_init(self, context: object) -> None:
         self._customer_type_explicit = "customer_type" in self.model_fields_set
-        if self.customer_type is None:
+        if channel_customer_type(self.source) or self.customer_type is None:
             object.__setattr__(
                 self,
                 "customer_type",
-                default_customer_type(self.source),
+                channel_customer_type(self.source) or default_customer_type(self.source),
             )
 
     @property

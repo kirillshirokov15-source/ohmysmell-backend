@@ -12,7 +12,8 @@ production variables. Application code and entrypoints are already provided.
 - Credentials: Google OAuth desktop client JSON + authorized user token JSON with
   exactly https://www.googleapis.com/auth/gmail.readonly; owner consent required.
 - Env: GMAIL_CREDENTIALS_FILE, GMAIL_TOKEN_FILE, GMAIL_USER_ID=me,
-  GMAIL_INITIAL_QUERY, GMAIL_ALLOWED_MESSAGE_IDS, EMAIL_POLL_INTERVAL=60, DATABASE_URL, APP_ENV;
+  GMAIL_INITIAL_QUERY, GMAIL_ALLOWED_MESSAGE_IDS, GMAIL_ORDER_QUERY,
+  EMAIL_POLL_INTERVAL=60, DATABASE_URL, APP_ENV;
   MOYSKLAD_TOKEN/price mapping for product matching. Production additionally
   EMAIL_PRODUCTION_ACTIVATED=true after approval. Internal API token/CORS not needed.
 - Put client JSON outside the repository in a restricted directory; run
@@ -31,6 +32,40 @@ production variables. Application code and entrypoints are already provided.
   allowlist applies to first intake, history polling and expired-history recovery.
   GMAIL_INITIAL_QUERY alone is NOT a history filter. Current acceptance permits only
   one controlled message; expanding intake requires a separately approved selector.
+- Business rule: email drafts/orders are always WHOLESALE, including when an existing
+  Customer profile is retail/unknown. The profile is preserved; conflict snapshot is
+  durable in draft contact_details and shown in manager card. Matched items get
+  wholesale prices immediately. No manager type confirmation. Website is always RETAIL.
+- Prepared optional GMAIL_ORDER_QUERY is an additional Gmail search predicate, enforced
+  within INBOX on bootstrap, normal polling and expired-history recovery. If IDs and
+  query are both present they intersect. Production refuses startup with neither.
+  Query failure fails closed; it never falls back to the whole inbox. Selector change
+  gets a new account/selector cursor. Query text is configuration, never logged.
+- Query mode reconciles matching IDs each poll to tolerate delayed search indexing and
+  labels added after arrival. Only committed IDs are cached in memory; failed messages
+  retry and restart replays through durable DB uniqueness. Steady polls list IDs but
+  do not re-download acknowledged bodies. Keep the selected population bounded with
+  an approved cutover date/label and monitor polling duration. Gmail history continues
+  to persist normally. Gmail labels/filter creation remains the mailbox owner's job.
+- Selector audit (2026-09-16): bounded read-only sample of 25 INBOX headers, 7 sender
+  domains, 18 subjects, 10 distinct recipient header strings (not verified aliases),
+  no custom labels in that sample. Twelve subjects contain order/заказ, including
+  controlled tests. This does NOT verify any sender/domain/subject/recipient as a
+  safe production selector. Historical bodies were not ingested or logged.
+- Owner says about 95% are orders, and a question without product/article/price is
+  an inquiry. That is a semantic content rule, not a reliable Gmail search predicate.
+  A question may name a product; an order may have no price. Do not filter solely on
+  a question mark, price, sender frequency or the word order. Unparsed mail remains
+  needs_review with no finalizable Order; this is NOT an automatic inquiry classifier.
+- Proposed conservative selector, NOT activated:
+  `GMAIL_ORDER_QUERY=label:OMS-Wholesale-Orders after:<approved-Unix-epoch>`.
+  Owner first confirms/applies a dedicated order label (or supplies a dedicated order
+  alias with verified examples); integration never adds labels or marks read.
+  Need representative anonymized orders AND inquiries, the exact label/alias, the
+  cutover timestamp/backfill policy and approval of the selection preview. Until then
+  retain the controlled ID allowlist; do not enable unfiltered INBOX intake.
+  Gmail search/history contracts: [messages.list](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/list),
+  [history.list](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.history/list).
 - Runtime derives a cursor key from account + selector (hashed, no email in logs).
   Existing legacy `gmail` cursor is left intact. A changed selector starts its own
   cursor; durable external message IDs still deduplicate. One account per DB remains

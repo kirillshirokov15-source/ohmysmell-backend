@@ -10,7 +10,7 @@ from app.models.draft_order import DraftOrder, DraftOrderItem, ProductMatchStatu
 from app.models.inbound_message import InboundMessage, MessageProcessingStatus
 from app.models.order import Order, OrderItem
 from app.models.notification import DraftNotification
-from app.models.sales import CustomerType, OrderSource
+from app.models.sales import CustomerType, OrderSource, channel_customer_type, order_customer_type, customer_type_policy
 from app.services.order_lifecycle import OrderStatus, ensure_order_transition, InvalidOrderTransitionError
 
 
@@ -132,6 +132,8 @@ class DraftOrderRepository:
             draft = await self._locked(session, draft_id)
             if draft is None:
                 return None
+            if channel_customer_type(draft.source):
+                raise InvalidOrderTransitionError("Тип заказа определяется каналом; обновите карточку")
             self._invalidate(draft)
             await session.execute(update(Customer).where(Customer.id == draft.customer_id)
                                   .values(customer_type=customer_type))
@@ -209,6 +211,13 @@ class DraftOrderRepository:
             self._ensure_editable(draft)
             if expected_revision is not None and draft.revision != expected_revision:
                 raise InvalidOrderTransitionError("Черновик изменён параллельно; повторите действие")
+            effective = order_customer_type(draft.source, draft.customer_type)
+            if draft.customer_type != effective:
+                profile = await session.get(Customer, draft.customer_id)
+                draft.contact_details = {**(draft.contact_details or {}),
+                    "customer_type_policy": customer_type_policy(draft.source, profile.customer_type)}
+                draft.customer_type = effective
+                draft.revision += 1
             if draft.status != status:
                 ensure_order_transition(draft.status, status)
             draft.status = status
@@ -264,7 +273,8 @@ class DraftOrderRepository:
             if self.expected_revision is not None and draft.revision != self.expected_revision:
                 raise InvalidOrderTransitionError("Карточка устарела; обновите черновик")
             ensure_order_transition(draft.status, OrderStatus.NEW)
-            if (draft.customer_type == "unknown" or not draft.counterparty_id
+            if (draft.customer_type != order_customer_type(draft.source, draft.customer_type)
+                    or draft.customer_type == "unknown" or not draft.counterparty_id
                     or not draft.items or draft.total is None
                     or any(i.qty <= 0 or i.price is None or i.price < 0
                            or not i.product_id or i.match_status != "matched"

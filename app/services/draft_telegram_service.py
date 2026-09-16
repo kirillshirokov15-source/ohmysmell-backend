@@ -7,6 +7,7 @@ from app.database.session import async_session
 from app.integrations.http_tls import verified_session
 from app.models.draft_order import DraftOrder
 from app.models.manager import Manager
+from app.models.sales import channel_customer_type
 from app.services.telegram_display import (
     customer_type_label,
     draft_status_label,
@@ -17,14 +18,17 @@ from app.services.telegram_display import (
 
 
 def build_draft_card(draft: DraftOrder) -> str:
+    email_heading = "📨 Новый заказ из почты" if draft.items else "📨 Вопрос или письмо без товарных строк"
     lines = [
-        "📨 Новый заказ из почты" if getattr(draft, "source", "email") == "email" else "📨 Входящая заявка",
+        email_heading if getattr(draft, "source", "email") == "email" else "📨 Входящая заявка",
         "",
         f"Черновик №{draft.id}",
         "",
         f"Клиент: {draft.customer_name or 'Не указан'}",
         f"Email: {draft.sender_email}",
         f"Тип клиента: {customer_type_label(draft.customer_type)}",
+        "Источник: " + {"email": "Email", "website": "Сайт", "telegram": "Telegram",
+            "instagram": "Instagram", "manual": "Менеджер"}.get(getattr(draft, "source", "email"), "Не указан"),
         f"Тема: {draft.subject or 'Без темы'}",
         f"Контрагент: {draft.counterparty_name or draft.counterparty_id or 'Не выбран'}",
         "",
@@ -44,6 +48,10 @@ def build_draft_card(draft: DraftOrder) -> str:
             )
 
     contact = getattr(draft, "contact_details", None) or {}
+    policy = contact.get("customer_type_policy", {})
+    if policy.get("profile_conflict"):
+        lines.append(f"Профиль клиента: {customer_type_label(policy['profile_type'])}. "
+                     "Условия заказа определены каналом; профиль не изменён.")
     if contact.get("telegram"):
         lines.append(f"Telegram: {contact['telegram']}")
     if contact.get("phone"):
@@ -77,7 +85,7 @@ def build_draft_card(draft: DraftOrder) -> str:
 def build_draft_keyboard(draft: DraftOrder) -> dict:
     if str(draft.status) in {"new", "rejected"}:
         return {"inline_keyboard": []}
-    rows = [[
+    rows = [] if channel_customer_type(getattr(draft, "source", "email")) else [[
         {
             "text": "Подтвердить: опт",
             "callback_data": f"draft:type:wholesale:{draft.id}",

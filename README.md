@@ -38,8 +38,13 @@ local order; warehouse allocations are plans, not external reservations.
 The confirmed wholesale price type is Цена продажи. Retail has no fallback and
 remains in manager review until its own price is configured.
 
-Real Gmail OAuth, production migrations/deployment, Tilda connection, delivery
-orders and MoySklad writes require their separate activation steps.
+Gmail readonly OAuth and controlled staging worker are connected. Intake remains
+restricted to approved test IDs; production mailbox selection is not activated.
+Email orders are always wholesale, website orders always retail, regardless of the
+customer profile. Gmail needs no manager customer-type confirmation. Conflicting
+profiles remain unchanged and are recorded in the draft for review/audit.
+Production migrations/deployment, Tilda connection, delivery orders and MoySklad
+writes require their separate activation steps.
 
 
 Release candidate operations: [Manager bot](docs/MANAGER_BOT.md),

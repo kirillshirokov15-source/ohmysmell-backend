@@ -176,6 +176,7 @@ def test_candidate_buttons_mark_only_selected_product():
 
 def test_russian_labels_keep_callback_data_unchanged():
     draft = SimpleNamespace(
+        source="manual",
         id=22,
         status="needs_review",
         counterparty_id=None,

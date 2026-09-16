@@ -133,7 +133,7 @@ class CustomerResolutionService:
             )
         try:
             customer = await self.repository.create(
-                customer_type=CustomerType.UNKNOWN,
+                customer_type=CustomerType.WHOLESALE,
                 display_name=display_name,
                 identities=[email_identity],
             )
@@ -152,7 +152,7 @@ class CustomerResolutionService:
             )
         return CustomerResolution(
             customer_id=customer.id,
-            customer_type=CustomerType.UNKNOWN,
+            customer_type=CustomerType.WHOLESALE,
             moysklad_counterparty_id=customer.moysklad_counterparty_id,
             identities={CustomerIdentityType.EMAIL.value: [email]},
             created=True,

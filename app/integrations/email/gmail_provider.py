@@ -62,8 +62,12 @@ class ReadOnlyHttp:
 
 
 class GmailEmailProvider:
-    def __init__(self, service=None, *, allowed_message_ids=None) -> None:
+    def __init__(self, service=None, *, allowed_message_ids=None, order_query=None) -> None:
         self.service = service
+        self._query_acknowledged = set()
+        self.order_query = (os.getenv("GMAIL_ORDER_QUERY", "") if order_query is None else order_query).strip()
+        if len(self.order_query) > 2000 or any(ord(c) < 32 for c in self.order_query):
+            raise ValueError("Invalid Gmail order query")
         values = allowed_message_ids if allowed_message_ids is not None else os.getenv("GMAIL_ALLOWED_MESSAGE_IDS", "").split(",")
         self.allowed_message_ids = tuple(sorted({v.strip() for v in values if v.strip()}))
         if any(not re.fullmatch(r"[a-fA-F0-9]{1,64}", value) for value in self.allowed_message_ids):
@@ -75,6 +79,8 @@ class GmailEmailProvider:
             self.service = self._build_service()
         account = self.service.users().getProfile(userId=settings.gmail_user_id).execute()["emailAddress"].strip().casefold()
         scope = account + "\n" + (",".join(self.allowed_message_ids) or "inbox:" + settings.gmail_initial_query)
+        if self.order_query:
+            scope += "\norder-query:" + self.order_query
         return "gmail:" + hashlib.sha256(scope.encode()).hexdigest()[:40]
 
     async def fetch_unprocessed(
@@ -99,6 +105,15 @@ class GmailEmailProvider:
             message_ids, next_cursor = self._bootstrap(service)
         if self.allowed_message_ids:
             message_ids = [value for value in message_ids if value in self.allowed_message_ids]
+        if self.order_query:
+            selected, _ = self._initial_message_ids(service, query=self._order_query())
+            if self.allowed_message_ids:
+                selected = [value for value in selected if value in self.allowed_message_ids]
+            self._query_acknowledged.intersection_update(selected)
+            # Reconcile the selected IDs every poll: search indexing and labels may
+            # lag behind history. Only successful, committed messages are cached;
+            # restart safely replays through durable application deduplication.
+            message_ids = [value for value in selected if value not in self._query_acknowledged]
         messages = [
             message
             for message_id in message_ids
@@ -123,8 +138,16 @@ class GmailEmailProvider:
         if self.allowed_message_ids:
             message_ids = list(self.allowed_message_ids)
         else:
-            message_ids, _ = self._initial_message_ids(service, query="in:inbox" if recovery else None)
+            message_ids, _ = self._initial_message_ids(service, query=self._order_query() if self.order_query else ("in:inbox" if recovery else None))
         return message_ids, profile.get("historyId")
+
+    def _order_query(self):
+        # A caller-supplied OR must not escape the INBOX boundary.
+        return "in:inbox (" + self.order_query + ")"
+
+    def acknowledge(self, message_id: str) -> None:
+        if self.order_query:
+            self._query_acknowledged.add(message_id)
 
     def _build_service(self):
         from googleapiclient.discovery import build
@@ -177,7 +200,7 @@ class GmailEmailProvider:
             response = service.users().history().list(
                 userId=settings.gmail_user_id,
                 startHistoryId=cursor,
-                historyTypes=["messageAdded"],
+                historyTypes=["messageAdded", "labelAdded"] if self.order_query else ["messageAdded"],
                 pageToken=page_token,
             ).execute()
             latest_history_id = response.get("historyId", latest_history_id)
@@ -186,6 +209,8 @@ class GmailEmailProvider:
                     entry["message"]["id"]
                     for entry in history.get("messagesAdded", [])
                 )
+                if self.order_query:
+                    ids.extend(entry["message"]["id"] for entry in history.get("labelsAdded", []))
             page_token = response.get("nextPageToken")
             if not page_token:
                 break

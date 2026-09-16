@@ -3,7 +3,7 @@ import logging
 from app.integrations.email.provider import EmailMessage
 from app.logging_utils import log_event
 from app.models.draft_order import DraftOrder, ProductMatchStatus
-from app.models.sales import CustomerType
+from app.models.sales import CustomerType, channel_customer_type, order_customer_type, customer_type_policy
 from app.repositories.draft_order_repository import (
     DraftOrderRepository,
     DuplicateInboundMessageError,
@@ -120,11 +120,15 @@ class DraftOrderService:
         customer,
         source="email",
     ) -> DraftOrder:
+        policy = customer_type_policy(source, customer.customer_type)
+        effective_type = order_customer_type(source, customer.customer_type)
         log_event(
             logger,
             "customer_resolved",
             customer_id=customer.customer_id,
-            customer_type=customer.customer_type.value,
+            customer_type=effective_type.value,
+            profile_type=customer.customer_type.value,
+            profile_conflict=policy["profile_conflict"],
         )
         extracted_lines = self.extraction_service.extract(message.body_text)
         log_event(
@@ -160,7 +164,7 @@ class DraftOrderService:
         problems = []
         if not extracted_lines:
             problems.append("Не удалось извлечь позиции из письма")
-        if customer.customer_type == CustomerType.UNKNOWN:
+        if effective_type == CustomerType.UNKNOWN:
             problems.append("Необходимо подтвердить тип клиента")
         if not customer.moysklad_counterparty_id:
             problems.append("Необходимо выбрать контрагента")
@@ -187,7 +191,7 @@ class DraftOrderService:
                     product_name=match.product.get("name"),
                     article=match.product.get("article"),
                 )
-                price = self._price(match.product, customer.customer_type, problems)
+                price = self._price(match.product, effective_type, problems)
                 if price is not None:
                     if price * match.qty > 9_223_372_036_854_775_807:
                         problems.append("Сумма позиции превышает допустимый предел")
@@ -208,7 +212,8 @@ class DraftOrderService:
             "body_text": message.body_text,
             "received_at": message.received_at,
             "customer_id": customer.customer_id,
-            "customer_type": customer.customer_type,
+            "customer_type": effective_type,
+            "contact_details": {"customer_type_policy": policy},
             "counterparty_id": customer.moysklad_counterparty_id,
             "counterparty_candidates": counterparty_candidates,
             "status": status,
@@ -231,6 +236,8 @@ class DraftOrderService:
             "draft_created",
             draft_id=draft.id,
             status=draft.status.value if hasattr(draft.status, "value") else draft.status,
+            profile_conflict=policy["profile_conflict"],
+            customer_type=effective_type.value,
         )
 
         try:
@@ -287,6 +294,7 @@ class DraftOrderService:
         if getattr(draft, "finalized_order_id", None):
             return draft
         self._ensure_reviewable(draft)
+        effective_type = order_customer_type(getattr(draft, "source", None), draft.customer_type)
         problems = []
         priced_items = {}
         products = {
@@ -294,7 +302,7 @@ class DraftOrderService:
             for item in await self.matching_service.products_async()
         }
 
-        if CustomerType(draft.customer_type) == CustomerType.UNKNOWN:
+        if effective_type == CustomerType.UNKNOWN:
             problems.append("Необходимо подтвердить тип клиента")
         if not draft.counterparty_id:
             problems.append("Необходимо выбрать контрагента")
@@ -309,7 +317,7 @@ class DraftOrderService:
             if product is None:
                 problems.append(f"Товар {item.product_id} больше не найден в каталоге")
                 continue
-            price = self._price(product, CustomerType(draft.customer_type), problems)
+            price = self._price(product, effective_type, problems)
             if price is not None:
                 if price * item.qty > 9_223_372_036_854_775_807:
                     problems.append("Сумма позиции превышает допустимый предел")
@@ -340,6 +348,9 @@ class DraftOrderService:
     async def set_customer_type(
         self, draft_id: int, customer_type: CustomerType
     ) -> DraftOrder:
+        current = await self._get_required(draft_id)
+        if channel_customer_type(getattr(current, "source", None)):
+            raise DraftOrderError("Тип заказа определяется каналом; обновите карточку")
         draft = await self.repository.set_customer_type(draft_id, customer_type)
         if draft is None:
             raise DraftOrderError("Draft не найден")
