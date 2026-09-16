@@ -63,7 +63,7 @@ class GmailEmailProvider:
             except Exception as error:
                 if getattr(getattr(error, "resp", None), "status", None) != 404:
                     raise
-                message_ids, next_cursor = self._bootstrap(service)
+                message_ids, next_cursor = self._bootstrap(service, recovery=True)
         else:
             message_ids, next_cursor = self._bootstrap(service)
         messages = [
@@ -78,14 +78,16 @@ class GmailEmailProvider:
             next_cursor = profile.get("historyId")
         return EmailFetchBatch(messages=messages, next_cursor=next_cursor)
 
-    def _bootstrap(self, service) -> tuple[list[str], str | None]:
+    def _bootstrap(self, service, *, recovery=False) -> tuple[list[str], str | None]:
         # Capture the cursor before listing. Messages arriving during the list
         # are then visible through history on the next poll (duplicates remain
         # harmless because external_message_id is unique).
         profile = service.users().getProfile(
             userId=settings.gmail_user_id
         ).execute()
-        message_ids, _ = self._initial_message_ids(service)
+        # After history expiration, unread-only bootstrap can lose messages read
+        # by the owner during downtime. Rescan INBOX; durable IDs deduplicate it.
+        message_ids, _ = self._initial_message_ids(service, query="in:inbox" if recovery else None)
         return message_ids, profile.get("historyId")
 
     def _build_service(self):
@@ -111,13 +113,13 @@ class GmailEmailProvider:
             "messages_found": len(response.get("messages", [])),
         }
 
-    def _initial_message_ids(self, service) -> tuple[list[str], str | None]:
+    def _initial_message_ids(self, service, query=None) -> tuple[list[str], str | None]:
         ids = []
         page_token = None
         while True:
             request = service.users().messages().list(
                 userId=settings.gmail_user_id,
-                q=settings.gmail_initial_query,
+                q=query or settings.gmail_initial_query,
                 pageToken=page_token,
             )
             response = request.execute()

@@ -107,7 +107,9 @@ async def run_worker(role="manager", *, drop_pending_updates=False):
             await bot.get_me()
             state.update(status="ready", polling=True)
             log_event(logger, "worker_ready", role=role, external_writes=settings.external_writes_enabled, polling_instances=1)
-            polling = asyncio.create_task(dp.start_polling(bot, handle_signals=False, handle_as_tasks=True, tasks_concurrency_limit=8, close_bot_session=False))
+            # Client dialogue updates stay ordered, and polling offset advances
+            # only after the handler commits. Manager actions serialize in DB.
+            polling = asyncio.create_task(dp.start_polling(bot, handle_signals=False, handle_as_tasks=role == "manager", tasks_concurrency_limit=8, close_bot_session=False))
             watch = asyncio.create_task(watchdog())
             tasks = [polling, watch]
             tasks.append(asyncio.create_task(stop.wait()))

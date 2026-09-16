@@ -96,23 +96,27 @@ def main():
         report.update(draft_id=draft_id, order_id=order_id)
         tid = int(uuid4().hex[:12], 16)
         from app.bot.client_bot import create_dispatcher
-        client_dp = create_dispatcher()
+        from aiogram import Bot
+        from aiogram.types import Update
+        from tests.telegram_transport import TelegramSession
+        transport = TelegramSession()
+        client_bot = Bot("123456:FAKE_LOCAL_TEST_TOKEN", session=transport)
         responses = []
-        async def capture(text, **kwargs):
-            responses.append(text)
-        client_handler = client_dp.message.handlers[0].callback
         for mid, text in enumerate(("/start", "/request", "MARV007; 1", uid+"-client@example.invalid", "/send"), 1):
-            message = SimpleNamespace(chat=SimpleNamespace(type="private"), from_user=SimpleNamespace(id=tid, full_name="RC synthetic client"),
-                message_id=mid, text=text, contact=None, answer=capture)
-            await client_handler(message)
+            update = Update.model_validate({"update_id": mid, "message": {"message_id": mid, "date": 1,
+                "chat": {"id": tid, "type": "private"}, "from": {"id": tid, "is_bot": False, "first_name": "RC synthetic client"}, "text": text}})
+            await create_dispatcher().feed_update(client_bot, update)
+            responses.append(transport.calls[-1].text)
         import re
         client_draft_id = int(re.search(r"№(\d+)", responses[-1]).group(1))
-        await client_handler(message)
-        assert responses[-1] == responses[-2]
+        await create_dispatcher().feed_update(client_bot, update)
+        assert transport.calls[-1].text == responses[-1]
+        await client_bot.session.close()
         status = await ClientChannel().handle(tid, 6, f"/status {client_draft_id}")
         assert "менеджер проверяет" in status
         assert "не найдена" in await ClientChannel().handle(tid+1, 1, f"/status {client_draft_id}")
         visible = await asyncio.to_thread(call, "GET", f"/draft-orders/{client_draft_id}")
+        assert visible["sender_email"] == uid+"-client@example.invalid"
         assert visible["source"] == "telegram" and visible["customer_type"] == "unknown" and visible["total_minor"] is None
         report["client_draft_id"] = client_draft_id
         report["checks"].extend(["client_fake_transport_real_staging_db", "client_duplicate_update", "client_ownership", "manager_visibility"])

@@ -105,3 +105,7 @@ production variables. Application code and entrypoints are already provided.
   configure health/readiness and log/queue alerts from INCIDENT_RUNBOOK.md.
 - Disable MONITORING_ENABLED=false/remove DSN/redeploy. No external telemetry sent
   during internal acceptance; adapter validated with fake initialization/transport.
+
+History expiry recovery scans all INBOX, including messages already read by the
+owner during downtime, then deduplicates durable Gmail message IDs. Initial startup
+still uses GMAIL_INITIAL_QUERY. The cursor is captured before the recovery listing.

@@ -197,6 +197,7 @@ def test_client_runtime_shutdown_closes_session_and_releases_engine(monkeypatch,
     async def run():
         done = asyncio.Event()
         async def poll(*args, **kwargs):
+            assert kwargs["handle_as_tasks"] is False
             if ownership_lost:
                 await done.wait()
         async def stop(): done.set()
@@ -282,3 +283,13 @@ def test_moysklad_gateway_failure_latency_no_error_body(failure, caplog):
     assert "PRIVATE" not in caplog.text
     records = [r for r in caplog.records if "moysklad_call_completed" in r.message]
     assert records and json.loads(records[-1].message)["duration_ms"] >= 0
+
+
+def test_gmail_recovery_rescans_read_messages_too(monkeypatch):
+    from app.integrations.email.gmail_provider import GmailEmailProvider
+    service = Mock(); service.users.return_value.getProfile.return_value.execute.return_value = {"historyId": "before-list"}
+    provider = GmailEmailProvider(service=service)
+    listing = Mock(return_value=(["already-read"], None))
+    monkeypatch.setattr(provider, "_initial_message_ids", listing)
+    assert provider._bootstrap(service, recovery=True) == (["already-read"], "before-list")
+    listing.assert_called_once_with(service, query="in:inbox")
