@@ -10,8 +10,11 @@ from sqlalchemy import (
     Text,
     Boolean,
     func,
+    select,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, column_property
+from app.models.customer import CustomerIdentity
+from app.models.draft_order import DraftOrder
 
 from app.database.base import Base
 from app.models.sales import CustomerType, OrderSource
@@ -87,6 +90,15 @@ class Order(Base):
         nullable=True,
         index=True,
     )
+
+    # Read-only contact projection; keeps email visible without a duplicated identity.
+    customer_email = column_property(func.coalesce(
+        select(func.nullif(DraftOrder.sender_email, "")).where(DraftOrder.finalized_order_id == id)
+            .correlate_except(DraftOrder).scalar_subquery(),
+        select(CustomerIdentity.normalized_value).where(CustomerIdentity.customer_id == customer_id,
+            CustomerIdentity.identity_type == "email").order_by(CustomerIdentity.id).limit(1)
+            .correlate_except(CustomerIdentity).scalar_subquery(),
+    ), expire_on_flush=False)
 
     telegram: Mapped[str | None] = mapped_column(
         String(255),

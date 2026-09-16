@@ -2367,6 +2367,17 @@
             ],
             "title": "Delivery Reference"
           },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
           "phone": {
             "type": "string",
             "title": "Phone"
@@ -2452,6 +2463,7 @@
           "delivery_method",
           "delivery_status",
           "delivery_reference",
+          "email",
           "phone",
           "telegram",
           "counterparty_id",

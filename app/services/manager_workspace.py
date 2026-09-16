@@ -20,6 +20,7 @@ async def shipments_for(order_id):
 
 def order_card(order, shipments=()):
     lines = [f"Заказ №{order.id}", f"Клиент: {order.customer_name}", f"Тип: {customer_type_label(order.customer_type)}",
+        f"Email: {getattr(order, 'customer_email', None) or 'не указан'}",
         f"Телефон: {order.phone or 'не указан'}", f"Telegram: {order.telegram or 'не указан'}",
         f"Источник: {SOURCE_LABELS.get(order.source, order.source)}",
         f"Контрагент: {order.counterparty_name or order.counterparty_id or 'не выбран'}",
@@ -46,7 +47,7 @@ def order_card(order, shipments=()):
         lines.append("Распределение по складам ещё не выполнено.")
     lines.append(f"Версия: {order.revision}")
     text = "\n".join(lines)
-    return text if len(text) <= 4000 else text[:3850] + f"\n??? ??????? ? ??????: /items {order.id}"
+    return text if len(text) <= 4000 else text[:3850] + f"\nВсе позиции и склады: /items {order.id}"
 
 
 def order_keyboard(order, shipments=()):

@@ -158,7 +158,7 @@ class ClientChannel:
         draft = DraftOrder(inbound_message_id=inbound.id, customer_id=customer.id, source="telegram",
             customer_type=customer.customer_type, sender_email="", customer_name=name, subject="Заявка Telegram",
             status="needs_review", counterparty_id=customer.moysklad_counterparty_id, counterparty_candidates=[],
-            contact_details={"telegram": str(tid), "phone": data["contact"], "contact_verified": bool(data.get("verified_phone"))},
+            contact_details={"telegram": str(tid), "phone": data["contact"] if "@" not in data["contact"] else "", "contact_verified": bool(data.get("verified_phone"))},
             review_notes="Подтвердите контакт, тип клиента, товары, цены и наличие.")
         for item in data["items"]:
             draft.items.append(DraftOrderItem(raw_product_text=item["name"], qty=item["qty"], match_status="not_found", candidates=[]))

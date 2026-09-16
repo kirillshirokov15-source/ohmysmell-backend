@@ -141,7 +141,7 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
         "callback_data": f"draft:reject:{draft.id}",
     })
     rows.append(final_actions)
-    rows.append([{"text": "????????", "callback_data": f"draft:refresh:{draft.id}"}])
+    rows.append([{"text": "Обновить", "callback_data": f"draft:refresh:{draft.id}"}])
     if hasattr(draft, "revision") and isinstance(draft.revision, int):
         for row in rows:
             for button in row:

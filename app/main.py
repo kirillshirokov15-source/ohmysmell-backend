@@ -74,6 +74,7 @@ def serialize_order(order):
         "status": order.status,
         **{key: getattr(order, key, None) for key in ("revision", "fulfillment_status", "payment_status", "needs_review", "status_changed_at", "status_changed_by_manager_id", "assembling_at", "assembled_at", "shipped_at", "paid_at", "paid_by_manager_id", "payment_note", "delivery_method", "delivery_status", "delivery_reference")},
         "phone": order.phone,
+        "email": getattr(order, "customer_email", None),
         "telegram": order.telegram,
         "counterparty_id": order.counterparty_id,
         "counterparty_name": order.counterparty_name,
@@ -187,7 +188,7 @@ async def create_order(order: OrderCreate, idempotency_key: str = Header(min_len
     existing = await get_order_by_request_key(idempotency_key)
     if existing:
         if existing.request_hash != digest:
-            raise HTTPException(409, detail="???? ??????? ??? ???????????")
+            raise HTTPException(409, detail="Ключ запроса уже использован")
         return {"success": True, "order_id": existing.id, "status": existing.status, "order": serialize_order(existing)}
     try:
         customer = await CustomerResolutionService().resolve(order)

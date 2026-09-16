@@ -37,20 +37,15 @@ if not TELEGRAM_BOT_TOKEN:
 
 main_menu = ReplyKeyboardMarkup(
     keyboard=[
-        [
-            KeyboardButton(text="📦 Новые заказы"),
-            KeyboardButton(text="📋 Все заказы"),
-        ],
-        [
-            KeyboardButton(text="👥 Контрагенты"),
-            KeyboardButton(text="📦 Остатки"),
-        ],
-        [
-            KeyboardButton(text="⚙️ Настройки"),
-            KeyboardButton(text="🆔 Мой ID"),
-        ],
-    ],
-    resize_keyboard=True
+        [KeyboardButton(text="📦 Новые заказы"), KeyboardButton(text="📋 Все заказы")],
+        [KeyboardButton(text="Требуют проверки"), KeyboardButton(text="Готовые заявки")],
+        [KeyboardButton(text="В сборке"), KeyboardButton(text="Собранные")],
+        [KeyboardButton(text="Отгруженные"), KeyboardButton(text="Отменённые")],
+        [KeyboardButton(text="Неоплаченные"), KeyboardButton(text="Оплаченные")],
+        [KeyboardButton(text="Поиск заказа"), KeyboardButton(text="📦 Остатки")],
+        [KeyboardButton(text="👥 Контрагенты"), KeyboardButton(text="⚙️ Настройки")],
+        [KeyboardButton(text="🆔 Мой ID")],
+    ], resize_keyboard=True,
 )
 
 
@@ -119,7 +114,7 @@ async def safe_edit_message(
 
 async def check_access(message: Message) -> bool:
     if getattr(getattr(message, "chat", None), "type", "private") != "private":
-        await message.answer("???????? ?????? ??? ? ?????.")
+        await message.answer("Откройте личный чат с ботом.")
         return False
     if not await manager_repository.is_active_by_telegram_id(
         message.from_user.id
@@ -285,7 +280,7 @@ async def draft_callback_handler(callback: CallbackQuery):
             draft_id=draft_id,
         )
         if action not in {"refresh", "ambiguous"} and not (parts[-1].startswith("v") and parts[-1][1:].isdigit()):
-            raise DraftOrderError("???????? ????????; ???????? ????????")
+            raise DraftOrderError("Карточка устарела; обновите черновик")
         service = DraftOrderService()
         if hasattr(service, "repository") and parts[-1].startswith("v") and parts[-1][1:].isdigit():
             service.repository.expected_revision = int(parts[-1][1:])
@@ -321,13 +316,13 @@ async def draft_callback_handler(callback: CallbackQuery):
             item = next((i for i in current.items if i.id == int(parts[3])), None)
             candidate_index = int(parts[4])
             if not item or candidate_index < 0 or candidate_index >= len(item.candidates):
-                raise DraftOrderError("??????? ?????? ???????")
+                raise DraftOrderError("Вариант товара устарел")
             draft = await service.resolve_product(draft_id, item.id, item.candidates[candidate_index]["id"])
         elif action == "cp":
             current = await service._get_required(draft_id)
             candidate_index = int(parts[3])
             if candidate_index < 0 or candidate_index >= len(current.counterparty_candidates):
-                raise DraftOrderError("??????? ??????????? ???????")
+                raise DraftOrderError("Вариант контрагента устарел")
             candidate = current.counterparty_candidates[candidate_index]
             draft = await service.link_counterparty(draft_id, candidate["id"], candidate.get("name") or candidate["id"])
         elif action == "product":
@@ -370,6 +365,7 @@ async def draft_callback_handler(callback: CallbackQuery):
                 await safe_edit_message(
                     callback.message,
                     f"Черновик №{draft_id} подтверждён как заказ №{order.id}",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[{ "text": "Открыть заказ", "callback_data": f"order:refresh:{order.id}:0"}]]),
                     draft_id=draft_id,
                 )
             outcome = "success"
@@ -397,7 +393,7 @@ async def draft_callback_handler(callback: CallbackQuery):
     except (ValueError, IndexError, DraftOrderError, InvalidOrderTransitionError) as error:
         logger.warning("Telegram callback rejected error_type=%s", type(error).__name__)
         if callback.message:
-            await callback.message.answer("Действие не выполнено: обновите черновик через «Новые заказы». Проверьте тип клиента, товары и цены.")
+            await callback.message.answer("Действие не выполнено: нажмите «Обновить» или откройте заявку через /draft НОМЕР. Проверьте тип клиента, товары и цены.")
         outcome = "rejected"
     except TelegramBadRequest:
         raise

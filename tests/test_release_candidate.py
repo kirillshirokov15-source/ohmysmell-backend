@@ -278,3 +278,35 @@ def test_unversioned_draft_mutation_is_rejected():
     with patch.object(bot.manager_repository, "is_active_by_telegram_id", AsyncMock(return_value=True)), patch.object(bot, "DraftOrderService") as service:
         asyncio.run(bot.draft_callback_handler(callback))
     service.assert_not_called()
+
+
+def test_manager_email_projection_preserves_existing_identity():
+    from sqlalchemy import create_engine, select, func
+    from sqlalchemy.orm import Session
+    from app.database.base import Base
+    from app.models.customer import Customer, CustomerIdentity
+    from app.models.order import Order
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        customer = Customer(customer_type="retail", display_name="Existing")
+        customer.identities.append(CustomerIdentity(identity_type="email", normalized_value="existing@example.invalid", original_value="existing@example.invalid"))
+        session.add(customer)
+        session.flush()
+        saved = Order(customer_id=customer.id, customer_name="Existing", phone="", customer_type="retail", source="manual", total=0)
+        session.add(saved)
+        session.commit()
+        assert saved.customer_email == "existing@example.invalid"
+        assert session.scalar(select(func.count()).select_from(CustomerIdentity)) == 1
+    engine.dispose()
+
+
+def test_manager_menu_exposes_all_daily_sections_in_russian():
+    from app.bot.telegram_bot import main_menu
+    labels = {button.text for row in main_menu.keyboard for button in row}
+    assert {"📦 Новые заказы", "Требуют проверки", "Готовые заявки", "В сборке", "Собранные", "Отгруженные", "Неоплаченные", "Оплаченные", "Отменённые", "Поиск заказа"} <= labels
+
+
+def test_order_card_contains_email():
+    from app.services.manager_workspace import order_card
+    assert "Email: existing@example.invalid" in order_card(order(customer_email="existing@example.invalid"))

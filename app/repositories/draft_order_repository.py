@@ -302,4 +302,5 @@ class DraftOrderRepository:
             await session.execute(update(InboundMessage).where(
                 InboundMessage.id == draft.inbound_message_id).values(order_id=order.id))
             await session.commit()
+            await session.refresh(order, attribute_names=["customer_email"])
             return order

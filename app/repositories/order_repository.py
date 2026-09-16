@@ -16,7 +16,7 @@ async def create_order(validated_order: dict) -> Order:
                 .options(selectinload(Order.items)))).scalar_one_or_none()
             if existing:
                 if existing.request_hash != validated_order["_request_hash"]:
-                    raise CheckoutConflict("???? ??????? ??? ???????????")
+                    raise CheckoutConflict("Ключ запроса уже использован")
                 return existing
         order = Order(
             request_key=key, request_hash=validated_order.get("_request_hash"),
@@ -47,6 +47,7 @@ async def create_order(validated_order: dict) -> Order:
         session.add(order)
 
         await session.commit()
+        await session.refresh(order, attribute_names=["customer_email"])
         return order
 
 

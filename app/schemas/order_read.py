@@ -38,6 +38,7 @@ class OrderRead(BaseModel):
     delivery_method: str
     delivery_status: str
     delivery_reference: str | None
+    email: str | None
     phone: str
     telegram: str | None
     counterparty_id: str | None

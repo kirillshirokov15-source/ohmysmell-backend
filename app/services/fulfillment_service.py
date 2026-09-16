@@ -21,9 +21,9 @@ class FulfillmentService:
             if not order:
                 raise StockAllocationError("Заказ не найден")
             if expected_revision is not None and order.revision != expected_revision:
-                raise StockAllocationError("???????? ????????; ???????? ?????")
+                raise StockAllocationError("Карточка устарела; обновите заказ")
             if order.fulfillment_status != "new" or order.needs_review:
-                raise StockAllocationError("????????????? ?????????? ? ???? ?????????")
+                raise StockAllocationError("Распределение недоступно в этом состоянии")
             existing = list((await session.execute(select(Shipment)
                 .where(Shipment.order_id == order_id)
                 .options(selectinload(Shipment.allocations)))).scalars())
