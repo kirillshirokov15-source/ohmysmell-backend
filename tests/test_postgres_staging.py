@@ -28,7 +28,7 @@ def staging_sessions(monkeypatch):
     url = make_url(config.database_url)
     query = dict(url.query)
     sslmode = query.pop("sslmode", None)
-    connect_args = {"server_settings": {"search_path": schema, "statement_timeout": "30000"}, "timeout": 10}
+    connect_args = {"server_settings": {"search_path": schema, "statement_timeout": "30000"}, "timeout": 10, "command_timeout": 30}
     if sslmode:
         connect_args["ssl"] = sslmode != "disable"
     engine = create_async_engine(url.set(drivername="postgresql+asyncpg", query=query),

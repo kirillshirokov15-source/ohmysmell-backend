@@ -15,7 +15,9 @@ url = url.set(
     query=query,
 )
 
-connect_args = {}
+# Bound lost-network waits as well as pool acquisition. A PostgreSQL-side
+# statement timeout cannot stop a client waiting on a silently broken socket.
+connect_args = {"timeout": 10, "command_timeout": 30}
 
 if sslmode in {"require", "verify-ca", "verify-full"}:
     connect_args["ssl"] = True
