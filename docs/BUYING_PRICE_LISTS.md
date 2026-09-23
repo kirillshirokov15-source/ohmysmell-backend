@@ -14,6 +14,8 @@ traversal paths, DTD/entities, external relationships and VBA are rejected.
 Formula-containing rows are invalid even when Excel stores a cached value.
 All prices parse through Decimal to integer minor units; negative/NaN/infinite,
 fractional minor units and duplicate supplier mapping keys are invalid.
+Normalized supplier names are limited to 495 characters, leaving space for the
+mapping-key prefix; Unicode expansion is validated before database writes.
 
 Preview persists filename, supplier/currency/parser version, parsed rows and counts:
 `total,valid,invalid,new,changed,unchanged,ambiguous`. Workbook bytes are not retained

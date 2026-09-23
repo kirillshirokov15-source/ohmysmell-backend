@@ -14,6 +14,9 @@ Latest details and staging acceptance are in the Buying section at the end of th
 report; frontend contract is [BUYING_API.md](BUYING_API.md). Earlier sections below
 are historical checkpoints, not the current email-worker status.
 
+Post-acceptance validation hardening rejects overlong normalized supplier names
+(including expanding Unicode) during preview, before PostgreSQL mapping-key limits.
+
 ## Historical supply release validation — 2026-09-23
 
 Only dependency adjustment: `anyio==4.14.1` -> `anyio==4.14.2`, explicitly authorized.

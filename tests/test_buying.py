@@ -221,6 +221,9 @@ def test_parser_duplicate_formula_and_archive_safety():
     with ZipFile(buf,'w') as z:
         z.writestr('xl/worksheets/sheet1.xml','<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="2"><c r="A2" t="inlineStr"><is><t>Product</t></is></c><c r="B2"><f>1+2</f><v>3</v></c></row></sheetData></worksheet>')
     assert parser.parse(buf.getvalue())[0]['error']
+    # Normalization can expand Unicode; reject before a PostgreSQL varchar error.
+    for name in ('A'*500, '\ufb03'*200):
+        assert parser.parse(xlsx([['Name','Price'],[name,'1']]))[0]['error']
 
 
 def test_real_adapters_fail_closed(monkeypatch):

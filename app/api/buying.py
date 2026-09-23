@@ -197,6 +197,8 @@ class OfferMapping(Body):
 
 @router.post("/offers/{offer_id}/mapping")
 async def map_existing_offer(offer_id: int,payload: OfferMapping) -> dict:
+    if len(normalize(payload.name)) > 495:
+        raise HTTPException(422, 'Normalized supplier name exceeds mapping limit')
     async with async_session() as session,session.begin():
         await service.lock(session)
         offer=await session.get(SupplierOffer,offer_id)
@@ -219,6 +221,8 @@ async def map_existing_offer(offer_id: int,payload: OfferMapping) -> dict:
 @router.post("/products/mappings")
 async def map_product(payload: MappingInput) -> dict:
     """Register an existing supply identity for exact-name matching before import."""
+    if len(normalize(payload.name)) > 500:
+        raise HTTPException(422, 'Normalized product name exceeds mapping limit')
     async with async_session() as session, session.begin():
         await service.lock(session)
         if not await session.get(ProductSupply, payload.product_id):

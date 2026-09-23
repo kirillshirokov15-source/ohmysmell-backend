@@ -99,7 +99,7 @@ class ColumnPriceListParser:
                         continue
                     entry = {"row": number, "name": name[:500], "sku": None, "error": None}
                     try:
-                        if formula or not name or len(name) > 500 or any(ord(c) < 32 for c in name):
+                        if formula or not name or len(name) > 500 or len(normalize(name)) > 495 or any(ord(c) < 32 for c in name):
                             raise ValueError
                         sku = cells.get(self.config.sku_column) if self.config.sku_column else None
                         if sku and (len(sku) > 255 or any(ord(c) < 32 for c in sku)):
