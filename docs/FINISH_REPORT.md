@@ -1,5 +1,74 @@
 ﻿# OhMySmell — internal readiness completed
 
+## Supply release validation — 2026-09-23
+
+Only dependency adjustment: `anyio==4.14.1` -> `anyio==4.14.2`, explicitly authorized.
+No additional feature changes. All 57 installed package versions match the pins.
+Full pytest: 341 passed, 19 PostgreSQL tests skipped, 7 subtests passed. Compileall,
+pip check, diff check and secret scan passed. OSV: 57 packages, zero findings.
+Read-only staging Alembic current/check confirmed `k04e6198cd21`; fresh isolated
+schema upgrade/check also passed. No operational staging migration was executed.
+
+The complete PostgreSQL run finished with 1 passed and 18 failed in 720.98 seconds;
+all 18 failures were `TimeoutError`. A separate isolated repeat of
+`test_concurrent_finalize_creates_one_order` failed with `TimeoutError` during
+`asyncpg.connect` -> `loop.getaddrinfo`, before SQL execution. An independent
+read-only asyncpg probe without application services reproduced three connection
+timeouts at 10.02 / 10.00 / 10.01 seconds. This establishes a connection-path
+infrastructure failure, not a green PostgreSQL acceptance run; it does not identify
+whether the fault is local networking/DNS or the Railway public connection path.
+Release is authorized with this explicitly documented infrastructure exception.
+Evidence: ignored `.staging-artifacts/supply-final-postgres.xml`,
+`supply-postgres-isolated-retry.xml` and `supply-network-probe.json`.
+
+Production/main unchanged; all three staging services have external writes disabled.
+Read-only DB counters for external operations, MoySklad orders and external shipments
+were zero. No supplier email or external write was initiated by this validation.
+
+## Supply / procurement vertical slice — 2026-09-16
+
+Implemented on `feature/sales-core-v2`; staging-only migration `k04e6198cd21`.
+Seven additive tables: Supplier, ProductSupply, SupplierOffer, OrderItemSupply,
+XSettlement, ProcurementRequest, SupplyEvent. Existing catalog product IDs are
+reused; no duplicate product, physical external warehouse or fake own stock.
+
+OWN behavior and email=wholesale / website=retail remain intact. X is exclusive
+with OWN. X line calculation: base 200000 / sale 300001 -> partner margin 50000,
+our margin 50001, partner due 250000 minor units. Below-cost X requires financial
+review and has no automatic payable. PostgreSQL triggers protect financial history.
+
+External USD acceptance: manager explicitly selected the second supplier offer,
+4300 USD cents per unit × 2, manual 91.25 -> fixed cost 784750 RUB minor units,
+sale 1000000 -> our margin 215250. Later offer/FX changes and process connection
+restart preserved the snapshot. Concurrent selection/confirmation produced one
+procurement and one audit event per effect. External email ingestion and website
+checkout both finalized through their real application services using fake catalog
+transport; supplier writes and supplier communication remained disabled.
+
+Manager: source/finance sections in order card, «Требуют закупки», supplier selection,
+requested/confirmed/received/unavailable/cancelled, CBR estimate and `/fx` override.
+Received external items count toward assembly without a fictitious warehouse plan.
+Order cancellation cancels its open procurements. Public API exposes availability
+only; setup/finance endpoints require internal token plus active manager identity.
+
+Validation: 341 unit tests plus 7 subtests; final PostgreSQL run recorded separately
+in the acceptance evidence. Fresh schema upgrade/check and current staging
+upgrade/current/check passed; compileall, diff check and credential scan passed.
+Initial complete PostgreSQL run: 18 passed; additional external email/website
+acceptance passed. Synthetic evidence lives only in ignored `.staging-artifacts`.
+
+CBR live GET smoke passed without credentials. Explicit connect/read timeout 5/15 s,
+bounded GET retries; no float money/FX. Initial supply card median 1821 ms dropped
+below one second after replacing three SELECTs with one joined read (local-to-Railway;
+Telegram network delivery is outside this measurement).
+
+Boundaries: production/main/Tilda untouched; EXTERNAL_WRITES_ENABLED=false. Gmail
+OAuth, selector, cursor and worker architecture were not changed. No supplier
+email, purchase, payment, MoySklad document/warehouse or delivery write was made.
+Real ownership mappings, suppliers/offers, FX-age policy and below-cost approval
+policy remain business configuration/decisions. Details and setup API:
+[SUPPLY_AND_PROCUREMENT.md](SUPPLY_AND_PROCUREMENT.md).
+
 ## Gmail channel policy and second live acceptance — 2026-09-16
 
 Application commit `048852de6b5214d75ceff498d1abcdbffa006a83`.

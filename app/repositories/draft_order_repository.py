@@ -308,6 +308,8 @@ class DraftOrderRepository:
             session.add(order)
             await session.flush()
             draft.finalized_order_id = order.id
+            from app.services.supply_service import capture_order_supply
+            await capture_order_supply(session, order)
             draft.status = OrderStatus.NEW
             await session.execute(update(InboundMessage).where(
                 InboundMessage.id == draft.inbound_message_id).values(order_id=order.id))

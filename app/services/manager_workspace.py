@@ -55,10 +55,15 @@ def order_keyboard(order, shipments=()):
         buttons.append([{"text": label, "callback_data": f"order:{action}:{order.id}:{order.revision}"}])
     if order.fulfillment_status != "cancelled" and order.status != "rejected":
         if order.needs_review:
-            add("Проверка завершена", "resolve")
+            if not getattr(order, "supply_financial_review", False):
+                add("Проверка завершена", "resolve")
         else:
             if order.fulfillment_status == "new":
-                add("Начать сборку" if shipments else "Распределить по складам", "assembling" if shipments else "allocate")
+                external_only = getattr(order, "supply_external_only", False)
+                can_start = bool(shipments) or (external_only and getattr(order, "supply_received", False))
+                waiting_supply = getattr(order, "supply_has_external", False) and not getattr(order, "supply_received", False)
+                if not waiting_supply and (not external_only or can_start):
+                    add("Начать сборку" if can_start else "Распределить по складам", "assembling" if can_start else "allocate")
             elif order.fulfillment_status == "assembling":
                 add("Заказ собран", "assembled")
             elif order.fulfillment_status == "assembled" and order.delivery_method != "unselected":
@@ -75,4 +80,6 @@ def order_keyboard(order, shipments=()):
         elif order.delivery_status == "dispatched":
             add("Доставлен", "delivered")
     add("Обновить", "refresh")
+    if getattr(order, "supply_has_external", False):
+        add("Закупки по заказу", "procurement")
     return {"inline_keyboard": buttons}

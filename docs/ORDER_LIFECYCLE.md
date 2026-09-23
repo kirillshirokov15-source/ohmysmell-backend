@@ -21,7 +21,9 @@ Retail без настроенной retail price остаётся на пров
 | Delivery | pending → ready (необязательно) → dispatched при отгрузке → delivered |
 | Delivery method | unselected / pickup / manual / cdek / yandex |
 
-План склада обязателен перед сборкой, полностью покрывает order items. Частичный
+План склада обязателен перед сборкой для OWN/X позиций; external позиции должны
+иметь procurement `received` и не создают физический складской план. Вместе это
+полностью покрывает order items. Частичный
 план не сохраняется. Один или два склада поддерживаются; deterministic split
 не меняет исходные строки и суммы заказа. Остатки не резервируются внешне.
 

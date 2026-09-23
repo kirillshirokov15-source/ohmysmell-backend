@@ -37,6 +37,11 @@ def allocate(items: list[dict], catalog: list[dict], warehouse_ids: tuple[str, .
         product = products.get(product_id)
         if not product:
             raise StockAllocationError("Товар отсутствует в активном каталоге")
+        if product.get("supply_source") == "external":
+            if product.get("supply_availability") == "unavailable":
+                raise StockAllocationError("Товар внешних поставщиков недоступен")
+            # A procurement request, never a fictitious physical allocation.
+            continue
         stores = {s["id"]: s for s in product.get("stocks", [])}
         order = warehouse_ids or tuple(sorted(stores))
         for warehouse_id in dict.fromkeys(order):

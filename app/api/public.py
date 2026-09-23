@@ -16,7 +16,9 @@ async def catalog(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=
     return {"offset": offset, "limit": limit, "total": len(products), "products": [
         {"id": p["id"], "name": p["name"], "article": p.get("article"),
          "description": p.get("description"), "price_minor": p["price"],
-         "available": p["total_available"] > 0, "requires_review": p["price"] is None}
+         "available": p["total_available"] > 0 or p.get("supply_availability") == "confirmed",
+         "requires_review": p["price"] is None or p.get("supply_source") == "external",
+         "availability_state": p.get("supply_availability", "in_stock" if p["total_available"] > 0 else "unavailable")}
         for p in products[offset:offset + limit]
     ]}
 

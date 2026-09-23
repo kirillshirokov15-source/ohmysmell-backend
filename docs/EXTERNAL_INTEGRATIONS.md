@@ -1,5 +1,12 @@
 # External integration connection checklists
 
+Supply/procurement: [SUPPLY_AND_PROCUREMENT.md](SUPPLY_AND_PROCUREMENT.md).
+CBR FX is a read-only GET adapter with no credentials, explicit timeouts and bounded
+retries. Manager explicitly refreshes an estimate or enters a manual rate before
+confirmation. No currency operation/payment occurs. SupplierCommunication is an
+interface only; no supplier email is sent. External bucket is local, never a real
+MoySklad warehouse. OWN stock and Gmail channel pricing are unchanged.
+
 Gmail controlled read-only staging acceptance and remote worker restart are complete
 (2026-09-16), with evidence in FINISH_REPORT.md. Other external
 integrations below remain disabled. Production/main untouched.

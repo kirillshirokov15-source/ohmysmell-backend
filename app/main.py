@@ -57,6 +57,8 @@ app = FastAPI(
 )
 from app.api.public import router as public_router
 app.include_router(public_router)
+from app.api.supply import router as supply_router
+app.include_router(supply_router)
 from app.api.safety import install_error_handlers, RequestSafetyMiddleware
 install_error_handlers(app)
 app.add_middleware(RequestSafetyMiddleware)

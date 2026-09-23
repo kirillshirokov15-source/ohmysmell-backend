@@ -31,7 +31,9 @@ class FulfillmentService:
                 return existing
             if order.status != "new":
                 raise StockAllocationError("Планирование недоступно в этом статусе")
-            allocations = allocate([{"id": i.product_id, "qty": i.qty} for i in order.items],
+            from app.services.supply_service import ready_supply_quantities
+            external = await ready_supply_quantities(session, order.id)
+            allocations = allocate([{"id": i.product_id, "qty": i.qty} for i in order.items if i.id not in external],
                                    catalog, settings.warehouse_ids)
             # Repeated product lines are distributed without changing order items.
             remaining = {i.id: i.qty for i in order.items}

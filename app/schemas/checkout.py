@@ -42,6 +42,7 @@ class PublicProduct(BaseModel):
     currency: Literal["RUB"] = "RUB"
     available: bool
     requires_review: bool
+    availability_state: Literal["in_stock", "on_request", "confirmed", "unavailable"] = "in_stock"
 
 
 class CatalogResponse(BaseModel):

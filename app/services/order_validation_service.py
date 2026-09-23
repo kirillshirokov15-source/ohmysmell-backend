@@ -64,7 +64,10 @@ class OrderValidationService:
 
             available = product.get("total_available", 0) or 0
 
-            if available < qty:
+            external = product.get("supply_source") == "external"
+            if external and product.get("supply_availability") == "unavailable":
+                raise OrderValidationError("Товар внешних поставщиков недоступен")
+            if not external and available < qty:
                 raise OrderValidationError(
                     f"Недостаточно товара '{product['name']}'. "
                     f"Запрошено: {qty}, доступно: {available}"

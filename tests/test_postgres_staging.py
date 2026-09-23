@@ -13,6 +13,176 @@ import pytest
 pytestmark = pytest.mark.staging
 
 
+def test_supply_external_email_and_website_channels(staging_sessions):
+    from dataclasses import replace
+    from sqlalchemy import select
+    from app.models.supply import Supplier, ProductSupply, SupplierOffer, ProcurementRequest
+    from app.models.fulfillment import CheckoutRequest
+    from app.services.draft_order_service import DraftOrderService
+    from app.services.product_matching_service import ProductMatchingService
+    from app.services.price_service import PriceService
+    from app.services.checkout_service import CheckoutService
+    from app.schemas.checkout import CheckoutCreate
+    from app.repositories.draft_order_repository import DraftOrderRepository
+    from tests.test_email_pipeline import email_message
+    from tests.test_readiness_v2 import checkout_payload
+    from app.models.manager import Manager
+    from app.services.supply_service import ProcurementService
+    from app.services.fx import FakeFxProvider
+    from app.services.order_operations import OrderOperations, OrderAction
+    factory, engine = staging_sessions
+    async def run():
+        pid = 'external-'+uuid4().hex
+        tid = int(uuid4().hex[:12],16)
+        async with factory() as session, session.begin():
+            session.add(Manager(telegram_id=tid,name='SYNTHETIC external lifecycle',is_active=True))
+            supplier = Supplier(name='SYNTHETIC channel supplier',supplier_type='external_wholesaler')
+            session.add(supplier);await session.flush()
+            session.add(ProductSupply(product_id=pid,source_type='external'));await session.flush()
+            offer = SupplierOffer(product_id=pid,supplier_id=supplier.id,purchase_price_minor=4250,currency_code='USD')
+            session.add(offer);await session.flush()
+        raw = {'id':pid,'name':'Product','salePrices':[{'value':56000,'priceType':{'name':'W'}},{'value':99000,'priceType':{'name':'R'}}]}
+        service = DraftOrderService(matching_service=ProductMatchingService(SimpleNamespace(get_products=lambda:[raw])),
+            price_service=PriceService({'wholesale':'W','retail':'R'}),
+            counterparty_service=SimpleNamespace(candidates_async=AsyncMock(return_value=[])),notifier=AsyncMock())
+        draft = await service.ingest_email(replace(email_message(uuid4().hex,'Product x3'),sender_email=uuid4().hex+'@example.invalid'))
+        assert draft.source == 'email' and draft.customer_type == 'wholesale' and draft.items[0].price == 56000
+        await service.link_counterparty(draft.id,'synthetic-email-'+pid,'Synthetic')
+        email_order = await service.finalize(draft.id)
+        assert (await service.finalize(draft.id)).id == email_order.id
+        key = uuid4().hex
+        catalog = SimpleNamespace(get_catalog_async=AsyncMock(return_value=[{'id':pid,'name':'Product','price':99000,
+            'supply_source':'external','supply_availability':'on_request','stocks':[]}]))
+        payload = CheckoutCreate(**{**checkout_payload(),'email':uuid4().hex+'@example.invalid','items':[{'product_id':pid,'qty':2}]})
+        await CheckoutService(catalog).submit(payload,key)
+        async with factory() as session:
+            checkout = await session.get(CheckoutRequest,key)
+        await service.link_counterparty(checkout.draft_id,'synthetic-web-'+pid,'Synthetic')
+        web_order = await service.finalize(checkout.draft_id)
+        assert web_order.source == 'website' and web_order.customer_type == 'retail' and web_order.items[0].price == 99000
+        async with factory() as session:
+            requests = list((await session.scalars(select(ProcurementRequest).where(ProcurementRequest.order_id.in_([email_order.id,web_order.id])))).all())
+            assert len(requests) == 2 and all(r.status == 'needed' and r.offer_id is None for r in requests)
+        procurement = ProcurementService(FakeFxProvider('10'))
+        await procurement.refresh_estimate(offer.id)
+        email_request = next(r for r in requests if r.order_id == email_order.id)
+        for revision, action in enumerate(('select','requested','confirmed','received')):
+            await procurement.act(email_request.id,tid,action,revision,offer_id=offer.id if action == 'select' else None)
+        for revision, action in enumerate(('assembling','assembled','delivery','shipped','paid')):
+            updated = await OrderOperations().act(email_order.id,tid,OrderAction(action=action,expected_revision=revision,
+                idempotency_key=pid+action,**({'delivery_method':'pickup'} if action=='delivery' else {})))
+        assert updated.fulfillment_status == 'shipped' and updated.payment_status == 'paid'
+        await OrderOperations().act(web_order.id,tid,OrderAction(action='cancel',expected_revision=0,idempotency_key=pid+'cancel'))
+        async with factory() as session:
+            web_request = await session.scalar(select(ProcurementRequest).where(ProcurementRequest.order_id==web_order.id))
+            assert web_request.status == 'cancelled'
+        await engine.dispose()
+    asyncio.run(run())
+
+
+def test_supply_procurement_vertical_slice_concurrency_and_immutable_cost(staging_sessions, monkeypatch):
+    from datetime import date
+    from decimal import Decimal
+    from sqlalchemy import select, func, update
+    from sqlalchemy.exc import DBAPIError
+    from app.models.manager import Manager
+    from app.models.order import OrderItem
+    from app.models.supply import Supplier, ProductSupply, SupplierOffer, OrderItemSupply, XSettlement, ProcurementRequest, SupplyEvent
+    from app.repositories.order_repository import create_order
+    from app.services.supply_service import ProcurementService, SupplyError, catalog_supply
+    from app.services.fx import FakeFxProvider
+    from app.bot.procurement import supply_order_card
+    from app.api.supply import source_set, SourceInput
+    from fastapi import HTTPException
+    factory, engine = staging_sessions
+    async def run():
+        uid, tid = uuid4().hex, int(uuid4().hex[:12],16)
+        own, x, external = ['supply-'+uid+'-'+v for v in ('own','x','external')]
+        async with factory() as session, session.begin():
+            session.add(Manager(telegram_id=tid, name='SYNTHETIC supply manager', is_active=True))
+            suppliers = [Supplier(name='SYNTHETIC X '+uid,supplier_type='partner_x'),
+                Supplier(name='SYNTHETIC A '+uid,supplier_type='external_wholesaler'),
+                Supplier(name='SYNTHETIC B '+uid,supplier_type='external_wholesaler')]
+            session.add_all(suppliers)
+            await session.flush()
+            session.add_all([ProductSupply(product_id=own,source_type='own'),
+                ProductSupply(product_id=x,source_type='partner_x',supplier_id=suppliers[0].id,base_cost_minor=200000),
+                ProductSupply(product_id=external,source_type='external')])
+            await session.flush()
+            offers = [SupplierOffer(product_id=external,supplier_id=suppliers[n].id,purchase_price_minor=4200+n*50,currency_code='USD',availability='confirmed',availability_qty=10) for n in (1,2)]
+            session.add_all(offers)
+            await session.flush()
+        with pytest.raises(HTTPException) as conflict:
+            await source_set(x,SourceInput(source_type='own'))
+        assert conflict.value.status_code == 409
+        service = ProcurementService(FakeFxProvider('90', date(2026,9,15)))
+        estimate = await service.refresh_estimate(offers[1].id)
+        assert estimate.estimated_purchase_cost_rub_minor == 387000
+        order = await create_order(dict(customer_name='SYNTHETIC supply '+uid,phone='',customer_type='wholesale',source='email',
+            total=1400001,items=[dict(id=own,name='SYNTHETIC Own',price=100000,qty=1,sum=100000),
+                dict(id=x,name='SYNTHETIC X',price=300001,qty=1,sum=300001),
+                dict(id=external,name='SYNTHETIC External USD',price=500000,qty=2,sum=1000000)]))
+        async with factory() as session:
+            rows = list((await session.scalars(select(OrderItemSupply).where(OrderItemSupply.order_id==order.id))).all())
+            assert {r.source_type for r in rows} == {'own','partner_x','external'}
+            settlement = await session.scalar(select(XSettlement).where(XSettlement.order_id==order.id))
+            assert (settlement.partner_margin_minor,settlement.our_margin_minor,settlement.partner_due_minor) == (50000,50001,250000)
+            request = await session.scalar(select(ProcurementRequest).where(ProcurementRequest.order_id==order.id))
+            assert request.offer_id is None  # no cheapest-supplier policy
+        with pytest.raises(SupplyError):
+            await service.act(request.id,tid+1,'select',0,offer_id=offers[1].id)
+        with pytest.raises(SupplyError):
+            await service.act(request.id,tid,'confirmed',0)
+        selected = await asyncio.gather(*(service.act(request.id,tid,'select',0,offer_id=offers[1].id) for _ in range(4)))
+        assert all(r.revision == 1 for r in selected)
+        with pytest.raises(SupplyError):
+            await service.act(request.id,tid,'select',0,offer_id=offers[0].id)
+        await service.act(request.id,tid,'fx',1,manual_rate='91.25')
+        await service.act(request.id,tid,'requested',2)
+        await asyncio.gather(*(service.act(request.id,tid,'confirmed',3) for _ in range(3)))
+        async with factory() as session:
+            frozen = (await session.get(OrderItemSupply,request.order_item_id)).cost_snapshot
+            assert frozen['original_purchase_price_minor'] == 4300
+            assert frozen['converted_purchase_cost_rub_minor'] == 784750
+            assert frozen['margin_rub_minor'] == 215250
+            assert frozen['fx_source'] == 'manual' and frozen['fx_manager_id'] is not None
+            assert await session.scalar(select(func.count()).select_from(ProcurementRequest).where(ProcurementRequest.order_item_id==request.order_item_id)) == 1
+            assert await session.scalar(select(func.count()).select_from(SupplyEvent).where(SupplyEvent.procurement_id==request.id)) == 4
+        async with factory() as session, session.begin():
+            offer = await session.get(SupplierOffer, offers[1].id)
+            offer.purchase_price_minor = 5000
+            (await session.get(ProductSupply,x)).base_cost_minor = 220000
+        await ProcurementService(FakeFxProvider('100')).refresh_estimate(offers[1].id)
+        await engine.dispose()  # worker restart: re-open connections, read committed snapshot
+        async with factory() as session:
+            assert (await session.get(OrderItemSupply,request.order_item_id)).cost_snapshot == frozen
+            assert (await session.get(XSettlement,settlement.id)).base_cost_minor == 200000
+        with pytest.raises(SupplyError):
+            await service.act(request.id,tid,'fx',4,manual_rate='99')
+        with pytest.raises(DBAPIError):
+            async with factory() as session, session.begin():
+                await session.execute(update(OrderItemSupply).where(OrderItemSupply.order_item_id==request.order_item_id).values(cost_snapshot={'changed':True}))
+        with pytest.raises(DBAPIError):
+            async with factory() as session, session.begin():
+                await session.execute(update(XSettlement).where(XSettlement.id==settlement.id).values(partner_due_minor=1))
+        received = await service.act(request.id,tid,'received',4)
+        assert received.status == 'received'
+        card = await supply_order_card(order)
+        assert all(label in card for label in ('Наш склад','X-склад','Внешние поставщики','к выплате X','Наша маржа','USD'))
+        negative = await create_order(dict(customer_name='SYNTHETIC negative '+uid,phone='',customer_type='retail',source='website',total=1,
+            items=[dict(id=x,name='SYNTHETIC below cost',price=1,qty=1,sum=1)]))
+        assert negative.needs_review
+        async with factory() as session:
+            review = await session.scalar(select(XSettlement).where(XSettlement.order_id==negative.id))
+            assert review.status == 'requires_financial_review' and review.partner_due_minor is None
+        report = {'scenario':'supply-procurement','order_id':order.id,'procurement_id':request.id,
+            'x_partner_due_minor':250000,'x_our_margin_minor':50001,'fixed_external_cost_minor':784750,
+            'external_margin_minor':215250,'concurrency':'passed','restart':'passed','db_immutability':'passed'}
+        Path('.staging-artifacts/supply-e2e.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
+        await engine.dispose()
+    asyncio.run(run())
+
+
 @pytest.fixture
 def staging_sessions(monkeypatch):
     if os.getenv("OMS_STAGING_TESTS") != "1":
@@ -38,7 +208,7 @@ def staging_sessions(monkeypatch):
                    "app.repositories.order_repository", "app.repositories.email_cursor_repository",
                    "app.services.checkout_service", "app.services.fulfillment_service",
                    "app.services.external_operation_service", "app.workers.notifications",
-                   "app.services.order_operations", "app.services.client_channel", "app.services.manager_workspace"):
+                   "app.services.order_operations", "app.services.client_channel", "app.services.manager_workspace", "app.services.supply_service", "app.bot.procurement", "app.api.supply"):
         monkeypatch.setattr(importlib.import_module(module), "async_session", factory)
     monkeypatch.setattr(settings, "external_writes_enabled", False)
     monkeypatch.setattr(settings, "warehouse_ids", ())

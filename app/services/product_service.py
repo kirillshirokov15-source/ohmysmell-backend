@@ -22,6 +22,7 @@ class ProductService:
     ) -> None:
         uses_default_client = client is None
         self.client = client or MoySkladClient()
+        self.supply_overlay = uses_default_client
         self.async_gateway = AsyncMoySkladGateway(
             self.client,
             catalog_cache if uses_default_client else ProductCatalogTTLCache(),
@@ -64,7 +65,7 @@ class ProductService:
         products = await self.async_gateway.get_products()
         stores = await self.async_gateway.get_stores()
         stock_report = await self.async_gateway.get_stock_by_store()
-        return self._build_catalog(
+        catalog = self._build_catalog(
             products,
             stores,
             stock_report,
@@ -72,6 +73,10 @@ class ProductService:
             include_price_types,
             strict_pricing,
         )
+        if self.supply_overlay:
+            from app.services.supply_service import catalog_supply
+            catalog = await catalog_supply(catalog)
+        return catalog
 
     def _build_catalog(
         self,

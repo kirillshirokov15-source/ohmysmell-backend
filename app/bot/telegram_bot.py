@@ -45,6 +45,7 @@ main_menu = ReplyKeyboardMarkup(
         [KeyboardButton(text="Поиск заказа"), KeyboardButton(text="📦 Остатки")],
         [KeyboardButton(text="👥 Контрагенты"), KeyboardButton(text="⚙️ Настройки")],
         [KeyboardButton(text="🆔 Мой ID")],
+        [KeyboardButton(text="Требуют закупки")],
     ], resize_keyboard=True,
 )
 
@@ -530,7 +531,7 @@ async def find_order(message):
             await message.answer("Заказ не найден.")
             return
         plans = await shipments_for(order.id)
-        await message.answer(order_card(order, plans), reply_markup=InlineKeyboardMarkup.model_validate(order_keyboard(order, plans)))
+        await message.answer(await supply_order_card(order, plans), reply_markup=InlineKeyboardMarkup.model_validate(order_keyboard(order, plans)))
 
 
 @dp.callback_query(F.data.startswith("order:"))
@@ -556,6 +557,9 @@ async def order_callback(callback):
         if action == "allocate":
             from app.services.fulfillment_service import FulfillmentService
             await FulfillmentService().plan(order_id, expected_revision=revision)
+        elif action == "procurement":
+            await show_procurements(callback.message, order_id)
+            return
         elif action != "refresh":
             extra = {}
             if action.startswith("delivery_"):
@@ -568,7 +572,8 @@ async def order_callback(callback):
                 idempotency_key=f"tg:{callback.from_user.id}:{callback.data}", **extra)
             order = await OrderOperations().act(order_id, callback.from_user.id, request)
         plans = await shipments_for(order_id)
-        text, keyboard = order_card(order, plans), InlineKeyboardMarkup.model_validate(order_keyboard(order, plans))
+        text = await supply_order_card(order, plans)
+        keyboard = InlineKeyboardMarkup.model_validate(order_keyboard(order, plans))
         try:
             await safe_edit_message(callback.message, text, draft_id=0, reply_markup=keyboard)
         except TelegramBadRequest:
@@ -598,7 +603,7 @@ async def operational_note(message):
         request = OrderAction(expected_revision=order.revision, idempotency_key=f"msg:{message.chat.id}:{message.message_id}", **args)
         updated = await OrderOperations().act(order.id, message.from_user.id, request)
         plans = await shipments_for(order.id)
-        await message.answer(order_card(updated, plans), reply_markup=InlineKeyboardMarkup.model_validate(order_keyboard(updated, plans)))
+        await message.answer(await supply_order_card(updated, plans), reply_markup=InlineKeyboardMarkup.model_validate(order_keyboard(updated, plans)))
     except (ValueError, OperationError) as error:
         await message.answer(str(error) if isinstance(error, OperationError) else "Формат: /payment НОМЕР примечание; /tracking НОМЕР номер_доставки")
 
@@ -630,3 +635,7 @@ async def all_order_items(message):
         chunk += line + "\n"
     if chunk:
         await message.answer(chunk)
+
+
+from app.bot.procurement import register as register_procurement, supply_order_card, show_procurements
+register_procurement(dp, check_access, safe_callback_answer, manager_repository)

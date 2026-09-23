@@ -114,6 +114,12 @@ class OrderOperations:
                     raise OperationError("Ключ действия уже использован.")
                 return order
             before = snapshot(order)
+            if request.action == "resolve":
+                from app.models.supply import XSettlement
+                financial_review = await session.scalar(select(XSettlement.id).where(
+                    XSettlement.order_id == order_id, XSettlement.status == "requires_financial_review"))
+                if financial_review:
+                    raise OperationError("Продажа ниже стоимости X требует отдельного финансового решения; обычная проверка не снимает блокировку.")
             if request.action == "assembling":
                 plans = list((await session.execute(select(Shipment).where(Shipment.order_id == order_id)
                     .options(selectinload(Shipment.allocations)))).scalars())
@@ -123,9 +129,25 @@ class OrderOperations:
                         continue
                     for allocation in plan.allocations:
                         quantities[allocation.order_item_id] = quantities.get(allocation.order_item_id, 0) + allocation.qty
+                from app.services.supply_service import ready_supply_quantities, SupplyError
+                try:
+                    quantities.update(await ready_supply_quantities(session, order_id))
+                except SupplyError as error:
+                    raise OperationError(str(error)) from error
                 if quantities != {item.id: item.qty for item in order.items}:
                     raise OperationError("Сначала распределите все товары по складам.")
             apply_action(order, request, manager.id, datetime.now(timezone.utc))
+            if request.action == "cancel":
+                from app.models.supply import ProcurementRequest, SupplyEvent
+                procurements = list((await session.scalars(select(ProcurementRequest).where(
+                    ProcurementRequest.order_id == order_id,
+                    ProcurementRequest.status.in_(["needed", "requested", "confirmed"]))
+                    .with_for_update())).all())
+                for procurement in procurements:
+                    session.add(SupplyEvent(procurement_id=procurement.id, manager_id=manager.id,
+                        action="cancelled", details={"reason": "order_cancelled", "revision": procurement.revision}))
+                    procurement.status = "cancelled"
+                    procurement.revision += 1
             session.add(OrderEvent(order_id=order.id, manager_id=manager.id, action=request.action,
                 idempotency_key=request.idempotency_key, request_hash=digest, before=before, after=snapshot(order)))
             await session.flush()
