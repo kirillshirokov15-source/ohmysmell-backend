@@ -1,6 +1,20 @@
 ﻿# OhMySmell — internal readiness completed
 
-## Supply release validation — 2026-09-23
+## Current Buying staging checkpoint — 2026-09-23
+
+Implementation: `fa298d50ae18ba527003d765b734f87153d79e81` on
+`feature/sales-core-v2`; migration head `m26a8310ef43`. Full local validation:
+370 passed, 21 skipped, 7 subtests. PostgreSQL: 20 regression tests plus one quantity
+E2E passed. Backend and manager staging deployment/health passed. **Email worker is
+blocked by existing readonly Gmail OAuth `invalid_grant` (expired/revoked refresh
+token), independently reproduced with both local and staging credentials.** No token
+or scope was replaced. Exact manager group IDs and Sites CORS origin remain required.
+
+Latest details and staging acceptance are in the Buying section at the end of this
+report; frontend contract is [BUYING_API.md](BUYING_API.md). Earlier sections below
+are historical checkpoints, not the current email-worker status.
+
+## Historical supply release validation — 2026-09-23
 
 Only dependency adjustment: `anyio==4.14.1` -> `anyio==4.14.2`, explicitly authorized.
 No additional feature changes. All 57 installed package versions match the pins.
@@ -332,7 +346,7 @@ Local validation checkpoint: 370 passed, 21 skipped, 7 subtests passed. PostgreS
 20 passed in the full regression (including concurrent Buying checkout/send/received),
 plus 1 passed in the separate quantity correction/finalize/replay scenario.
 No DNS/connectivity exception occurred in these runs. Deployment acceptance results
-are recorded below after execution. Compileall, pip check,
+are recorded below. Compileall, pip check,
 secret scan and OSV audit (58 dependencies, zero findings) passed.
 
 Limitations: XLSX only; values/formulas are not evaluated; incremental imports do
@@ -342,3 +356,29 @@ have no RUB estimate until an FX refresh. Live Gmail sending and MoySklad writes
 are intentionally unavailable. Exact Sites origin and manager group IDs are still
 required for their live connection. Catalog/cart/details use bounded bulk queries;
 performance measurements below are synthetic staging observations, not load-test p95.
+
+## Buying staging acceptance
+
+- Feature checkpoint pushed; Railway autodeployed backend and manager successfully.
+- Backend `/health/db` 200; manager `/ready` 200 (polling=true, external_writes=false).
+- Anonymous `/buying/catalog` returned 401. Buying secrets were provisioned through
+  stdin only to the staging backend; plaintext values were never printed or committed.
+- Synthetic HTTP E2E: supplier A+B, XLSX import, one canonical product/two offers,
+  shared cart, preview, two purchases, fake sends, synthetic reply replay, details,
+  received and fake receipt hooks passed. No real supplier email/MoySklad write.
+- Initial HTTP observations: catalog 360 ms, cart 437 ms, preview 256 ms, confirm
+  359 ms, purchase detail 306 ms; login cold request 1045 ms. No load-test claims.
+- A real backend redeploy (`2b862a73-b7d8-4417-9074-0ab99e00a5ca`) completed SUCCESS.
+  After restart the synthetic cart quantity and both purchases persisted; original
+  checkout key returned the same IDs; repeated fake send/received preserved IDs and
+  timestamps. Resume cart was then cleared. Post-restart cart 308 ms, replay checkout
+  306 ms, purchase details 302–366 ms. The HTTP E2E artifact records
+  `restart_verified=true`. These are synthetic procurement records only.
+- Email deployment failed during unchanged readonly credential refresh. Both local
+  and staging credentials have the same refresh token/client and independently
+  return `invalid_grant`, expired/revoked. Reauthorization by the mailbox owner is
+  required; mass intake and supplier sending were not enabled.
+- Live shared-group delivery was not attempted without the actual chat/user IDs.
+  Group filtering, actor audit, Buying/reply event delivery were tested with fakes.
+- Artifacts (ignored locally): `buying-http-e2e.json`, `gmail-refresh-diagnostic.json`,
+  `validation.json`, `staging-tests.xml`, `dependencies.json` under `.staging-artifacts`.

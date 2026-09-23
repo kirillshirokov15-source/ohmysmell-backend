@@ -221,3 +221,18 @@ fail actionably if absent, reconcile local purchase IDs with external IDs before
 and perform no calls while external writes are disabled. Fake adapter yields stable
 counterparty/Supplier Order/Receipt IDs; it never creates a real warehouse or document.
 There is no claim of live supplier email or procurement-write readiness yet.
+
+## Current readonly Gmail blocker (2026-09-23)
+
+Redeploy exposed `RefreshError / invalid_grant`: the existing local and staging
+refresh tokens match and both are expired/revoked. This was reproduced without
+editing credentials, scope or mailbox messages. Backend/manager are independent.
+
+Mailbox owner recovery: preserve the existing configured token file as a private
+backup, then perform a deliberate fresh authorization with the existing readonly
+OAuth client (`.\.venv\Scripts\python.exe -m app.scripts.gmail_oauth`). The old
+invalid token must not be used as the input to this first-authorization run, because
+refresh fails before interactive fallback. Transfer the newly authorized readonly
+token to the **staging email service only** using the secret-variable procedure above,
+then redeploy and verify readiness. Never print token/base64 contents. This is
+reauthorization of the existing readonly integration, not supplier send consent.
