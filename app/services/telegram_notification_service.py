@@ -43,7 +43,8 @@ async def notify_managers(order_id: int, order: dict) -> None:
     if order.get("comment"):
         message += f"\n\n💬 {order['comment']}"
 
-    chat_ids = [manager.telegram_id for manager in managers]
+    from app.bot.manager_group import notification_chats
+    chat_ids = notification_chats(managers)
     def send():
         with verified_session() as http:
             for chat_id in chat_ids:

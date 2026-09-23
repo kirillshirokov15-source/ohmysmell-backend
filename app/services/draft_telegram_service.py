@@ -37,6 +37,9 @@ def build_draft_card(draft: DraftOrder) -> str:
     for item in draft.items:
         reference = f" (позиция {item.id})" if getattr(item, "id", None) else ""
         lines.extend(["", f"• {item.raw_product_text}{reference}"])
+        confidence = getattr(item, "quantity_confidence", "confirmed")
+        if confidence != "confirmed":
+            lines.append(f"⚠ Количество: {item.qty if item.qty > 0 else 'неизвестно'} · {confidence}. Подтвердите или исправьте.")
         if item.price is not None and item.item_total is not None:
             lines.append(
                 f"  {item.qty} шт. × {telegram_rubles(item.price)} "
@@ -96,6 +99,11 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
         },
     ]]
     for item in draft.items:
+        if getattr(item, "quantity_confidence", "confirmed") != "confirmed":
+            rows.append([{"text": f"#{item.id}: {q}", "callback_data": f"draft:qty:{draft.id}:{item.id}:{q}"} for q in range(1,6)])
+            rows.append([{"text": f"#{item.id}: ввести вручную", "callback_data": f"draft:qtymanual:{draft.id}:{item.id}"}])
+        elif hasattr(item, "qty"):
+            rows.append([{"text": f"#{item.id}: изменить количество ({item.qty})", "callback_data": f"draft:qtymanual:{draft.id}:{item.id}"}])
         for candidate_index, candidate in enumerate(item.candidates[:3]):
             selected = item.product_id == candidate.get("id")
             reference = candidate.get("article") or (
@@ -171,7 +179,8 @@ async def notify_managers_about_draft(draft: DraftOrder) -> int:
 
     if not managers:
         raise RuntimeError("No active Telegram managers")
-    chat_ids = [manager.telegram_id for manager in managers]
+    from app.bot.manager_group import notification_chats
+    chat_ids = notification_chats(managers)
     keyboard, card = build_draft_keyboard(draft), build_draft_card(draft)
     def send():
         with verified_session() as http_session:

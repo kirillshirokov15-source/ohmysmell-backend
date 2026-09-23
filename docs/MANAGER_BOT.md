@@ -52,3 +52,29 @@ close the worker. API does not launch it. /health is liveness; /ready confirms
 polling startup and DB ownership. After redeploy use the existing card: revision
 and idempotency key are in PostgreSQL, not process memory. Two managers paying
 concurrently cannot create two audit transitions. See INCIDENT_RUNBOOK.md.
+# Buying sprint: shared manager group and quantities
+
+Set `MANAGER_TELEGRAM_CHAT_ID` to the single allowed group/supergroup ID and
+`MANAGER_TELEGRAM_USER_IDS` to comma-separated employee IDs. Each employee must
+also be an active `managers` row. With a group configured, private-chat actions
+are disabled and notifications target only the group. Without configuration,
+existing private testing mode remains. No topics are used. Anonymous admin posts,
+wrong chats, unknown actors and ordinary group conversation are ignored.
+Keep BotFather privacy mode enabled; commands and inline callbacks are sufficient.
+
+Use `/start`, `/orders`, `/drafts`, `/order ID`, `/draft ID`, existing procurement
+commands and inline buttons. Group setup requires a real group ID; synthetic tests
+do not constitute a live Telegram group acceptance.
+
+Email quantities now carry `confirmed`, `probable`, or `unknown`. Cards warn on the
+latter two. Buttons 1..5 confirm/replace quantity; manual entry is
+`/quantity DRAFT_ID ITEM_ID QUANTITY REVISION`. The revision is shown by the manual
+button, preventing stale edits. Audit stores actual callback/from_user Telegram ID,
+old/new value, old confidence and timestamp. Finalization rejects every unconfirmed
+quantity. Existing product/counterparty/order workflow remains.
+
+Buying creation, fake send, supplier reply and received events are stored durably
+and delivered by the manager worker's existing notification loop when a group is
+configured. Delivery is at-least-once: a crash after Telegram accepts a message but
+before DB commit can repeat the notification, never the purchase transition.
+An event number permits recognition of duplicates. Events contain no customer data.

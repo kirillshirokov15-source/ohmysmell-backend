@@ -191,3 +191,33 @@ production variables. Application code and entrypoints are already provided.
   configure health/readiness and log/queue alerts from INCIDENT_RUNBOOK.md.
 - Disable MONITORING_ENABLED=false/remove DSN/redeploy. No external telemetry sent
   during internal acceptance; adapter validated with fake initialization/transport.
+# Buying integration checkpoint
+
+Buying API and XLSX configuration: [BUYING_API.md](BUYING_API.md) and
+[BUYING_PRICE_LISTS.md](BUYING_PRICE_LISTS.md).
+
+`EXTERNAL_WRITES_ENABLED=false` and `SUPPLIER_EMAIL_SEND_ENABLED=false` remain
+defaults. Live supplier Gmail and MoySklad procurement adapters currently fail closed
+even if flags are set; only explicit fake operations are implemented and tested.
+The existing customer Gmail readonly token/scope is unchanged.
+
+Future real supplier Gmail sending needs separately authorized credentials/token with
+`https://www.googleapis.com/auth/gmail.send` in addition to readonly access needed to
+read replies. Do not overwrite `GMAIL_TOKEN_FILE`, reuse its refresh token with an
+expanded scope, or automatically invoke OAuth. Provision a separate supplier token
+(future `SUPPLIER_GMAIL_TOKEN_FILE`) through explicit consent, bind the sender account,
+and implement durable sending/unknown/reconciled states before enabling live sends.
+A deterministic Message-ID alone does not guarantee exactly-once Gmail delivery.
+After a send timeout, reconcile remotely before retrying; never blindly resend.
+
+`SUPPLIER_REPLIES_ENABLED=true` enables readonly polling of linked real Gmail thread
+IDs in the existing email worker. Fake threads are excluded; customer allowed-message
+selectors and mass-intake activation remain unchanged. Every matching sender reply
+is saved without attempting supplier confirmation semantics. Received HTML is converted
+to text; attachment metadata only is retained. Unique Gmail message IDs deduplicate.
+
+Future MoySklad adapter must resolve configured group/warehouse “Внешние поставщики”,
+fail actionably if absent, reconcile local purchase IDs with external IDs before retry,
+and perform no calls while external writes are disabled. Fake adapter yields stable
+counterparty/Supplier Order/Receipt IDs; it never creates a real warehouse or document.
+There is no claim of live supplier email or procurement-write readiness yet.

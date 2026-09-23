@@ -97,6 +97,8 @@ class DraftOrderItem(Base):
     )
     raw_product_text: Mapped[str] = mapped_column(Text, nullable=False)
     qty: Mapped[int] = mapped_column(Integer, nullable=False)
+    quantity_confidence: Mapped[str] = mapped_column(String(20), nullable=False, default="confirmed", server_default="confirmed")
+    quantity_evidence: Mapped[str | None] = mapped_column(String(500))
     match_status: Mapped[ProductMatchStatus] = mapped_column(String(20), nullable=False)
     product_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     product_name: Mapped[str | None] = mapped_column(String(1000), nullable=True)
@@ -105,3 +107,15 @@ class DraftOrderItem(Base):
     item_total: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     candidates: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
     draft_order: Mapped[DraftOrder] = relationship(back_populates="items")
+
+
+class DraftQuantityEvent(Base):
+    __tablename__ = "draft_quantity_events"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    draft_id: Mapped[int] = mapped_column(ForeignKey("draft_orders.id"), index=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("draft_order_items.id"))
+    actor_telegram_id: Mapped[int] = mapped_column(BigInteger)
+    old_quantity: Mapped[int] = mapped_column(Integer)
+    new_quantity: Mapped[int] = mapped_column(Integer)
+    old_confidence: Mapped[str] = mapped_column(String(20))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

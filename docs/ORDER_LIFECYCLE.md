@@ -57,3 +57,17 @@ idempotency and revision/audit are persisted together; two managers based on the
 same revision cannot both mutate. A lost Telegram reply does not roll back a
 committed business action. Refresh/own-status lookup is the recovery path.
 External uncertain operations require reconciliation; no automatic replayed write.
+# Quantity review and independent Buying purchases
+
+Email remains wholesale, website remains retail; no customer-type review is added.
+Email extraction recognizes inline xN/шт/qty, delimited columns and HTML tables with
+explicit quantity headers. Numeric adjacent lines or unlabeled numeric columns are
+probable; names without a safe quantity are unknown (internal qty=0). Header totals
+are excluded. Unknown/probable items cannot finalize until an active manager confirms
+or corrects them. Revision checks prevent stale corrections; a dedicated audit records
+actor and old/new quantity/confidence. Source snippets stay internal.
+
+Buying is independent of customer orders: `draft -> sent -> received` with explicit
+staging send simulation (`send_state=simulated`). Checkout does not itself send real
+email. No supplier-confirmed state is introduced. Repeated send simulation/received
+actions return the existing state; email body and procurement snapshots remain fixed.

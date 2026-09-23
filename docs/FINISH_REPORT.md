@@ -297,3 +297,48 @@ Exact connection steps: [External integrations](EXTERNAL_INTEGRATIONS.md).
 Deployment/config: [Production readiness](PRODUCTION_READINESS.md).
 [Backup/restore](BACKUP_RESTORE.md), [Incidents](INCIDENT_RUNBOOK.md),
 [PII/test data](DATA_RETENTION.md), [Staging evidence](REMOTE_STAGING_ACCEPTANCE.md).
+# Buying integration sprint — 2026-09-23
+
+Implemented a working procurement workspace on the existing SupplierOffer domain:
+revocable shared-password sessions, supplier-specific XLSX preview/atomic import,
+canonical search/grouped offers, separate price history, persistent shared cart,
+stale-price protection, deterministic supplier email previews, idempotent split
+checkout and immutable purchase snapshots. Frontend contract:
+[BUYING_API.md](BUYING_API.md); Excel details: [BUYING_PRICE_LISTS.md](BUYING_PRICE_LISTS.md).
+
+Outbound supplier email and MoySklad procurement are explicit fake adapters plus
+fail-closed live interfaces. No real supplier email or MoySklad write is performed.
+Fake IDs are distinguishable, persistent and repeat-safe. Received actions create
+one local audit event and a fake receipt reference. Gmail reply ingestion accepts
+any sender/thread-matched reply, deduplicates message IDs, and supports readonly
+thread polling in the existing email worker behind `SUPPLIER_REPLIES_ENABLED`.
+Live sending still requires separate OAuth consent and reconciliation implementation.
+
+Shared Telegram group access supports a chat allowlist and actual actor allowlist;
+ordinary conversation is ignored. Existing private mode remains when group config
+is absent. Buying group events use durable at-least-once delivery. Live group setup
+is pending exact chat/user IDs. Gmail quantity extraction adds inline, table/HTML,
+column and adjacent-line support, confidence/evidence, warnings, 1..5/manual
+correction and actual actor audit. Unknown/probable quantities cannot finalize.
+Mass customer Gmail intake remains disabled/controlled by existing selectors.
+
+Migrations: additive `l15f7209de32` and `m26a8310ef43` (head). Fresh isolated PostgreSQL
+upgrade and Alembic check passed; existing staging upgraded to this head with
+current/check passed. No historical migrations were rewritten. Production/main
+remain untouched. Buying credentials are configured only for staging backend and
+stored locally in ignored `.env`; values are not printed or committed.
+
+Local validation checkpoint: 370 passed, 21 skipped, 7 subtests passed. PostgreSQL:
+20 passed in the full regression (including concurrent Buying checkout/send/received),
+plus 1 passed in the separate quantity correction/finalize/replay scenario.
+No DNS/connectivity exception occurred in these runs. Deployment acceptance results
+are recorded below after execution. Compileall, pip check,
+secret scan and OSV audit (58 dependencies, zero findings) passed.
+
+Limitations: XLSX only; values/formulas are not evaluated; incremental imports do
+not deactivate omitted products. Existing catalog identities need explicit mapping
+before import. CBR is a replaceable reference-rate fallback; USD can temporarily
+have no RUB estimate until an FX refresh. Live Gmail sending and MoySklad writes
+are intentionally unavailable. Exact Sites origin and manager group IDs are still
+required for their live connection. Catalog/cart/details use bounded bulk queries;
+performance measurements below are synthetic staging observations, not load-test p95.

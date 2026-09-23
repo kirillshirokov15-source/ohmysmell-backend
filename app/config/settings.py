@@ -31,6 +31,9 @@ class Settings:
         "",
     )
     def __init__(self) -> None:
+        self.buying_shared_password = os.getenv("BUYING_SHARED_PASSWORD", "")
+        self.buying_session_secret = os.getenv("BUYING_SESSION_SECRET", "")
+        self.supplier_email_send_enabled = os.getenv("SUPPLIER_EMAIL_SEND_ENABLED", "false").lower() == "true"
         self.environment = os.getenv("APP_ENV", "development")
         if self.environment not in {"development", "staging", "production"}:
             raise ValueError("APP_ENV must be development, staging or production")

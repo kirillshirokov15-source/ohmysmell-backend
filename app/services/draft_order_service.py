@@ -41,6 +41,9 @@ def calculate_draft_total(
         return None
     total = 0
     for item in items:
+        confidence = item.get("quantity_confidence", "confirmed") if isinstance(item, dict) else getattr(item, "quantity_confidence", "confirmed")
+        if confidence != "confirmed":
+            return None
         value = item.get if isinstance(item, dict) else lambda key: getattr(item, key)
         if (
             ProductMatchStatus(value("match_status")) != ProductMatchStatus.MATCHED
@@ -169,10 +172,12 @@ class DraftOrderService:
         if not customer.moysklad_counterparty_id:
             problems.append("Необходимо выбрать контрагента")
 
-        for match in matches:
+        for match, extracted in zip(matches, extracted_lines):
             item = {
                 "raw_product_text": match.raw_product_text,
                 "qty": match.qty,
+                "quantity_confidence": extracted.quantity_confidence,
+                "quantity_evidence": extracted.quantity_evidence,
                 "match_status": match.status,
                 "product_id": None,
                 "product_name": None,
@@ -181,6 +186,8 @@ class DraftOrderService:
                 "item_total": None,
                 "candidates": [candidate.__dict__ for candidate in match.candidates],
             }
+            if extracted.quantity_confidence != "confirmed":
+                problems.append(f"{match.raw_product_text}: подтвердите количество ({extracted.quantity_confidence})")
             if match.status != ProductMatchStatus.MATCHED or match.product is None:
                 problems.append(
                     f"{match.raw_product_text}: {match.status.value}"
@@ -310,6 +317,9 @@ class DraftOrderService:
             problems.append("В draft отсутствуют позиции")
 
         for item in draft.items:
+            if getattr(item, "quantity_confidence", "confirmed") != "confirmed" or item.qty <= 0:
+                problems.append(f"{item.raw_product_text}: подтвердите количество")
+                continue
             if item.match_status != ProductMatchStatus.MATCHED or not item.product_id:
                 problems.append(f"{item.raw_product_text}: {item.match_status}")
                 continue

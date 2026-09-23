@@ -114,8 +114,8 @@ async def safe_edit_message(
     return True
 
 async def check_access(message: Message) -> bool:
-    if getattr(getattr(message, "chat", None), "type", "private") != "private":
-        await message.answer("Откройте личный чат с ботом.")
+    from app.bot.manager_group import allowed_event
+    if not allowed_event(message):
         return False
     if not await manager_repository.is_active_by_telegram_id(
         message.from_user.id
@@ -128,6 +128,11 @@ async def check_access(message: Message) -> bool:
 @dp.message(CommandStart())
 async def start_handler(message: Message):
     if not await check_access(message):
+        return
+
+    from app.bot.manager_group import group_id
+    if group_id() is not None:
+        await message.answer("Общий кабинет менеджеров: /drafts · /orders · /order НОМЕР · /procurements. Обычные сообщения игнорируются.")
         return
 
     await message.answer(
@@ -293,6 +298,13 @@ async def draft_callback_handler(callback: CallbackQuery):
             draft = await service.set_customer_type(draft_id, customer_type)
         elif action == "reject":
             draft = await service.reject(draft_id)
+        elif action == "qty":
+            draft = await service.repository.correct_quantity(draft_id, int(parts[3]), int(parts[4]), callback.from_user.id)
+            draft = await service.review(draft_id, draft)
+        elif action == "qtymanual":
+            if callback.message:
+                await callback.message.answer(f"Введите: /quantity {draft_id} {int(parts[3])} КОЛИЧЕСТВО {int(parts[-1][1:])}")
+            return
         elif action == "ambiguous":
             draft = await DraftOrderRepository().get(draft_id)
             if draft is None:
@@ -380,6 +392,7 @@ async def draft_callback_handler(callback: CallbackQuery):
             "telegram_manager_action",
             action=action,
             draft_id=draft_id,
+            manager_id=telegram_user_id,
         )
         if draft is not None and callback.message:
             await safe_edit_message(
@@ -434,7 +447,8 @@ class ManagerRecoveryMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
         started = perf_counter()
         message = event.message if isinstance(event, CallbackQuery) else event
-        if getattr(getattr(message, "chat", None), "type", "private") != "private":
+        from app.bot.manager_group import allowed_event
+        if not allowed_event(event, isinstance(event, CallbackQuery)):
             return
         try:
             return await handler(event, data)
@@ -639,3 +653,5 @@ async def all_order_items(message):
 
 from app.bot.procurement import register as register_procurement, supply_order_card, show_procurements
 register_procurement(dp, check_access, safe_callback_answer, manager_repository)
+from app.bot.buying_commands import register as register_buying_commands
+register_buying_commands(dp, check_access, show_order_list)

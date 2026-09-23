@@ -175,6 +175,8 @@ def test_no_impossible_assembly_button_waiting_for_external():
 
 def test_offer_currency_change_requires_new_offer(monkeypatch):
     from app.api import supply
+    from app.services import buying
+    monkeypatch.setattr(buying, 'transaction_lock', AsyncMock())
     from fastapi import HTTPException
     class Session:
         async def __aenter__(self): return self

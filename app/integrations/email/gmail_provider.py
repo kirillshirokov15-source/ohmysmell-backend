@@ -26,6 +26,8 @@ class _HTMLTextExtractor(HTMLParser):
             self._ignored_depth += 1
         elif tag in {"br", "p", "div", "li", "tr"}:
             self.parts.append("\n")
+        elif tag in {"td", "th"} and self.parts and not self.parts[-1].endswith("\n"):
+            self.parts.append("\t")
 
     def handle_endtag(self, tag):
         if tag in {"script", "style"} and self._ignored_depth:

@@ -8,6 +8,7 @@ class DraftItemRead(BaseModel):
     id: int
     raw_product_text: str
     qty: int
+    quantity_confidence: Literal["confirmed", "probable", "unknown"] = "confirmed"
     match_status: Literal["matched", "ambiguous", "not_found"]
     product_id: str | None
     product_name: str | None

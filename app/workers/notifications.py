@@ -42,6 +42,8 @@ async def main():
     while True:
         try:
             processed = await run_once()
+            from app.workers.buying_notifications import run_once as buying_once
+            processed = await buying_once() or processed
         except Exception as error:
             logger.warning("notification_poll_failed error_type=%s", type(error).__name__)
             processed = False

@@ -34,13 +34,15 @@ class RequestSafetyMiddleware:
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
         started = perf_counter()
+        # Only the bounded Excel endpoint accepts a larger binary request body.
+        limit = 2 * 1024 * 1024 if scope.get("path", "").startswith("/buying/suppliers/") and scope.get("path", "").endswith("/price-lists/preview") else self.max_body
         chunks, size = [], 0
         while True:
             event = await receive()
             if event["type"] == "http.disconnect":
                 return
             size += len(event.get("body", b""))
-            if size > self.max_body:
+            if size > limit:
                 return await JSONResponse(status_code=413, content={"detail": {"code": "body_too_large"}})(scope, receive, send)
             chunks.append(event.get("body", b""))
             if not event.get("more_body", False):

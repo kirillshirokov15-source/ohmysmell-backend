@@ -59,6 +59,9 @@ from app.api.public import router as public_router
 app.include_router(public_router)
 from app.api.supply import router as supply_router
 app.include_router(supply_router)
+from app.api.buying import router as buying_router, auth_router as buying_auth_router
+app.include_router(buying_auth_router)
+app.include_router(buying_router)
 from app.api.safety import install_error_handlers, RequestSafetyMiddleware
 install_error_handlers(app)
 app.add_middleware(RequestSafetyMiddleware)
@@ -140,6 +143,7 @@ def serialize_draft(draft):
                 "id": item.id,
                 "raw_product_text": item.raw_product_text,
                 "qty": item.qty,
+                "quantity_confidence": getattr(item, "quantity_confidence", "confirmed"),
                 "match_status": item.match_status,
                 "product_id": item.product_id,
                 "product_name": item.product_name,
@@ -165,8 +169,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type", "Idempotency-Key", "X-Internal-API-Token"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_headers=["Content-Type", "Authorization", "Idempotency-Key", "X-Internal-API-Token"],
 )
 
 

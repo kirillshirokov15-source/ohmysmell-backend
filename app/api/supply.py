@@ -119,6 +119,8 @@ class ProcurementAction(StrictBody):
 @router.put("/offers/{identifier}", dependencies=[Depends(manager_access)])
 async def offer_update(identifier: int, payload: OfferInput):
     async with async_session() as session, session.begin():
+        from app.services.buying import lock
+        await lock(session)
         offer = await session.get(SupplierOffer, identifier, with_for_update=True)
         if not offer:
             raise HTTPException(404, detail="Предложение не найдено")
@@ -126,6 +128,10 @@ async def offer_update(identifier: int, payload: OfferInput):
             raise HTTPException(409, detail="Товар и поставщик предложения не меняются; создайте новое предложение")
         if offer.currency_code != payload.currency_code:
             raise HTTPException(409, detail="Для другой валюты создайте новое предложение; ручной курс существующей закупки привязан к её валюте")
+        if offer.purchase_price_minor != payload.purchase_price_minor:
+            from app.models.buying import BuyingPriceHistory
+            session.add(BuyingPriceHistory(offer_id=offer.id, old_price_minor=offer.purchase_price_minor,
+                new_price_minor=payload.purchase_price_minor, currency=offer.currency_code))
         offer.estimated_purchase_cost_rub_minor = None
         for key, value in payload.model_dump().items():
             setattr(offer, key, value)

@@ -22,6 +22,7 @@ def main():
         config.attributes["connection"] = connection
         command.upgrade(config, "head")
         connection.commit()
+        command.current(config)
         command.check(config)
     engine.dispose()
     print("STAGING upgrade and Alembic check passed")

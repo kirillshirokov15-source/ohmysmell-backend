@@ -135,3 +135,20 @@ EXTERNAL_WRITES_ENABLED=false; Gmail selector/OAuth/cursor не меняются
 курса для закупки и порядок индивидуального одобрения убыточной продажи X.
 Импорт supplier catalog и автоматическая supplier communication — отдельные
 интеграции за чистыми текущими границами, сейчас не активированы.
+# Buying extension
+
+Buying reuses `suppliers`, `product_supply`, and `supplier_offers`. Separate additive
+tables store parser/name mappings, local canonical names, import previews/history,
+shared cart, checkout keys, purchases/snapshots, replies and audit/group events.
+Buying purchases have no customer or order foreign keys. Existing wholesale/retail
+procurement and X settlement keep their existing workflow.
+
+One checkout makes one purchase per supplier and snapshots original procurement
+prices, FX date/source/rate and approximate RUB values. Later price lists or FX changes
+never recalculate those snapshots. Cart always displays current price and flags changes
+since add. Preview fingerprints and DB advisory locks prevent stale checkout and
+duplicate side effects. Marking received records one audit event and invokes only
+the fake receipt adapter in this slice. All suppliers belong to the same logical
+warehouse “Внешние поставщики”.
+
+See [Buying API](BUYING_API.md) for frontend contract and explicit live-write limitations.

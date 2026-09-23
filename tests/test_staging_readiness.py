@@ -328,7 +328,7 @@ class TestFreshSchema:
         from alembic.script import ScriptDirectory
 
         scripts = ScriptDirectory.from_config(Config("alembic.ini"))
-        assert scripts.get_heads() == ["k04e6198cd21"]
+        assert scripts.get_heads() == ["m26a8310ef43"]
         sales_revision = scripts.get_revision("a84f1b92c301")
         assert sales_revision.dependencies == "f01a2b3c4d5e"
 

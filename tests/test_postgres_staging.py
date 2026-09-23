@@ -13,6 +13,104 @@ import pytest
 pytestmark = pytest.mark.staging
 
 
+def test_quantity_review_and_correction_postgres(staging_sessions):
+    from app.models.manager import Manager
+    from app.models.draft_order import DraftQuantityEvent
+    from app.services.draft_order_service import DraftOrderService, DraftOrderError
+    from app.services.product_matching_service import ProductMatchingService
+    from app.services.price_service import PriceService
+    from tests.test_email_pipeline import FakeCatalog, email_message
+    from dataclasses import replace
+    from sqlalchemy import select, func
+    factory,engine=staging_sessions
+    async def run():
+        uid=uuid4().hex
+        actor=int(uid[:12],16)
+        async with factory() as session,session.begin():
+            session.add(Manager(telegram_id=actor,name='SYNTHETIC quantity',is_active=True))
+        service=DraftOrderService(matching_service=ProductMatchingService(FakeCatalog()),
+            price_service=PriceService({'wholesale':'Цена продажи'}),
+            counterparty_service=SimpleNamespace(candidates_async=AsyncMock(return_value=[])),notifier=AsyncMock())
+        for index,(body,confidence) in enumerate((('Chanel Allure Homme Sport x3','confirmed'),('Chanel Allure Homme Sport\n3','probable'),('Chanel Allure Homme Sport','unknown'))):
+            message=replace(email_message(uid+str(index),body),sender_email=uid+'@example.invalid')
+            draft=await service.ingest_email(message)
+            assert draft.items[0].quantity_confidence==confidence
+            await service.link_counterparty(draft.id,'synthetic-cp-'+uid,'SYNTHETIC quantity')
+            if confidence!='confirmed':
+                with pytest.raises(DraftOrderError):await service.finalize(draft.id)
+                await service.repository.correct_quantity(draft.id,draft.items[0].id,3,actor)
+            order=await service.finalize(draft.id)
+            assert order.items[0].qty==3 and order.customer_type=='wholesale'
+            assert (await service.ingest_email(message)).id==draft.id
+            assert (await service.finalize(draft.id)).id==order.id
+        async with factory() as session:
+            assert await session.scalar(select(func.count()).select_from(DraftQuantityEvent).where(DraftQuantityEvent.actor_telegram_id==actor))==2
+        await engine.dispose()
+    asyncio.run(run())
+
+
+def test_buying_atomic_checkout_and_replay(staging_sessions):
+    from app.api import buying as api
+    from app.services import buying as svc
+    from app.services.buying_excel import ParserConfig, ColumnPriceListParser
+    from tests.test_buying import xlsx
+    from app.models.buying import BuyingCart, BuyingPurchase, BuyingReply, BuyingEvent
+    from app.models.supply import SupplierOffer
+    from sqlalchemy import select, delete, func
+    from fastapi import HTTPException
+    factory, engine = staging_sessions
+    async def run():
+        uid=uuid4().hex
+        async with factory() as s,s.begin():
+            await s.execute(delete(BuyingCart))
+        suppliers=[]
+        for index in range(2):
+            result=await api.create_supplier(api.SupplierInput(name='SYNTHETIC Buying '+uid+str(index),email='synthetic@example.invalid',currency='RUB',parser=ParserConfig()))
+            suppliers.append(result['id'])
+            async with factory() as s,s.begin():
+                r=await svc.preview_import(s,result['id'],'synthetic.xlsx',ColumnPriceListParser(ParserConfig()).parse(xlsx([['Name','Price'],['SYNTHETIC '+uid,'10']])) )
+                rid=r.id
+            async with factory() as s,s.begin():
+                await svc.confirm_import(s,result['id'],rid)
+        async with factory() as s:
+            offers=(await s.scalars(select(SupplierOffer).where(SupplierOffer.supplier_id.in_(suppliers)))).all()
+            assert len({o.product_id for o in offers})==1
+        for o in offers:
+            await api.add_cart(api.CartAdd(offer_id=o.id,quantity=2))
+        preview=await api.checkout_preview()
+        async def confirm():
+            return await api.checkout_confirm(api.CheckoutConfirm(fingerprint=preview['fingerprint']),uid,'synthetic-session')
+        a,b=await asyncio.gather(confirm(),confirm())
+        assert a==b and len(a['purchase_ids'])==2
+        assert (await api.cart())['items']==[]
+        pid=a['purchase_ids'][0]
+        a,b=await asyncio.gather(api.simulate_send(pid,'synthetic-session'),api.simulate_send(pid,'synthetic-session'))
+        assert a['message_id']==b['message_id']
+        await engine.dispose()
+        assert (await api.purchase_detail(pid))['send_state']=='simulated'
+        a,b=await asyncio.gather(api.received(pid,'synthetic-session'),api.received(pid,'synthetic-session'))
+        assert a['received_at']==b['received_at']
+        async with factory() as s,s.begin():
+            args=dict(message_id=uid,thread_id=a['thread_id'],sender='synthetic@example.invalid',received_at=svc.now(),subject='SYNTHETIC reply',body='Any supplier reply')
+            await svc.ingest_reply(s,**args)
+            await svc.ingest_reply(s,**args)
+        async with factory() as s:
+            assert await s.scalar(select(func.count()).select_from(BuyingReply).where(BuyingReply.message_id==uid))==1
+            assert await s.scalar(select(func.count()).select_from(BuyingEvent).where(BuyingEvent.purchase_id==pid,BuyingEvent.action=='received'))==1
+        # Roll back the first row if a later row conflicts with its preview.
+        async with factory() as s,s.begin():
+            r=await svc.preview_import(s,suppliers[0],'rollback.xlsx',ColumnPriceListParser(ParserConfig()).parse(xlsx([['Name','Price'],['SYNTHETIC '+uid,'20'],['SYNTHETIC second '+uid,'30']])) )
+            rid=r.id
+        async with factory() as s,s.begin():
+            p=await s.get(SupplierOffer,offers[0].id); p.purchase_price_minor=1100
+        with pytest.raises(HTTPException):
+            async with factory() as s,s.begin():
+                await svc.confirm_import(s,suppliers[0],rid)
+        assert (await api.purchase_detail(pid))['items'][0]['unit_price_minor']==1000
+        await engine.dispose()
+    asyncio.run(run())
+
+
 def test_supply_external_email_and_website_channels(staging_sessions):
     from dataclasses import replace
     from sqlalchemy import select
@@ -208,7 +306,7 @@ def staging_sessions(monkeypatch):
                    "app.repositories.order_repository", "app.repositories.email_cursor_repository",
                    "app.services.checkout_service", "app.services.fulfillment_service",
                    "app.services.external_operation_service", "app.workers.notifications",
-                   "app.services.order_operations", "app.services.client_channel", "app.services.manager_workspace", "app.services.supply_service", "app.bot.procurement", "app.api.supply"):
+                   "app.services.order_operations", "app.services.client_channel", "app.services.manager_workspace", "app.services.supply_service", "app.bot.procurement", "app.api.supply", "app.api.buying", "app.workers.supplier_replies", "app.workers.buying_notifications"):
         monkeypatch.setattr(importlib.import_module(module), "async_session", factory)
     monkeypatch.setattr(settings, "external_writes_enabled", False)
     monkeypatch.setattr(settings, "warehouse_ids", ())

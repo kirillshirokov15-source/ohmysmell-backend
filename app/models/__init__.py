@@ -1,4 +1,5 @@
 from app.models.manager import Manager
+from app.models import buying
 from app.models.supply import Supplier, ProductSupply, SupplierOffer, OrderItemSupply, XSettlement, ProcurementRequest, SupplyEvent
 from app.models.operations import OrderEvent, ClientConversation, ClientUpdate
 from app.models.customer import Customer, CustomerIdentity

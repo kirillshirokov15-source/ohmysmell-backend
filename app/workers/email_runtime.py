@@ -45,6 +45,10 @@ async def run(worker=None):
         provider.service = await asyncio.to_thread(provider._build_service)
         cursor_key = await asyncio.to_thread(provider.cursor_key)
         worker = EmailIngestionWorker(provider=provider, provider_name=cursor_key)
+    supplier_poller = None
+    if os.getenv("SUPPLIER_REPLIES_ENABLED", "false").lower() == "true":
+        from app.workers.supplier_replies import SupplierReplyPoller
+        supplier_poller = SupplierReplyPoller(worker.provider)
     stop, failed = asyncio.Event(), asyncio.Event()
     restore_signals = install_stop_signals(asyncio.get_running_loop(), stop)
     state = {"status": "starting", "role": "email", "environment": settings.environment, "ready": False}
@@ -80,6 +84,8 @@ async def run(worker=None):
                         stats = await worker.run_once()
                         if stats["failed"]:
                             raise RuntimeError("Ingestion batch incomplete")
+                        if supplier_poller:
+                            await supplier_poller.run_once()
                         last_success = monotonic()
                         state.update(status="ready", ready=True)
                         log_event(logger, "email_poll_completed", duration_ms=round((perf_counter()-started)*1000, 2), result="success", **stats)

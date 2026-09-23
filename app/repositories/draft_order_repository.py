@@ -20,6 +20,30 @@ class DuplicateInboundMessageError(Exception):
 
 class DraftOrderRepository:
     expected_revision = None
+
+    async def correct_quantity(self, draft_id, item_id, quantity, actor):
+        from app.models.manager import Manager
+        from app.models.draft_order import DraftQuantityEvent
+        if type(quantity) is not int or not 1 <= quantity <= 100000:
+            raise InvalidOrderTransitionError("Количество должно быть от 1 до 100000")
+        async with async_session() as session, session.begin():
+            if not await session.scalar(select(Manager.id).where(Manager.telegram_id == actor, Manager.is_active.is_(True))):
+                raise InvalidOrderTransitionError("Нет доступа менеджера")
+            draft = await self._locked(session, draft_id)
+            if not draft:
+                raise InvalidOrderTransitionError("Черновик не найден")
+            self._ensure_editable(draft)
+            item = next((i for i in draft.items if i.id == item_id), None)
+            if not item:
+                raise InvalidOrderTransitionError("Позиция не найдена")
+            if item.qty == quantity and item.quantity_confidence == "confirmed":
+                return draft
+            session.add(DraftQuantityEvent(draft_id=draft.id,item_id=item.id,actor_telegram_id=actor,
+                old_quantity=item.qty,new_quantity=quantity,old_confidence=item.quantity_confidence))
+            self._invalidate(draft)
+            item.qty, item.quantity_confidence = quantity, "confirmed"
+            item.price, item.item_total = None, None
+            return draft
     @staticmethod
     def _ensure_editable(draft):
         if draft.finalized_order_id or draft.status not in {"draft", "needs_review", "ready"}:
@@ -276,7 +300,7 @@ class DraftOrderRepository:
             if (draft.customer_type != order_customer_type(draft.source, draft.customer_type)
                     or draft.customer_type == "unknown" or not draft.counterparty_id
                     or not draft.items or draft.total is None
-                    or any(i.qty <= 0 or i.price is None or i.price < 0
+                    or any(i.qty <= 0 or i.quantity_confidence != "confirmed" or i.price is None or i.price < 0
                            or not i.product_id or i.match_status != "matched"
                            or i.item_total != i.price * i.qty for i in draft.items)
                     or draft.total != sum(i.item_total for i in draft.items)):
