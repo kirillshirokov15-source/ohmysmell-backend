@@ -59,9 +59,10 @@ from app.api.public import router as public_router
 app.include_router(public_router)
 from app.api.supply import router as supply_router
 app.include_router(supply_router)
-from app.api.buying import router as buying_router, auth_router as buying_auth_router
+from app.api.buying import router as buying_router, auth_router as buying_auth_router, picker_router
 app.include_router(buying_auth_router)
 app.include_router(buying_router)
+app.include_router(picker_router)
 from app.api.safety import install_error_handlers, RequestSafetyMiddleware
 install_error_handlers(app)
 app.add_middleware(RequestSafetyMiddleware)
@@ -165,8 +166,10 @@ def serialize_draft(draft):
         ],
     }
 
+from app.api.buying_cors import BuyingCORSMiddleware
 app.add_middleware(
-    CORSMiddleware,
+    BuyingCORSMiddleware,
+    buying_origins=settings.buying_allowed_origins,
     allow_origins=settings.cors_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],

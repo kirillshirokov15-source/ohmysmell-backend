@@ -1,119 +1,1126 @@
-# OhMySmell Buying REST contract
+# OhMySmell Buying: Sites API contract
 
-Buying is a shared internal workspace with no customer or sales-order references.
-Base path: `/buying`. Machine-readable contract: [openapi.json](openapi.json), live
-`/openapi.json`. Frontend belongs to Sites and is not implemented in this repository.
+Staging base URL: `https://ohmysmell-backend-staging-staging.up.railway.app`.
+Exact Sites origin: `https://ohmysmell-buying.christiankvyatkovsky.chatgpt.site`.
+Set `BUYING_ALLOWED_ORIGINS` to that origin; comma-separated explicit origins are supported.
+No wildcard/cookies. Existing `CORS_ORIGINS` continues to govern non-Buying paths.
 
-## Authentication and browser connection
+1. POST login with username/password; there is no role selector or shared-password fallback.
+2. Keep access_token in SPA memory; send `Authorization: Bearer <token>` on every other endpoint.
+3. GET `/buying/auth/me`: manager opens full Buying UI, picker opens pickup UI.
+4. On 401 clear token and show login. On 403 show permission error; do not retry as another role.
+5. POST logout revokes current session; clear local token. Expiry: 8 hours. Other sessions remain valid.
 
-Configure `BUYING_SHARED_PASSWORD` (at least 12 characters) and
-`BUYING_SESSION_SECRET` (at least 32 random characters). Without both, Buying fails
-closed with 503. Passwords never appear in API responses or logs.
+Role restrictions are enforced by backend dependencies, including direct requests. Account deactivation
+and role changes take effect on the next request. Password reset CLI revokes all user sessions;
+session-secret rotation revokes all sessions. Legacy anonymous-user sessions cannot authenticate.
+Never put bearer tokens in URLs or store passwords. All Buying responses are non-cacheable.
 
-`POST /buying/auth/login` body `{"password":"<shared password>"}` returns
-`{"access_token":"...","token_type":"bearer","expires_in":28800}`.
-Every other Buying route requires `Authorization: Bearer <access_token>`.
-Store the token in SPA memory, never in URLs. Sessions persist in PostgreSQL,
-expire after 8 hours, and can be revoked by `POST /buying/auth/logout`.
-Password/secret rotation invalidates all existing tokens. DB stores keyed digests,
-not bearer tokens. Login has a per-process global limit of 30 attempts/minute;
-use a reverse-proxy limit when scaling beyond this small internal workspace.
-Responses use `Cache-Control: no-store`. No cookies/CSRF credentials are used.
+Money: integer minor units (100 minor = 1 RUB/USD); FX rates: decimal strings, never floats.
+USD RUB estimates may be null and are approximate; confirmed purchase snapshots are immutable.
+No customer, margin, retail sale price or customer-order fields exist in this workspace.
+All date/time values are ISO 8601 UTC; render in the user's local timezone.
+Synthetic examples below do not represent live suppliers or credentials.
 
-Set the exact HTTPS Sites origin in `CORS_ORIGINS`; wildcards are rejected.
-Allowed methods include GET, POST, PATCH, DELETE, and Authorization/Idempotency-Key
-headers. No per-employee identity is claimed: Buying audit identifies a shared
-session digest. Telegram corrections record the real Telegram user ID separately.
+Machine-readable schemas: [openapi.json](openapi.json), also `/openapi.json` on staging.
+Account setup: [BUYING_ROLES.md](BUYING_ROLES.md). XLSX layouts: [BUYING_PRICE_LISTS.md](BUYING_PRICE_LISTS.md).
 
-## Endpoints
+## Errors and retries
 
-| Method/path after `/buying` | Request / behavior |
-| --- | --- |
-| GET `/suppliers?offset=0&limit=50` | Configured external suppliers, parser, timestamps, active offer count |
-| POST `/suppliers` | `{name,email,currency:"RUB" or "USD",parser:{version:"columns-v1",sheet:1,first_row:2,name_column:"A",price_column:"B",sku_column:null}}` |
-| GET `/suppliers/{id}` | Supplier details; no counterparty tokens/details |
-| POST `/suppliers/{id}/configure` | Same supplier body; adopts an existing external supplier once |
-| POST `/offers/{id}/mapping` | `{name:"Exact supplier product name"}`; adopts an existing SupplierOffer |
-| POST `/products/mappings` | `{product_id:"existing-supply-id",name:"Canonical name"}`; explicit known identity before import |
-| GET `/catalog?q=marvis&sort=cheapest&offset=0&limit=50` | Canonical product pagination; `sort=cheapest|supplier|newest` |
-| GET `/products/{id}/offers` | Active supplier offers for a canonical product |
-| GET `/offers/{id}/price-history?offset=0&limit=50` | Old/new minor-unit prices, currency, import ID, timestamp |
-| POST `/offers/{id}/estimate` | Refresh read-only FX quote through replaceable provider (currently CBR) |
-| POST `/suppliers/{id}/price-lists/preview?filename=list.xlsx` | Raw XLSX binary body, max 2 MiB; not multipart |
-| POST `/suppliers/{id}/price-lists/import` | `{import_id:"uuid",mappings:{"ROW_NUMBER":"candidate-product-id"}}`; atomic, replay-safe |
-| GET `/cart` | Shared durable cart; current prices and `price_changed_since_added` |
-| POST `/cart/items` | `{offer_id:1,quantity:3}`; upsert absolute quantity, repeat-safe |
-| PATCH `/cart/items/{offer_id}` | `{quantity:3}`; pieces, integer 1..100000 |
-| DELETE `/cart/items/{offer_id}` | Remove; repeat-safe |
-| DELETE `/cart` | Clear shared cart |
-| POST `/checkout/preview` | Deterministic supplier groups and SHA-256 `fingerprint` |
-| POST `/checkout/confirm` | `{fingerprint:"..."}`, header `Idempotency-Key` 8..100 chars |
-| GET `/purchases?supplier_id=1&offset=0&limit=50` | Newest first, total count, immutable snapshots |
-| GET `/purchases/{id}` | Snapshot, email body, state, replies, simulated external references |
-| POST `/purchases/{id}/simulate-send` | Explicit staging/development-only fake email + supplier-order hook |
-| POST `/purchases/{id}/received` | Idempotent local transition, audit/group event, fake receipt hook |
+All successful calls below return HTTP 200. All protected calls can return 401 (missing/expired/
+revoked/inactive session), 403 (role), 422 (validation) or 503 (configuration/backend unavailable).
+Entity/state-specific errors are listed per endpoint. 413 is possible for oversized bodies.
+Example error: `{"detail":"Manager role required"}`. Validation envelope:
+`{"detail":{"code":"validation_error","fields":[{"loc":["body","username"],"type":"missing"}]}}`.
+Unexpected failures return a safe service_unavailable envelope, never provider details/stack traces.
+The frontend must accept detail as either a string or an object.
 
-List limits are 1..100. Purchase date filtering is not implemented. Price history
-is a separate API, not included in catalog payloads. Historical imports do not
-automatically deactivate rows absent from a later workbook (incremental import).
+Checkout uses an Idempotency-Key. Never generate a new key just because the response timed out.
+Received and import replay are safe. Do not automatically retry supplier creation after an unknown outcome.
+Preflight OPTIONS requires no token; unlisted browser origins receive no allow-origin header.
+CORS is a browser policy; authorization is required even without Origin.
 
-## Catalog response
+Real supplier email and MoySklad writes remain disabled. No live send endpoint exists.
+Draft purchases are not pickup tasks until the explicit staging simulation marks them sent.
+Readonly supplier reply polling is optional and requires working Gmail OAuth; no semantic confirmation parsing.
 
-`{products:[{id,name,offers:[...]}],total,offset,limit}`. Every offer includes:
-`id,product_id,supplier_id,supplier_name,name,supplier_sku,purchase_price_minor,
-currency_code,approximate_rub_minor,approximate,fx_source,fx_rate_date,
-fx_rate_to_rub,price_list_updated_at,availability,active,moysklad_match_state`.
-All money is integer minor units. FX rates are decimal strings; no floats.
-USD without a quote has null RUB estimate and sorts after priced offers.
-CBR is a fallback reference rate, not a claim of a live exchange/market rate.
-Frontend must display approximate values and quote date explicitly.
 
-Canonical IDs starting `buying-` are local. Existing MoySklad identities must be
-registered explicitly to avoid inventing matches. No fuzzy candidate is auto-selected.
-All suppliers share the logical warehouse “Внешние поставщики”. Catalog response
-models explicitly allowlist procurement fields; sale prices/margins/customer data
-are not accessible through this API.
+## POST /buying/auth/login
 
-## Checkout semantics
+Auth: None. Allowed role: anonymous.
 
-Preview response: `{fingerprint,suppliers:[{supplier_id,supplier_name,recipient,
-items,currency,total_minor,approximate_rub_minor,approximate,email_body}]}`.
-Each item snapshots offer/product IDs, name, quantity, unit procurement price and
-FX rate/source/date. Body consists only of `Product Name – N шт.` lines in stable
-offer order. Free-text editing is deliberately not supported in this version.
+Request JSON:
+```json
+{
+  "username": "buying_manager",
+  "password": "<entered password>"
+}
+```
 
-Confirm creates one draft purchase per supplier, clears the cart in the same
-transaction, and returns `{purchase_ids:[...],real_email_sent:false}`. It does not
-send an email. Save the idempotency key before submitting and reuse it on timeout.
-Same key+fingerprint returns the original IDs even after cart changes. Different
-fingerprint with the same key or changed cart/prices returns 409. A new key after
-a successful checkout cannot duplicate the now-empty cart.
+Response JSON (200):
+```json
+{
+  "access_token": "<opaque token>",
+  "token_type": "bearer",
+  "expires_in": 28800
+}
+```
 
-Explicit `simulate-send` sets `status=sent,send_state=simulated`; message/thread/
-counterparty/supplier-order IDs have `fake-` prefixes. Never present this as a real
-supplier email. `received` accepts only sent purchases and is repeat-safe.
-Confirmed snapshot costs never change after imports or later FX refreshes.
+Error status codes: 401, 422, 429, 503. No role field. Username is case-insensitive ASCII; password whitespace is significant. Limit: 30 attempts/minute/process; Retry-After: 60.
 
-## Replies and future live writes
 
-`SUPPLIER_EMAIL_SEND_ENABLED=false` and `EXTERNAL_WRITES_ENABLED=false` remain
-defaults. Live adapters deliberately fail closed even if both flags are enabled:
-OAuth send setup and uncertain-outcome reconciliation are not complete. There is
-no live email endpoint and no live MoySklad procurement write client in this slice.
+## GET /buying/auth/me
 
-`SUPPLIER_REPLIES_ENABLED=false` by default. When explicitly enabled in the existing
-email worker, the readonly poller reads only purchase-linked non-fake Gmail threads,
-matches the exact supplier sender, and stores any reply regardless of meaning.
-Gmail message ID is unique. Archived replies are supported. It does not alter the
-customer-intake query or controlled message selector. Safe text and attachment
-metadata are returned as text; the frontend must never insert them as HTML.
-Synthetic reply ingestion is exercised through the service entry point in tests;
-there is no public endpoint that can forge supplier replies.
+Auth: Bearer session. Allowed role: manager or picker.
 
-## Errors
+Request: none (no body).
 
-401 invalid/missing/revoked token, 403 unavailable action, 404 unknown entity,
-409 stale preview/state/mapping conflict, 413 upload too large, 422 invalid input,
-429 login limit, 503 unconfigured auth/provider or temporary backend error.
-Production middleware returns safe error envelopes without stack traces/input values.
-Do not retry confirm with a new key after a transport error.
+Response JSON (200):
+```json
+{
+  "id": 1,
+  "username": "buying_manager",
+  "role": "manager"
+}
+```
+
+Error status codes: 401, 403, 422, 503.
+
+
+## POST /buying/auth/logout
+
+Auth: Bearer session. Allowed role: manager or picker.
+
+Request: none (no body).
+
+Response JSON (200):
+```json
+{
+  "revoked": true
+}
+```
+
+Error status codes: 401, 403, 422, 503.
+
+
+## GET /buying/catalog
+
+Auth: Bearer session. Allowed role: manager.
+
+Request: none (no body).
+
+Response JSON (200):
+```json
+{
+  "products": [
+    {
+      "id": "buying-00000000-0000-0000-0000-000000000001",
+      "name": "Synthetic perfume 100 ml",
+      "offers": [
+        {
+          "id": 1,
+          "product_id": "buying-00000000-0000-0000-0000-000000000001",
+          "supplier_id": 1,
+          "supplier_name": "Synthetic supplier",
+          "name": "Synthetic perfume 100 ml",
+          "supplier_sku": null,
+          "purchase_price_minor": 1250,
+          "currency_code": "RUB",
+          "approximate_rub_minor": 1250,
+          "approximate": false,
+          "fx_source": null,
+          "fx_rate_date": null,
+          "fx_rate_to_rub": null,
+          "price_list_updated_at": "2026-09-25T12:00:00Z",
+          "availability": "on_request",
+          "active": true,
+          "moysklad_match_state": "local"
+        }
+      ]
+    }
+  ],
+  "total": 1,
+  "offset": 0,
+  "limit": 50
+}
+```
+
+Error status codes: 401, 403, 422, 503. Query: q (partial name, max 200), sort=cheapest|supplier|newest, offset>=0, limit=1..100 (default 50). Canonical-product pagination. No automatic fuzzy selection.
+
+
+## GET /buying/products/{product_id}/offers
+
+Auth: Bearer session. Allowed role: manager.
+
+Request: none (no body).
+
+Response JSON (200):
+```json
+{
+  "offers": [
+    {
+      "id": 1,
+      "product_id": "buying-00000000-0000-0000-0000-000000000001",
+      "supplier_id": 1,
+      "supplier_name": "Synthetic supplier",
+      "name": "Synthetic perfume 100 ml",
+      "supplier_sku": null,
+      "purchase_price_minor": 1250,
+      "currency_code": "RUB",
+      "approximate_rub_minor": 1250,
+      "approximate": false,
+      "fx_source": null,
+      "fx_rate_date": null,
+      "fx_rate_to_rub": null,
+      "price_list_updated_at": "2026-09-25T12:00:00Z",
+      "availability": "on_request",
+      "active": true,
+      "moysklad_match_state": "local"
+    }
+  ]
+}
+```
+
+Error status codes: 401, 403, 422, 503. Path: canonical product_id. Unknown product returns an empty offers list.
+
+
+## GET /buying/offers/{offer_id}/price-history
+
+Auth: Bearer session. Allowed role: manager.
+
+Request: none (no body).
+
+Response JSON (200):
+```json
+{
+  "history": [
+    {
+      "id": 1,
+      "offer_id": 1,
+      "old_price_minor": 1000,
+      "new_price_minor": 1250,
+      "currency": "RUB",
+      "import_id": "00000000-0000-0000-0000-000000000002",
+      "changed_at": "2026-09-25T12:00:00Z"
+    }
+  ]
+}
+```
+
+Error status codes: 401, 403, 422, 503, 404. Query: offset>=0, limit=1..100.
+
+
+## POST /buying/offers/{offer_id}/estimate
+
+Auth: Bearer session. Allowed role: manager.
+
+Request: none (no body).
+
+Response JSON (200):
+```json
+{
+  "offer_id": 1,
+  "fx_rate_to_rub": "90.0000000000",
+  "fx_source": "cbr",
+  "fx_rate_date": "2026-09-25"
+}
+```
+
+Error status codes: 401, 403, 422, 503, 404. Refreshes only a read-only FX quote. CBR is a reference/fallback rate, not a live bank selling rate.
+
+
+## GET /buying/cart
+
+Auth: Bearer session. Allowed role: manager.
+
+Request: none (no body).
+
+Response JSON (200):
+```json
+{
+  "items": [
+    {
+      "offer": {
+        "id": 1,
+        "product_id": "buying-00000000-0000-0000-0000-000000000001",
+        "supplier_id": 1,
+        "supplier_name": "Synthetic supplier",
+        "name": "Synthetic perfume 100 ml",
+        "supplier_sku": null,
+        "purchase_price_minor": 1250,
+        "currency_code": "RUB",
+        "approximate_rub_minor": 1250,
+        "approximate": false,
+        "fx_source": null,
+        "fx_rate_date": null,
+        "fx_rate_to_rub": null,
+        "price_list_updated_at": "2026-09-25T12:00:00Z",
+        "availability": "on_request",
+        "active": true,
+        "moysklad_match_state": "local"
+      },
+      "quantity": 2,
+      "price_changed_since_added": false,
+      "created_at": "2026-09-25T12:00:00Z",
+      "updated_at": "2026-09-25T12:00:00Z"
+    }
+  ]
+}
+```
+
+Error status codes: 401, 403, 422, 503.
+
+
+## POST /buying/cart/items
+
+Auth: Bearer session. Allowed role: manager.
+
+Request JSON:
+```json
+{
+  "offer_id": 1,
+  "quantity": 2
+}
+```
+
+Response JSON (200):
+```json
+{
+  "offer_id": 1,
+  "quantity": 2
+}
+```
+
+Error status codes: 401, 403, 422, 503, 404. Absolute quantity upsert, not increment. Strict integer 1..100000 pieces. Shared persistent cart.
+
+
+## PATCH /buying/cart/items/{offer_id}
+
+Auth: Bearer session. Allowed role: manager.
+
+Request JSON:
+```json
+{
+  "quantity": 3
+}
+```
+
+Response JSON (200):
+```json
+{
+  "offer_id": 1,
+  "quantity": 3
+}
+```
+
+Error status codes: 401, 403, 422, 503, 404.
+
+
+## DELETE /buying/cart/items/{offer_id}
+
+Auth: Bearer session. Allowed role: manager.
+
+Request: none (no body).
+
+Response JSON (200):
+```json
+{
+  "removed": true
+}
+```
+
+Error status codes: 401, 403, 422, 503. Repeat-safe, including absent item.
+
+
+## DELETE /buying/cart
+
+Auth: Bearer session. Allowed role: manager.
+
+Request: none (no body).
+
+Response JSON (200):
+```json
+{
+  "cleared": true
+}
+```
+
+Error status codes: 401, 403, 422, 503.
+
+
+## POST /buying/checkout/preview
+
+Auth: Bearer session. Allowed role: manager.
+
+Request: none (no body).
+
+Response JSON (200):
+```json
+{
+  "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "suppliers": [
+    {
+      "supplier_id": 1,
+      "supplier_name": "Synthetic supplier",
+      "recipient": "supplier@example.invalid",
+      "items": [
+        {
+          "offer_id": 1,
+          "product_id": "buying-00000000-0000-0000-0000-000000000001",
+          "name": "Synthetic perfume 100 ml",
+          "quantity": 2,
+          "unit_price_minor": 1250,
+          "approximate_rub_minor": 1250,
+          "fx_rate_to_rub": null,
+          "fx_source": null,
+          "fx_rate_date": null
+        }
+      ],
+      "currency": "RUB",
+      "total_minor": 2500,
+      "approximate_rub_minor": 2500,
+      "approximate": false,
+      "email_body": "Synthetic perfume 100 ml – 2 шт."
+    }
+  ]
+}
+```
+
+Error status codes: 401, 403, 422, 503, 409. Empty cart, inactive/unavailable offers or missing supplier email: 409. Body contains product/quantity lines only; editing is unsupported.
+
+
+## POST /buying/checkout/confirm
+
+Auth: Bearer session. Allowed role: manager.
+
+Request JSON:
+```json
+{
+  "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+```
+
+Response JSON (200):
+```json
+{
+  "purchase_ids": [
+    1
+  ],
+  "real_email_sent": false
+}
+```
+
+Error status codes: 401, 403, 422, 503, 409. Required header Idempotency-Key: 8..100 characters. Save key BEFORE submitting; reuse same key and fingerprint after timeout. Stale cart/prices or conflicting key: 409. One draft per supplier; clears cart atomically. Does not send email.
+
+
+## GET /buying/purchases
+
+Auth: Bearer session. Allowed role: manager.
+
+Request: none (no body).
+
+Response JSON (200):
+```json
+{
+  "purchases": [
+    {
+      "supplier_id": 1,
+      "supplier_name": "Synthetic supplier",
+      "recipient": "supplier@example.invalid",
+      "items": [
+        {
+          "offer_id": 1,
+          "product_id": "buying-00000000-0000-0000-0000-000000000001",
+          "name": "Synthetic perfume 100 ml",
+          "quantity": 2,
+          "unit_price_minor": 1250,
+          "approximate_rub_minor": 1250,
+          "fx_rate_to_rub": null,
+          "fx_source": null,
+          "fx_rate_date": null
+        }
+      ],
+      "currency": "RUB",
+      "total_minor": 2500,
+      "approximate_rub_minor": 2500,
+      "approximate": false,
+      "email_body": "Synthetic perfume 100 ml – 2 шт.",
+      "id": 1,
+      "number": "B-000001",
+      "item_count": 1,
+      "status": "sent",
+      "send_state": "simulated",
+      "created_at": "2026-09-25T12:00:00Z",
+      "updated_at": "2026-09-25T12:00:00Z",
+      "sent_at": "2026-09-25T12:00:00Z",
+      "received_at": null,
+      "received_by_user_id": null,
+      "received_by_role": null,
+      "received_by_username": null,
+      "message_id": "fake-message:1",
+      "thread_id": "fake-thread:1",
+      "external_ids": {
+        "supplier_order": "fake-order:1",
+        "counterparty": "fake-supplier:1"
+      }
+    }
+  ],
+  "total": 1,
+  "offset": 0,
+  "limit": 50
+}
+```
+
+Error status codes: 401, 403, 422, 503. Query: supplier_id optional, offset>=0, limit=1..100. Newest first. No date filter yet.
+
+
+## GET /buying/purchases/{purchase_id}
+
+Auth: Bearer session. Allowed role: manager.
+
+Request: none (no body).
+
+Response JSON (200):
+```json
+{
+  "supplier_id": 1,
+  "supplier_name": "Synthetic supplier",
+  "recipient": "supplier@example.invalid",
+  "items": [
+    {
+      "offer_id": 1,
+      "product_id": "buying-00000000-0000-0000-0000-000000000001",
+      "name": "Synthetic perfume 100 ml",
+      "quantity": 2,
+      "unit_price_minor": 1250,
+      "approximate_rub_minor": 1250,
+      "fx_rate_to_rub": null,
+      "fx_source": null,
+      "fx_rate_date": null
+    }
+  ],
+  "currency": "RUB",
+  "total_minor": 2500,
+  "approximate_rub_minor": 2500,
+  "approximate": false,
+  "email_body": "Synthetic perfume 100 ml – 2 шт.",
+  "id": 1,
+  "number": "B-000001",
+  "item_count": 1,
+  "status": "sent",
+  "send_state": "simulated",
+  "created_at": "2026-09-25T12:00:00Z",
+  "updated_at": "2026-09-25T12:00:00Z",
+  "sent_at": "2026-09-25T12:00:00Z",
+  "received_at": null,
+  "received_by_user_id": null,
+  "received_by_role": null,
+  "received_by_username": null,
+  "message_id": "fake-message:1",
+  "thread_id": "fake-thread:1",
+  "external_ids": {
+    "supplier_order": "fake-order:1",
+    "counterparty": "fake-supplier:1"
+  },
+  "replies": [
+    {
+      "message_id": "synthetic-reply",
+      "thread_id": "fake-thread-1",
+      "received_at": "2026-09-25T12:00:00Z",
+      "subject": "Re: order",
+      "body": "Supplier text",
+      "attachments": []
+    }
+  ]
+}
+```
+
+Error status codes: 401, 403, 422, 503, 404. All reply bodies/subjects/attachment filenames are untrusted text. Render as text, never raw HTML.
+
+
+## POST /buying/purchases/{purchase_id}/received
+
+Auth: Bearer session. Allowed role: manager.
+
+Request: none (no body).
+
+Response JSON (200):
+```json
+{
+  "supplier_id": 1,
+  "supplier_name": "Synthetic supplier",
+  "recipient": "supplier@example.invalid",
+  "items": [
+    {
+      "offer_id": 1,
+      "product_id": "buying-00000000-0000-0000-0000-000000000001",
+      "name": "Synthetic perfume 100 ml",
+      "quantity": 2,
+      "unit_price_minor": 1250,
+      "approximate_rub_minor": 1250,
+      "fx_rate_to_rub": null,
+      "fx_source": null,
+      "fx_rate_date": null
+    }
+  ],
+  "currency": "RUB",
+  "total_minor": 2500,
+  "approximate_rub_minor": 2500,
+  "approximate": false,
+  "email_body": "Synthetic perfume 100 ml – 2 шт.",
+  "id": 1,
+  "number": "B-000001",
+  "item_count": 1,
+  "status": "received",
+  "send_state": "simulated",
+  "created_at": "2026-09-25T12:00:00Z",
+  "updated_at": "2026-09-25T12:00:00Z",
+  "sent_at": "2026-09-25T12:00:00Z",
+  "received_at": "2026-09-25T12:00:00Z",
+  "received_by_user_id": 1,
+  "received_by_role": "manager",
+  "received_by_username": "buying_manager",
+  "message_id": "fake-message:1",
+  "thread_id": "fake-thread:1",
+  "external_ids": {
+    "supplier_order": "fake-order:1",
+    "counterparty": "fake-supplier:1"
+  }
+}
+```
+
+Error status codes: 401, 403, 422, 503, 404, 409. Only sent purchases; replay returns original received time/actor, no new audit event. Fake receipt only.
+
+
+## POST /buying/purchases/{purchase_id}/simulate-send
+
+Auth: Bearer session. Allowed role: manager.
+
+Request: none (no body).
+
+Response JSON (200):
+```json
+{
+  "supplier_id": 1,
+  "supplier_name": "Synthetic supplier",
+  "recipient": "supplier@example.invalid",
+  "items": [
+    {
+      "offer_id": 1,
+      "product_id": "buying-00000000-0000-0000-0000-000000000001",
+      "name": "Synthetic perfume 100 ml",
+      "quantity": 2,
+      "unit_price_minor": 1250,
+      "approximate_rub_minor": 1250,
+      "fx_rate_to_rub": null,
+      "fx_source": null,
+      "fx_rate_date": null
+    }
+  ],
+  "currency": "RUB",
+  "total_minor": 2500,
+  "approximate_rub_minor": 2500,
+  "approximate": false,
+  "email_body": "Synthetic perfume 100 ml – 2 шт.",
+  "id": 1,
+  "number": "B-000001",
+  "item_count": 1,
+  "status": "sent",
+  "send_state": "simulated",
+  "created_at": "2026-09-25T12:00:00Z",
+  "updated_at": "2026-09-25T12:00:00Z",
+  "sent_at": "2026-09-25T12:00:00Z",
+  "received_at": null,
+  "received_by_user_id": null,
+  "received_by_role": null,
+  "received_by_username": null,
+  "message_id": "fake-message:1",
+  "thread_id": "fake-thread:1",
+  "external_ids": {
+    "supplier_order": "fake-order:1",
+    "counterparty": "fake-supplier:1"
+  }
+}
+```
+
+Error status codes: 401, 403, 422, 503, 404, 409. Staging/development only. Fake supplier email and Supplier Order hook. Never label this a real email.
+
+
+## GET /buying/suppliers
+
+Auth: Bearer session. Allowed role: manager.
+
+Request: none (no body).
+
+Response JSON (200):
+```json
+{
+  "suppliers": [
+    {
+      "id": 1,
+      "name": "Synthetic supplier",
+      "email": "supplier@example.invalid",
+      "currency": "RUB",
+      "parser": {
+        "version": "columns-v1",
+        "sheet": 1,
+        "first_row": 2,
+        "name_column": "A",
+        "price_column": "B",
+        "sku_column": null
+      },
+      "status": "active",
+      "latest_price_list_upload": "2026-09-25T12:00:00Z",
+      "active_offer_count": 1,
+      "created_at": "2026-09-25T12:00:00Z",
+      "updated_at": "2026-09-25T12:00:00Z",
+      "pickup_address": "Test street 1",
+      "phone": "+70000000000",
+      "pickup_notes": "Call on arrival"
+    }
+  ],
+  "offset": 0,
+  "limit": 50
+}
+```
+
+Error status codes: 401, 403, 422, 503. Query: offset>=0, limit=1..100. One logical warehouse: Внешние поставщики.
+
+
+## POST /buying/suppliers
+
+Auth: Bearer session. Allowed role: manager.
+
+Request JSON:
+```json
+{
+  "name": "Synthetic supplier",
+  "email": "supplier@example.invalid",
+  "currency": "RUB",
+  "parser": {
+    "version": "columns-v1",
+    "sheet": 1,
+    "first_row": 2,
+    "name_column": "A",
+    "price_column": "B",
+    "sku_column": null
+  }
+}
+```
+
+Response JSON (200):
+```json
+{
+  "id": 1
+}
+```
+
+Error status codes: 401, 403, 422, 503.
+
+
+## GET /buying/suppliers/{supplier_id}
+
+Auth: Bearer session. Allowed role: manager.
+
+Request: none (no body).
+
+Response JSON (200):
+```json
+{
+  "id": 1,
+  "name": "Synthetic supplier",
+  "email": "supplier@example.invalid",
+  "currency": "RUB",
+  "parser": {
+    "version": "columns-v1",
+    "sheet": 1,
+    "first_row": 2,
+    "name_column": "A",
+    "price_column": "B",
+    "sku_column": null
+  },
+  "status": "active",
+  "latest_price_list_upload": "2026-09-25T12:00:00Z",
+  "active_offer_count": 1,
+  "created_at": "2026-09-25T12:00:00Z",
+  "updated_at": "2026-09-25T12:00:00Z",
+  "pickup_address": "Test street 1",
+  "phone": "+70000000000",
+  "pickup_notes": "Call on arrival"
+}
+```
+
+Error status codes: 401, 403, 422, 503, 404.
+
+
+## PATCH /buying/suppliers/{supplier_id}/pickup
+
+Auth: Bearer session. Allowed role: manager.
+
+Request JSON:
+```json
+{
+  "pickup_address": "Test street 1",
+  "phone": "+70000000000",
+  "pickup_notes": "Call on arrival"
+}
+```
+
+Response JSON (200):
+```json
+{
+  "id": 1,
+  "name": "Synthetic supplier",
+  "email": "supplier@example.invalid",
+  "currency": "RUB",
+  "parser": {
+    "version": "columns-v1",
+    "sheet": 1,
+    "first_row": 2,
+    "name_column": "A",
+    "price_column": "B",
+    "sku_column": null
+  },
+  "status": "active",
+  "latest_price_list_upload": "2026-09-25T12:00:00Z",
+  "active_offer_count": 1,
+  "created_at": "2026-09-25T12:00:00Z",
+  "updated_at": "2026-09-25T12:00:00Z",
+  "pickup_address": "Test street 1",
+  "phone": "+70000000000",
+  "pickup_notes": "Call on arrival"
+}
+```
+
+Error status codes: 401, 403, 422, 503, 404. Partial update: omitted values preserved; null clears a field. Limits: address 1000, phone 80, notes 2000 characters. Keep pickup notes free of commercial/customer data; pickers read them.
+
+
+## POST /buying/suppliers/{supplier_id}/configure
+
+Auth: Bearer session. Allowed role: manager.
+
+Request JSON:
+```json
+{
+  "name": "Synthetic supplier",
+  "email": "supplier@example.invalid",
+  "currency": "RUB",
+  "parser": {
+    "version": "columns-v1",
+    "sheet": 1,
+    "first_row": 2,
+    "name_column": "A",
+    "price_column": "B",
+    "sku_column": null
+  }
+}
+```
+
+Response JSON (200):
+```json
+{
+  "id": 1
+}
+```
+
+Error status codes: 401, 403, 422, 503, 404, 409. One-time adoption of an existing external supplier. Not a general update endpoint. Already configured/currency conflict: 409.
+
+
+## POST /buying/offers/{offer_id}/mapping
+
+Auth: Bearer session. Allowed role: manager.
+
+Request JSON:
+```json
+{
+  "name": "Synthetic perfume 100 ml"
+}
+```
+
+Response JSON (200):
+```json
+{
+  "offer_id": 1,
+  "product_id": "buying-00000000-0000-0000-0000-000000000001"
+}
+```
+
+Error status codes: 401, 403, 422, 503, 404, 409. Adopt an existing supplier offer without duplicating its identity.
+
+
+## POST /buying/products/mappings
+
+Auth: Bearer session. Allowed role: manager.
+
+Request JSON:
+```json
+{
+  "product_id": "buying-00000000-0000-0000-0000-000000000001",
+  "name": "Synthetic perfume 100 ml"
+}
+```
+
+Response JSON (200):
+```json
+{
+  "product_id": "buying-00000000-0000-0000-0000-000000000001"
+}
+```
+
+Error status codes: 401, 403, 422, 503, 404, 409. Register an existing local supply identity before XLSX matching.
+
+
+## POST /buying/suppliers/{supplier_id}/price-lists/preview
+
+Auth: Bearer session. Allowed role: manager.
+
+Request: raw XLSX bytes (no JSON).
+
+Response JSON (200):
+```json
+{
+  "import_id": "00000000-0000-0000-0000-000000000002",
+  "counts": {
+    "total": 1,
+    "valid": 1,
+    "invalid": 0,
+    "new": 1,
+    "changed": 0,
+    "unchanged": 0,
+    "ambiguous": 0
+  },
+  "rows": [
+    {
+      "row": 2,
+      "name": "Synthetic perfume 100 ml",
+      "sku": null,
+      "mapping_key": "name:synthetic perfume 100 ml",
+      "price_minor": 1250,
+      "error": null,
+      "offer_id": null,
+      "old_price_minor": null,
+      "product_id": null,
+      "candidates": [],
+      "state": "new"
+    }
+  ],
+  "currency": "RUB",
+  "parser_version": "columns-v1"
+}
+```
+
+Error status codes: 401, 403, 422, 503, 404, 413. Required query filename=synthetic.xlsx. Raw binary body, NOT multipart/JSON. Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet. Max 2 MiB, 5000 rows; macros/formulas not executed. Supplier-specific parser settings are used.
+
+
+## POST /buying/suppliers/{supplier_id}/price-lists/import
+
+Auth: Bearer session. Allowed role: manager.
+
+Request JSON:
+```json
+{
+  "import_id": "00000000-0000-0000-0000-000000000002",
+  "mappings": {}
+}
+```
+
+Response JSON (200):
+```json
+{
+  "import_id": "00000000-0000-0000-0000-000000000002",
+  "imported_at": "2026-09-25T12:00:00Z",
+  "counts": {
+    "total": 1,
+    "valid": 1,
+    "invalid": 0,
+    "new": 1,
+    "changed": 0,
+    "unchanged": 0,
+    "ambiguous": 0
+  }
+}
+```
+
+Error status codes: 401, 403, 422, 503, 404, 409. For ambiguous rows supply mappings={"2":"listed-candidate-id"}. Invalid rows require corrected upload. Atomic, repeat-safe import; stale preview conflicts. Missing rows do not deactivate prior offers.
+
+
+## GET /buying/settings/status
+
+Auth: Bearer session. Allowed role: manager.
+
+Request: none (no body).
+
+Response JSON (200):
+```json
+{
+  "gmail": {
+    "status": "reauth_required",
+    "checked_at": "2026-09-25T12:00:00Z",
+    "reauth_required": true
+  },
+  "moysklad": {
+    "status": "configured",
+    "writes_enabled": false
+  },
+  "telegram": {
+    "status": "not_configured"
+  },
+  "fx": {
+    "status": "cached",
+    "rate": "90.0000000000",
+    "updated_at": "2026-09-25",
+    "source": "cbr"
+  },
+  "supplier_email": {
+    "status": "disabled"
+  }
+}
+```
+
+Error status codes: 401, 403, 422, 503. Gmail is worker heartbeat: connected, reauth_required, bad_credentials, network_unavailable, database_unavailable, worker_error, worker_stale or unknown. Stale heartbeat is not healthy. MoySklad configured means credentials present, not a live probe; Telegram configured means validated group configuration. FX cached is not a live quote; display date. No provider call is triggered by Settings.
+
+
+## GET /buying/picker/pickups
+
+Auth: Bearer session. Allowed role: manager or picker.
+
+Request: none (no body).
+
+Response JSON (200):
+```json
+{
+  "pickups": [
+    {
+      "id": 1,
+      "number": "B-000001",
+      "supplier_name": "Synthetic supplier",
+      "pickup_address": "Test street 1",
+      "phone": "+70000000000",
+      "pickup_notes": "Call on arrival",
+      "items": [
+        {
+          "name": "Synthetic perfume 100 ml",
+          "quantity": 2
+        }
+      ],
+      "sent_at": "2026-09-25T12:00:00Z",
+      "status": "sent",
+      "received_at": null,
+      "received_by_user_id": null,
+      "received_by_role": null,
+      "received_by_username": null
+    }
+  ],
+  "total": 1,
+  "offset": 0,
+  "limit": 50
+}
+```
+
+Error status codes: 401, 403, 422, 503. Only sent purchases. Query: offset>=0, limit=1..100. All employees see the shared list; drafts/errors/cancellations excluded.
+
+
+## GET /buying/picker/history
+
+Auth: Bearer session. Allowed role: manager or picker.
+
+Request: none (no body).
+
+Response JSON (200):
+```json
+{
+  "pickups": [
+    {
+      "id": 1,
+      "number": "B-000001",
+      "supplier_name": "Synthetic supplier",
+      "pickup_address": "Test street 1",
+      "phone": "+70000000000",
+      "pickup_notes": "Call on arrival",
+      "items": [
+        {
+          "name": "Synthetic perfume 100 ml",
+          "quantity": 2
+        }
+      ],
+      "sent_at": "2026-09-25T12:00:00Z",
+      "status": "received",
+      "received_at": "2026-09-25T12:00:00Z",
+      "received_by_user_id": 2,
+      "received_by_role": "picker",
+      "received_by_username": "buying_picker"
+    }
+  ],
+  "total": 1,
+  "offset": 0,
+  "limit": 50
+}
+```
+
+Error status codes: 401, 403, 422, 503. Only received purchases. Query: offset>=0, limit=1..100. All employees see the shared list; drafts/errors/cancellations excluded.
+
+
+## GET /buying/picker/pickups/{purchase_id}
+
+Auth: Bearer session. Allowed role: manager or picker.
+
+Request: none (no body).
+
+Response JSON (200):
+```json
+{
+  "id": 1,
+  "number": "B-000001",
+  "supplier_name": "Synthetic supplier",
+  "pickup_address": "Test street 1",
+  "phone": "+70000000000",
+  "pickup_notes": "Call on arrival",
+  "items": [
+    {
+      "name": "Synthetic perfume 100 ml",
+      "quantity": 2
+    }
+  ],
+  "sent_at": "2026-09-25T12:00:00Z",
+  "status": "sent",
+  "received_at": null,
+  "received_by_user_id": null,
+  "received_by_role": null,
+  "received_by_username": null
+}
+```
+
+Error status codes: 401, 403, 422, 503, 404. Only sent/received purchases are visible. Explicit response allowlist contains no prices, currency, email, replies or external IDs.
+
+
+## POST /buying/picker/pickups/{purchase_id}/received
+
+Auth: Bearer session. Allowed role: manager or picker.
+
+Request: none (no body).
+
+Response JSON (200):
+```json
+{
+  "id": 1,
+  "number": "B-000001",
+  "supplier_name": "Synthetic supplier",
+  "pickup_address": "Test street 1",
+  "phone": "+70000000000",
+  "pickup_notes": "Call on arrival",
+  "items": [
+    {
+      "name": "Synthetic perfume 100 ml",
+      "quantity": 2
+    }
+  ],
+  "sent_at": "2026-09-25T12:00:00Z",
+  "status": "received",
+  "received_at": "2026-09-25T12:00:00Z",
+  "received_by_user_id": 2,
+  "received_by_role": "picker",
+  "received_by_username": "buying_picker"
+}
+```
+
+Error status codes: 401, 403, 422, 503, 404, 409. The Забрал action. Actor comes from authenticated account, never request JSON. Repeated action retains first actor/time and one event.

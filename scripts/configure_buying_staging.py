@@ -22,7 +22,7 @@ def main():
     if remote.get('APP_ENV')!='staging' or remote.get('EXTERNAL_WRITES_ENABLED','false').lower()!='false':
         raise RuntimeError('Staging safety guard failed')
     local=dotenv_values('.env')
-    for key in ('BUYING_SHARED_PASSWORD','BUYING_SESSION_SECRET'):
+    for key in ('BUYING_SESSION_SECRET',):
         if key in remote and remote[key] is None:
             raise RuntimeError('Existing sealed credential must be preserved; configure local acceptance separately')
         value=remote.get(key) or local.get(key) or secrets.token_urlsafe(32)
@@ -34,6 +34,9 @@ def main():
     result=subprocess.run([cli,'variable','set','SUPPLIER_EMAIL_SEND_ENABLED=false',*scope,'--skip-deploys'],capture_output=True,text=True,timeout=45)
     if result.returncode:
         raise RuntimeError('Staging send guard configuration failed')
+    result=subprocess.run([cli,'variable','set','BUYING_ALLOWED_ORIGINS=https://ohmysmell-buying.christiankvyatkovsky.chatgpt.site',*scope,'--skip-deploys'],capture_output=True,text=True,timeout=45)
+    if result.returncode:
+        raise RuntimeError('Staging Sites origin configuration failed')
     print('Buying staging credentials configured; local .env updated; values not displayed')
 
 

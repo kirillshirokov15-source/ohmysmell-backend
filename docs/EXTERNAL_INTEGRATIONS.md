@@ -231,8 +231,18 @@ editing credentials, scope or mailbox messages. Backend/manager are independent.
 Mailbox owner recovery: preserve the existing configured token file as a private
 backup, then perform a deliberate fresh authorization with the existing readonly
 OAuth client (`.\.venv\Scripts\python.exe -m app.scripts.gmail_oauth`). The old
-invalid token must not be used as the input to this first-authorization run, because
-refresh fails before interactive fallback. Transfer the newly authorized readonly
+invalid token may remain at its configured path: the helper now catches invalid_grant
+only during explicit interactive recovery and saves the new token only after success.
+Transfer the newly authorized readonly
 token to the **staging email service only** using the secret-variable procedure above,
 then redeploy and verify readiness. Never print token/base64 contents. This is
 reauthorization of the existing readonly integration, not supplier send consent.
+
+## Sites readiness and OAuth recovery (2026-09-25)
+
+See [GMAIL_RECOVERY.md](GMAIL_RECOVERY.md) for exact readonly reauthorization,
+staging token update and worker health/backoff semantics. The expired/revoked token
+still needs mailbox-owner consent; this sprint does not perform browser OAuth.
+Buying settings expose sanitized worker heartbeat/configuration/cached FX status.
+`BUYING_ALLOWED_ORIGINS` applies only to Buying; the exact Sites origin is documented
+in [BUYING_API.md](BUYING_API.md). Both external-write flags remain false.

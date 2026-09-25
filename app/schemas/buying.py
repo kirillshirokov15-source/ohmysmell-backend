@@ -4,6 +4,18 @@ from typing import Literal
 from pydantic import BaseModel
 
 
+class BuyingUserRead(BaseModel):
+    id: int
+    username: str
+    role: Literal['manager', 'picker']
+
+
+class BuyingLoginRead(BaseModel):
+    access_token: str
+    token_type: Literal['bearer']
+    expires_in: int
+
+
 class OfferRead(BaseModel):
     id: int
     product_id: str
@@ -83,6 +95,9 @@ class CheckoutPreviewRead(BaseModel):
 
 
 class PurchaseRead(SupplierPreviewRead):
+    received_by_user_id: int | None
+    received_by_role: str | None
+    received_by_username: str | None
     id: int
     item_count: int
     number: str
@@ -112,6 +127,34 @@ class PurchaseDetailRead(PurchaseRead):
 
 class PurchasesRead(BaseModel):
     purchases: list[PurchaseRead]
+    total: int
+    offset: int
+    limit: int
+
+
+class PickupItemRead(BaseModel):
+    name: str
+    quantity: int
+
+
+class PickupRead(BaseModel):
+    id: int
+    number: str
+    supplier_name: str
+    pickup_address: str | None
+    phone: str | None
+    pickup_notes: str | None
+    items: list[PickupItemRead]
+    sent_at: datetime | None
+    status: Literal['sent', 'received']
+    received_at: datetime | None
+    received_by_user_id: int | None
+    received_by_role: str | None
+    received_by_username: str | None
+
+
+class PickupsRead(BaseModel):
+    pickups: list[PickupRead]
     total: int
     offset: int
     limit: int

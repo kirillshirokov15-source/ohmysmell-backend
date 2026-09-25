@@ -29,4 +29,8 @@ async def request(app, method, path, payload=None, headers=None, content=None, r
             raise
     start = next(m for m in messages if m["type"] == "http.response.start")
     data = b"".join(m.get("body", b"") for m in messages if m["type"] == "http.response.body")
-    return start["status"], json.loads(data), dict(start["headers"])
+    try:
+        parsed = json.loads(data)
+    except (ValueError, UnicodeDecodeError):
+        parsed = data.decode(errors='replace')
+    return start["status"], parsed, dict(start["headers"])

@@ -10,4 +10,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as error:
+        from app.integrations.email.health import classify
+        print('Gmail OAuth: ' + classify(error))
+        print('Recovery: run app.scripts.gmail_oauth explicitly, then repeat this smoke test')
+        raise SystemExit(1)

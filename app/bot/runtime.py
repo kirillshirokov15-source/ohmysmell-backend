@@ -23,6 +23,9 @@ def validate_worker(role):
     if settings.environment == "production" and os.getenv("BOT_PRODUCTION_ACTIVATED", "false").lower() != "true":
         raise ValueError("Production worker requires explicit activation")
     settings.validate_runtime(role)
+    if role == 'manager':
+        from app.bot.manager_group import validate_group_config
+        validate_group_config()
     if settings.external_writes_enabled and settings.environment != "production":
         raise ValueError("Worker requires external writes disabled")
     key = "TELEGRAM_BOT_TOKEN" if role == "manager" else "CLIENT_TELEGRAM_BOT_TOKEN"

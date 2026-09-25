@@ -49,6 +49,45 @@ def test_quantity_review_and_correction_postgres(staging_sessions):
     asyncio.run(run())
 
 
+def test_buying_roles_sessions_and_received_actor_postgres(staging_sessions, monkeypatch):
+    from app.api import buying as api
+    from app.models.buying import BuyingUser, BuyingSupplier, BuyingPurchase, BuyingEvent
+    from app.models.supply import Supplier
+    from app.services.buying_passwords import hash_password
+    from app.config.settings import settings
+    from fastapi import FastAPI
+    from tests.asgi_client import request
+    from sqlalchemy import select, func
+    factory, engine = staging_sessions
+    monkeypatch.setattr(settings, 'buying_session_secret', 'synthetic-roles-session-secret-for-postgres')
+    api.attempts.clear()
+    app = FastAPI()
+    for router in (api.auth_router, api.router, api.picker_router): app.include_router(router)
+    async def run():
+        name='synthetic_'+uuid4().hex
+        async with factory() as s,s.begin():
+            user=BuyingUser(username=name,role='picker',password_hash=hash_password('synthetic-password-only'))
+            supplier=Supplier(name='SYNTHETIC roles',supplier_type='external_wholesaler')
+            s.add_all([user,supplier]); await s.flush()
+            s.add(BuyingSupplier(supplier_id=supplier.id,currency='RUB',parser={}))
+            p=BuyingPurchase(supplier_id=supplier.id,snapshot={'supplier_name':supplier.name,'items':[{'name':'SYNTHETIC','quantity':2,'unit_price_minor':100}]},status='sent',send_state='simulated')
+            s.add(p); await s.flush(); pid=p.id; uid=user.id
+        status,body,_=await request(app,'POST','/buying/auth/login',{'username':name,'password':'synthetic-password-only'},raise_errors=True)
+        assert status==200
+        headers={'Authorization':'Bearer '+body['access_token']}
+        assert (await request(app,'GET','/buying/catalog',headers=headers))[0]==403
+        a,b=await asyncio.gather(*(request(app,'POST',f'/buying/picker/pickups/{pid}/received',headers=headers,raise_errors=True) for _ in range(2)))
+        assert a[0]==b[0]==200 and a[1]==b[1]
+        assert a[1]['received_by_user_id']==uid and a[1]['received_by_username']==name
+        assert 'unit_price_minor' not in str(a[1])
+        async with factory() as s:
+            assert await s.scalar(select(func.count()).select_from(BuyingEvent).where(BuyingEvent.purchase_id==pid,BuyingEvent.action=='received'))==1
+        assert (await request(app,'POST','/buying/auth/logout',headers=headers))[0]==200
+        assert (await request(app,'GET','/buying/auth/me',headers=headers))[0]==401
+        await engine.dispose()
+    asyncio.run(run())
+
+
 def test_buying_atomic_checkout_and_replay(staging_sessions):
     from app.api import buying as api
     from app.services import buying as svc

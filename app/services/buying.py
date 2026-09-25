@@ -206,6 +206,7 @@ async def purchase_get(session, identifier):
 
 def purchase_view(p):
     return dict(id=p.id, number=f"B-{p.id:06d}", status=p.status, send_state=p.send_state,
+        received_by_user_id=p.received_by_user_id, received_by_role=p.received_by_role, received_by_username=p.received_by_username,
         created_at=p.created_at, updated_at=p.updated_at, sent_at=p.sent_at, received_at=p.received_at,
         message_id=p.message_id, thread_id=p.thread_id, external_ids=p.external_ids, item_count=len(p.snapshot["items"]), **p.snapshot)
 
@@ -233,6 +234,11 @@ async def receive(session, identifier, actor):
     if p.status != "sent":
         fail("Only sent purchases can be received")
     p.status, p.received_at = "received", now()
+    if isinstance(actor, dict):
+        p.received_by_user_id = actor["id"]
+        p.received_by_role = actor["role"]
+        p.received_by_username = actor["username"]
+        actor = f"user:{actor['id']}"
     p.external_ids = {**p.external_ids, **await FakeProcurementAdapter().receipt(p.id)}
     session.add(BuyingEvent(purchase_id=p.id, action="received", actor=actor))
     return p

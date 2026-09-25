@@ -40,9 +40,17 @@ def load_gmail_credentials(*, allow_interactive: bool = False):
             def __call__(self, *args, **kwargs):
                 kwargs["timeout"] = (5, 20)
                 return super().__call__(*args, **kwargs)
-        with verified_session() as session:
-            credentials.refresh(BoundedRequest(session=session))
-        changed = True
+        from google.auth.exceptions import RefreshError
+        try:
+            with verified_session() as session:
+                credentials.refresh(BoundedRequest(session=session))
+            changed = True
+        except RefreshError as error:
+            from app.integrations.email.health import classify
+            if not allow_interactive or classify(error) != 'reauth_required':
+                raise
+            # Preserve the old file until explicit desktop OAuth succeeds.
+            credentials = None
 
     if not credentials or not credentials.valid:
         if not allow_interactive:

@@ -31,8 +31,13 @@ class Settings:
         "",
     )
     def __init__(self) -> None:
-        self.buying_shared_password = os.getenv("BUYING_SHARED_PASSWORD", "")
         self.buying_session_secret = os.getenv("BUYING_SESSION_SECRET", "")
+        self.buying_allowed_origins = [v.strip() for v in os.getenv("BUYING_ALLOWED_ORIGINS", "").split(",") if v.strip()]
+        from urllib.parse import urlsplit
+        for origin in self.buying_allowed_origins:
+            parsed = urlsplit(origin)
+            if parsed.scheme not in ('http', 'https') or not parsed.netloc or parsed.path or parsed.query or parsed.fragment or parsed.username or '*' in origin:
+                raise ValueError("BUYING_ALLOWED_ORIGINS requires exact HTTP(S) origins without paths")
         self.supplier_email_send_enabled = os.getenv("SUPPLIER_EMAIL_SEND_ENABLED", "false").lower() == "true"
         self.environment = os.getenv("APP_ENV", "development")
         if self.environment not in {"development", "staging", "production"}:

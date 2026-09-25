@@ -78,3 +78,35 @@ and delivered by the manager worker's existing notification loop when a group is
 configured. Delivery is at-least-once: a crash after Telegram accepts a message but
 before DB commit can repeat the notification, never the purchase transition.
 An event number permits recognition of duplicates. Events contain no customer data.
+
+## Group configuration and Buying accounts (2026-09-25)
+
+Set `MANAGER_TELEGRAM_MODE=group`, negative `MANAGER_TELEGRAM_CHAT_ID` and a
+comma-separated `MANAGER_TELEGRAM_USER_IDS` list of positive human user IDs on the
+staging manager service. Configure the same group metadata on the backend if its
+Settings card should report group configuration. `auto` preserves private mode
+when no group values exist. Explicit group mode with a missing chat, malformed IDs
+or an empty actor allowlist fails startup. Local unit tests need no live values.
+
+To obtain IDs without introducing another getUpdates poller: use Telegram Desktop
+Export chat history (JSON) for the target group, then read its numeric chat ID and
+`from_id` values for known managers. Alternatively, stop the staging poller, use
+Telegram Bot API getUpdates locally with the existing token in a private client,
+inspect `message.chat.id` and `message.from.id`, then restart the sole worker.
+Never paste the bot-token URL in chat/logs or run a competing poller. Verify the
+negative group ID against a controlled group command before enabling notification
+routing. Add the bot to that group, preserve privacy mode, and allow each intended
+manager both in the environment allowlist and the existing active Manager records.
+
+Ordinary group text and anonymous-admin messages are ignored. Commands/buttons
+require the allowed chat and actual from_user actor. Private and group notification
+routing do not both fire. Buying purchase-created, simulated-email, supplier-reply
+and received events use a durable notified marker. Received notifications include
+purchase number, supplier and the persisted Buying username. Buying web roles are
+separate from Telegram manager identities; they do not create Telegram access.
+
+No live supplier send is enabled, so its real sent/error events are not emitted.
+The notifier accepts event labels for future email_sent/procurement_error events.
+Delivery remains at-least-once across a crash after Telegram accepts a message but
+before DB commit; event IDs let operators recognize that narrow retry window.
+Normal successful delivery and repeated received actions produce no duplicates.

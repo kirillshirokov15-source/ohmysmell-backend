@@ -9,4 +9,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as error:
+        from app.integrations.email.health import classify
+        print('Gmail OAuth: ' + classify(error) + '; existing token preserved')
+        raise SystemExit(1)

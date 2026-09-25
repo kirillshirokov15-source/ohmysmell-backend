@@ -26,7 +26,11 @@ class EmailIngestionWorker:
         self.provider_name = provider_name
 
     async def run_once(self) -> dict[str, int]:
-        cursor = await self.cursor_repository.get(self.provider_name)
+        from app.integrations.email.health import EmailDatabaseUnavailable
+        try:
+            cursor = await self.cursor_repository.get(self.provider_name)
+        except Exception as error:
+            raise EmailDatabaseUnavailable('Email cursor database unavailable') from error
         batch = await self.provider.fetch_unprocessed(cursor)
         stats = {"received": len(batch.messages), "processed": 0, "failed": 0}
         for message in batch.messages:
@@ -49,9 +53,10 @@ class EmailIngestionWorker:
                 log_event(logger, "email_ingestion_error", level=logging.ERROR,
                           message_ref=message_ref, result=type(error).__name__)
         if batch.next_cursor and not stats["failed"]:
-            await self.cursor_repository.set(
-                self.provider_name, batch.next_cursor
-            )
+            try:
+                await self.cursor_repository.set(self.provider_name, batch.next_cursor)
+            except Exception as error:
+                raise EmailDatabaseUnavailable('Email cursor database unavailable') from error
             log_event(logger, "email_cursor_saved", provider=self.provider_name)
         return stats
 

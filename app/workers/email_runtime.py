@@ -31,24 +31,24 @@ def validate_email():
 
 async def run(worker=None):
     from app.integrations.email.secret_files import prepare_secret_files
-    prepare_secret_files()
-    validate_email()
+    # Hard environment/write boundaries always fail closed before opening a service.
+    settings.validate_runtime('email')
+    if settings.environment == 'production' and os.getenv('EMAIL_PRODUCTION_ACTIVATED', 'false').lower() != 'true':
+        raise ValueError('Production email worker requires explicit activation')
+    configuration_error = None
+    try:
+        prepare_secret_files()
+        validate_email()
+    except (ValueError, RuntimeError, OSError) as error:
+        configuration_error = error
     configure_application_logging()
     from app.monitoring import configure_monitoring
     configure_monitoring()
     from app.database.session import engine
     from app.workers.email_ingestion import EmailIngestionWorker
-    # Validate/refresh credentials before becoming ready; never run interactive OAuth.
-    if worker is None:
-        from app.integrations.email.gmail_provider import GmailEmailProvider
-        provider = GmailEmailProvider()
-        provider.service = await asyncio.to_thread(provider._build_service)
-        cursor_key = await asyncio.to_thread(provider.cursor_key)
-        worker = EmailIngestionWorker(provider=provider, provider_name=cursor_key)
     supplier_poller = None
-    if os.getenv("SUPPLIER_REPLIES_ENABLED", "false").lower() == "true":
-        from app.workers.supplier_replies import SupplierReplyPoller
-        supplier_poller = SupplierReplyPoller(worker.provider)
+    from app.integrations.email.health import classify, retry_delay
+    from app.services.integration_health import record_email
     stop, failed = asyncio.Event(), asyncio.Event()
     restore_signals = install_stop_signals(asyncio.get_running_loop(), stop)
     state = {"status": "starting", "role": "email", "environment": settings.environment, "ready": False}
@@ -77,23 +77,48 @@ async def run(worker=None):
                 await asyncio.sleep(2)
             await conn.commit()
             async def poll():
-                nonlocal last_success
+                nonlocal last_success, worker, supplier_poller
+                failures, previous_error = 0, None
                 while not stop.is_set():
                     started = perf_counter()
+                    delay = settings.email_poll_interval
                     try:
+                        if configuration_error:
+                            raise configuration_error
+                        if worker is None:
+                            from app.integrations.email.gmail_provider import GmailEmailProvider
+                            provider = GmailEmailProvider()
+                            provider.service = await asyncio.to_thread(provider._build_service)
+                            cursor_key = await asyncio.to_thread(provider.cursor_key)
+                            worker = EmailIngestionWorker(provider=provider, provider_name=cursor_key)
+                        if supplier_poller is None and os.getenv("SUPPLIER_REPLIES_ENABLED", "false").lower() == "true":
+                            from app.workers.supplier_replies import SupplierReplyPoller
+                            supplier_poller = SupplierReplyPoller(worker.provider)
                         stats = await worker.run_once()
                         if stats["failed"]:
                             raise RuntimeError("Ingestion batch incomplete")
                         if supplier_poller:
                             await supplier_poller.run_once()
                         last_success = monotonic()
-                        state.update(status="ready", ready=True)
+                        state.update(status="ready", ready=True, action=None, retry_after_seconds=delay)
+                        await record_email('connected', delay)
+                        failures, previous_error = 0, None
                         log_event(logger, "email_poll_completed", duration_ms=round((perf_counter()-started)*1000, 2), result="success", **stats)
                     except Exception as error:
-                        state.update(status="degraded", ready=False)
-                        log_event(logger, "email_poll_failed", level=logging.ERROR, result=type(error).__name__)
+                        failures += 1
+                        category = classify(error)
+                        delay = retry_delay(category, failures, settings.email_poll_interval)
+                        state.update(status=category, ready=False, retry_after_seconds=delay,
+                            action='run_gmail_oauth_then_update_worker_token' if category == 'reauth_required' else 'check_worker_configuration_or_connectivity')
+                        try:
+                            await record_email(category, delay)
+                        except Exception:
+                            state.update(status='database_unavailable', ready=False)
+                        if previous_error != category:
+                            log_event(logger, "email_poll_failed", level=logging.ERROR, result=category)
+                        previous_error = category
                     try:
-                        await asyncio.wait_for(stop.wait(), settings.email_poll_interval)
+                        await asyncio.wait_for(stop.wait(), delay)
                     except TimeoutError:
                         pass
             async def watchdog():
@@ -103,6 +128,7 @@ async def run(worker=None):
                         await asyncio.wait_for(conn.scalar(text("SELECT 1")), 5)
                         await conn.commit()
                     except Exception:
+                        state.update(status='database_unavailable', ready=False)
                         failed.set()
                         stop.set()
                         return

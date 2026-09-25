@@ -1,4 +1,4 @@
-"""Internal SPA API. All workspace routes require a revocable shared session."""
+"""Internal SPA API with revocable user sessions and server-side roles."""
 import hmac
 import hashlib
 import secrets
@@ -14,12 +14,13 @@ from sqlalchemy import select, delete, func, case, or_
 from starlette.concurrency import run_in_threadpool
 from app.config.settings import settings
 from app.database.session import async_session
-from app.models.buying import BuyingSession, BuyingSupplier, BuyingOffer, BuyingProduct, BuyingImport, BuyingCart, BuyingPriceHistory, BuyingPurchase, BuyingReply
+from app.models.buying import BuyingUser, BuyingSession, BuyingSupplier, BuyingOffer, BuyingProduct, BuyingImport, BuyingCart, BuyingPriceHistory, BuyingPurchase, BuyingReply
+from app.services.buying_passwords import verify_password, username as normalize_username
 from app.models.supply import Supplier, SupplierOffer, ProductSupply
 from app.services import buying as service
 from app.services.buying_excel import ParserConfig, ColumnPriceListParser, MAX_UPLOAD, normalize
 from app.services.fx import CbrFxProvider, FxError
-from app.schemas.buying import CatalogRead, OffersRead, CartRead, CheckoutPreviewRead, PurchaseRead, PurchaseDetailRead, PurchasesRead
+from app.schemas.buying import CatalogRead, OffersRead, CartRead, CheckoutPreviewRead, PurchaseRead, PurchaseDetailRead, PurchasesRead, BuyingUserRead, BuyingLoginRead
 
 auth_router = APIRouter(prefix="/buying/auth", tags=["Buying auth"])
 bearer = HTTPBearer(auto_error=False)
@@ -27,12 +28,12 @@ attempts = deque(maxlen=100)
 
 
 def configured():
-    if len(settings.buying_shared_password) < 12 or len(settings.buying_session_secret) < 32:
+    if len(settings.buying_session_secret) < 32:
         raise HTTPException(503, "Buying authentication is not configured")
 
 
 def digest(token):
-    key = (settings.buying_session_secret + settings.buying_shared_password).encode()
+    key = settings.buying_session_secret.encode()
     return hmac.new(key, token.encode(), hashlib.sha256).hexdigest()
 
 
@@ -44,12 +45,26 @@ async def session_access(response: Response, credentials: HTTPAuthorizationCrede
     key = digest(credentials.credentials)
     async with async_session() as session:
         record = await session.get(BuyingSession, key)
-        if not record or record.expires_at.timestamp() <= service.now().timestamp():
+        if not record or not record.user_id or record.expires_at.timestamp() <= service.now().timestamp():
             raise HTTPException(401, "Buying session expired or revoked")
-    return key
+        user = await session.get(BuyingUser, record.user_id)
+        if not user or not user.is_active or user.role not in ("manager", "picker"):
+            raise HTTPException(401, "Buying session expired or revoked")
+        return dict(id=user.id, username=user.username, role=user.role, session_digest=key)
 
 
-router = APIRouter(prefix="/buying", tags=["Buying"], dependencies=[Depends(session_access)])
+async def manager_access(user: dict = Depends(session_access)):
+    if user["role"] != "manager":
+        raise HTTPException(403, "Manager role required")
+    return user
+
+
+async def audit_actor(user: dict = Depends(session_access)):
+    return f"user:{user['id']}"
+
+
+router = APIRouter(prefix="/buying", tags=["Buying"], dependencies=[Depends(manager_access)])
+picker_router = APIRouter(prefix="/buying/picker", tags=["Buying pickup"], dependencies=[Depends(session_access)])
 
 
 class Body(BaseModel):
@@ -60,9 +75,10 @@ class Login(Body):
     # Password whitespace is meaningful.
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
     password: str = Field(min_length=1, max_length=1024)
+    username: str = Field(min_length=1, max_length=80)
 
 
-@auth_router.post("/login")
+@auth_router.post("/login", response_model=BuyingLoginRead)
 async def login(payload: Login, response: Response) -> dict:
     configured()
     current = time.monotonic()
@@ -71,21 +87,33 @@ async def login(payload: Login, response: Response) -> dict:
     if len(attempts) >= 30:
         raise HTTPException(429, "Too many login attempts", headers={"Retry-After": "60"})
     attempts.append(current)
-    if not hmac.compare_digest(payload.password.encode(), settings.buying_shared_password.encode()):
-        raise HTTPException(401, "Invalid credentials")
     token = secrets.token_urlsafe(32)
     async with async_session() as session, session.begin():
+        try:
+            name = normalize_username(payload.username)
+        except ValueError:
+            name = ""
+        user = await session.scalar(select(BuyingUser).where(BuyingUser.username == name).with_for_update())
+        valid = await run_in_threadpool(verify_password, payload.password, user.password_hash if user else None)
+        if not valid or not user or not user.is_active:
+            raise HTTPException(401, "Invalid credentials")
+        user.last_login_at = service.now()
         await session.execute(delete(BuyingSession).where(BuyingSession.expires_at <= service.now()))
-        session.add(BuyingSession(digest=digest(token), expires_at=service.now() + timedelta(hours=8)))
+        session.add(BuyingSession(digest=digest(token), user_id=user.id, expires_at=service.now() + timedelta(hours=8)))
     response.headers["Cache-Control"] = "no-store"
     return {"access_token": token, "token_type": "bearer", "expires_in": 28800}
 
 
 @auth_router.post("/logout")
-async def logout(key: str = Depends(session_access)) -> dict:
+async def logout(user: dict = Depends(session_access)) -> dict:
     async with async_session() as session, session.begin():
-        await session.execute(delete(BuyingSession).where(BuyingSession.digest == key))
+        await session.execute(delete(BuyingSession).where(BuyingSession.digest == user['session_digest']))
     return {"revoked": True}
+
+
+@auth_router.get("/me", response_model=BuyingUserRead)
+async def me(user: dict = Depends(session_access)) -> dict:
+    return {key: user[key] for key in ("id", "username", "role")}
 
 
 class SupplierInput(Body):
@@ -118,7 +146,7 @@ async def suppliers_data(session, identifier=None, offset=0, limit=50):
     rows = (await session.execute(query.order_by(Supplier.id).offset(offset).limit(limit))).all()
     return [dict(id=s.id, name=s.name, email=s.email, currency=b.currency, status=s.status,
         latest_price_list_upload=latest, active_offer_count=count, created_at=s.created_at, updated_at=s.updated_at,
-        parser=b.parser) for s,b,count,latest in rows]
+        parser=b.parser, pickup_address=b.pickup_address, phone=b.phone, pickup_notes=b.pickup_notes) for s,b,count,latest in rows]
 
 
 @router.get("/suppliers")
@@ -136,7 +164,9 @@ async def supplier_detail(supplier_id: int) -> dict:
         return result[0]
 
 
-@router.post("/suppliers/{supplier_id}/price-lists/preview")
+@router.post("/suppliers/{supplier_id}/price-lists/preview", openapi_extra={"requestBody": {
+    "required": True, "content": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
+        "schema": {"type": "string", "format": "binary", "maxLength": MAX_UPLOAD}}}}})
 async def import_preview(supplier_id: int, request: Request, filename: str = Query(min_length=6, max_length=255)) -> dict:
     if "/" in filename or "\\" in filename or not filename.lower().endswith(".xlsx") or any(ord(c) < 32 for c in filename):
         raise HTTPException(422, "A plain .xlsx filename is required")
@@ -356,7 +386,7 @@ class CheckoutConfirm(Body):
 
 
 @router.post("/checkout/confirm")
-async def checkout_confirm(payload: CheckoutConfirm, idempotency_key: str = Header(min_length=8, max_length=100), actor: str = Depends(session_access)) -> dict:
+async def checkout_confirm(payload: CheckoutConfirm, idempotency_key: str = Header(min_length=8, max_length=100), actor: str = Depends(audit_actor)) -> dict:
     async with async_session() as session, session.begin():
         ids = await service.checkout_confirm(session, idempotency_key, payload.fingerprint, actor)
         return {"purchase_ids": ids, "real_email_sent": False}
@@ -382,7 +412,7 @@ async def purchase_detail(purchase_id: int) -> dict:
 
 
 @router.post("/purchases/{purchase_id}/simulate-send", response_model=PurchaseRead)
-async def simulate_send(purchase_id: int, actor: str = Depends(session_access)) -> dict:
+async def simulate_send(purchase_id: int, actor: str = Depends(audit_actor)) -> dict:
     if settings.environment == "production":
         raise HTTPException(403, "Simulation is only available outside production")
     async with async_session() as session, session.begin():
@@ -393,9 +423,107 @@ async def simulate_send(purchase_id: int, actor: str = Depends(session_access)) 
 
 
 @router.post("/purchases/{purchase_id}/received", response_model=PurchaseRead)
-async def received(purchase_id: int, actor: str = Depends(session_access)) -> dict:
+async def received(purchase_id: int, actor: dict = Depends(session_access)) -> dict:
     async with async_session() as session, session.begin():
         p = await service.receive(session, purchase_id, actor)
         await session.flush()
         await session.refresh(p)
         return service.purchase_view(p)
+
+
+class PickupContact(Body):
+    pickup_address: str | None = Field(default=None, max_length=1000)
+    phone: str | None = Field(default=None, max_length=80)
+    pickup_notes: str | None = Field(default=None, max_length=2000)
+
+
+@router.patch("/suppliers/{supplier_id}/pickup")
+async def update_pickup(supplier_id: int, payload: PickupContact) -> dict:
+    async with async_session() as session, session.begin():
+        await service.lock(session)
+        supplier, config = await service.supplier_get(session, supplier_id)
+        for key, value in payload.model_dump(exclude_unset=True).items():
+            setattr(config, key, value)
+        supplier.updated_at = service.now()
+        await session.flush()
+        return (await suppliers_data(session, supplier_id))[0]
+
+
+from app.schemas.buying import PickupRead, PickupsRead
+
+
+def pickup_view(purchase, config):
+    # Construct from an explicit allowlist, never from the commercial serializer.
+    return dict(id=purchase.id, number=f"B-{purchase.id:06d}", supplier_name=purchase.snapshot['supplier_name'],
+        pickup_address=config.pickup_address, phone=config.phone, pickup_notes=config.pickup_notes,
+        items=[dict(name=i['name'], quantity=i['quantity']) for i in purchase.snapshot['items']],
+        sent_at=purchase.sent_at, status=purchase.status, received_at=purchase.received_at,
+        received_by_user_id=purchase.received_by_user_id, received_by_role=purchase.received_by_role,
+        received_by_username=purchase.received_by_username)
+
+
+async def pickup_page(status, offset, limit):
+    async with async_session() as session:
+        query = select(BuyingPurchase, BuyingSupplier).join(BuyingSupplier, BuyingSupplier.supplier_id == BuyingPurchase.supplier_id).where(BuyingPurchase.status == status)
+        total = await session.scalar(select(func.count()).select_from(query.subquery()))
+        rows = (await session.execute(query.order_by(BuyingPurchase.id.desc()).offset(offset).limit(limit))).all()
+        return dict(pickups=[pickup_view(p, c) for p, c in rows], total=total, offset=offset, limit=limit)
+
+
+@picker_router.get("/pickups", response_model=PickupsRead)
+async def pickups(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)):
+    return await pickup_page('sent', offset, limit)
+
+
+@picker_router.get("/history", response_model=PickupsRead)
+async def pickup_history(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)):
+    return await pickup_page('received', offset, limit)
+
+
+async def pickup_get(session, purchase_id):
+    p = await service.purchase_get(session, purchase_id)
+    if p.status not in ('sent', 'received'):
+        service.fail('Pickup not found', 404)
+    return p, await session.get(BuyingSupplier, p.supplier_id)
+
+
+@picker_router.get("/pickups/{purchase_id}", response_model=PickupRead)
+async def pickup_detail(purchase_id: int):
+    async with async_session() as session:
+        return pickup_view(*await pickup_get(session, purchase_id))
+
+
+@picker_router.post("/pickups/{purchase_id}/received", response_model=PickupRead)
+async def pickup_received(purchase_id: int, user: dict = Depends(session_access)):
+    async with async_session() as session, session.begin():
+        await service.lock(session)
+        _, config = await pickup_get(session, purchase_id)
+        p = await service.receive(session, purchase_id, user)
+        await session.flush()
+        await session.refresh(p)
+        return pickup_view(p, config)
+
+
+@router.get('/settings/status')
+async def integration_status() -> dict:
+    import os
+    from app.models.buying import IntegrationHealth
+    from app.bot.manager_group import validate_group_config
+    try:
+        mode = validate_group_config()
+        telegram = 'configured' if mode == 'group' and os.getenv('TELEGRAM_BOT_TOKEN') else 'not_configured'
+    except ValueError:
+        telegram = 'invalid_configuration'
+    async with async_session() as session:
+        health = await session.get(IntegrationHealth, 'gmail')
+        gmail = {'status': 'unknown'}
+        if health:
+            fresh = service.now().timestamp() - health.checked_at.timestamp() < max(180, health.retry_after_seconds + 120)
+            gmail = dict(status=health.status if fresh else 'worker_stale', checked_at=health.checked_at,
+                         reauth_required=health.status == 'reauth_required')
+        quote = await session.scalar(select(SupplierOffer).where(SupplierOffer.currency_code == 'USD', SupplierOffer.current_fx_rate_to_rub.is_not(None)).order_by(SupplierOffer.fx_rate_date.desc()).limit(1))
+        fx = dict(status='no_cached_rate', rate=None, updated_at=None, source=None)
+        if quote:
+            fx = dict(status='cached', rate=str(quote.current_fx_rate_to_rub), updated_at=quote.fx_rate_date, source=quote.fx_source)
+        return dict(gmail=gmail, moysklad=dict(status='configured' if os.getenv('MOYSKLAD_TOKEN') else 'not_configured', writes_enabled=False),
+                    telegram=dict(status=telegram), fx=fx, supplier_email=dict(status='disabled'))

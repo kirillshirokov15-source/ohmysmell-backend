@@ -1,6 +1,46 @@
 ﻿# OhMySmell — internal readiness completed
 
-## Current Buying staging checkpoint — 2026-09-23
+## Buying roles / Sites readiness — 2026-09-25
+
+Branch: `feature/sales-core-v2`. Additive migration head: `n37b9421fa54`.
+Fresh PostgreSQL migration, existing staging upgrade, current and check passed.
+Local suite: 406 passed, 22 skipped, 7 subtests (the added PostgreSQL role test is
+opt-in). PostgreSQL: 21 regression tests passed, plus the new concurrent
+authenticated picker/receiving audit test passed. OSV: 58 packages, no findings.
+
+Manager/picker accounts enforce permissions server-side; no shared-password bypass.
+Picker uses separate response schemas and only pickup list/detail/history/received.
+First receiving account ID, role, username and timestamp persist with one audit event.
+Shared cart, snapshots, XLSX and existing procurement behavior remain intact.
+Two staging accounts exist: `buying_manager` (manager), `buying_picker` (picker).
+Passwords were not printed; Windows-only bootstrap material is DPAPI-encrypted
+in an ignored local artifact. Choose human login passwords with the hidden CLI prompt
+and `--replace`, as documented in [BUYING_ROLES.md](BUYING_ROLES.md).
+
+Exact Buying CORS origin is configured on staging:
+`https://ohmysmell-buying.christiankvyatkovsky.chatgpt.site`.
+Non-Buying/Tilda origins retain their prior policy. Frontend reference covers all
+32 endpoints with requests, responses, roles and errors: [BUYING_API.md](BUYING_API.md).
+OpenAPI has the new auth/picker schemas and explicit binary XLSX body.
+
+Readonly Gmail smoke still returns `reauth_required`. No interactive OAuth was run.
+Worker now serves liveness separately from readiness, publishes a sanitized heartbeat,
+backs off 15 minutes on invalid_grant and suppresses repeated same-category errors.
+Recovery and secret-only staging token deployment: [GMAIL_RECOVERY.md](GMAIL_RECOVERY.md).
+Manager-only `GET /buying/settings/status` exposes worker/configuration/cached FX
+status without tokens or provider errors; picker gets 403.
+
+Telegram startup validates explicit group mode. Missing staging values:
+`MANAGER_TELEGRAM_CHAT_ID`, `MANAGER_TELEGRAM_USER_IDS`; private mode is preserved.
+Received group events include supplier and actual Buying username. No group event
+was sent during this sprint. Existing durable delivery is at-least-once across the
+Telegram-accepted/DB-commit crash window; normal replay does not duplicate events.
+
+External write and supplier-send flags remain false across all staging services.
+No real supplier email, MoySklad write, payment, production or main change occurred.
+Staging deployment/HTTP acceptance results are recorded below after deployment.
+
+## Historical Buying staging checkpoint — 2026-09-23
 
 Implementation: `fa298d50ae18ba527003d765b734f87153d79e81` on
 `feature/sales-core-v2`; migration head `m26a8310ef43`. Full local validation:

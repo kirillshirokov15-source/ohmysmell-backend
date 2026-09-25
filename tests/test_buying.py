@@ -51,24 +51,31 @@ def workspace(tmp_path, monkeypatch):
             await connection.run_sync(Base.metadata.create_all)
     asyncio.run(setup())
     factory = async_sessionmaker(engine, expire_on_commit=False)
+    from app.models.buying import BuyingUser
+    from app.services.buying_passwords import hash_password
+    async def seed():
+        async with factory() as s, s.begin():
+            for role in ('manager', 'picker'):
+                s.add(BuyingUser(username=role, role=role, password_hash=hash_password('synthetic-password-only')))
+    asyncio.run(seed())
     monkeypatch.setattr(api, 'async_session', factory)
     # SQLite verifies persistence/atomicity; PostgreSQL tests exercise real locks.
     monkeypatch.setattr(service, 'transaction_lock', AsyncMock())
-    monkeypatch.setattr(settings, 'buying_shared_password', 'synthetic-password-only')
     monkeypatch.setattr(settings, 'buying_session_secret', 'synthetic-session-secret-for-tests-only')
     monkeypatch.setattr(settings, 'environment', 'staging')
     api.attempts.clear()
     app = FastAPI()
     app.include_router(api.auth_router)
     app.include_router(api.router)
+    app.include_router(api.picker_router)
     client = TestClient(app)
     yield client, factory, engine
     client.close()
     asyncio.run(engine.dispose())
 
 
-def login(client):
-    response = client.post('/buying/auth/login', json={'password':'synthetic-password-only'})
+def login(client, username='manager'):
+    response = client.post('/buying/auth/login', json={'username': username, 'password':'synthetic-password-only'})
     assert response.status_code == 200, response.text
     client.headers['Authorization'] = 'Bearer '+response.json()['access_token']
     return response.json()
@@ -94,24 +101,24 @@ def confirm(client, sid, data):
 def test_auth_revocation_and_rotation(workspace, monkeypatch):
     c,_,_ = workspace
     assert c.get('/buying/catalog').status_code == 401
-    assert c.post('/buying/auth/login',json={'password':'wrong'}).status_code == 401
+    assert c.post('/buying/auth/login',json={'username':'manager','password':'wrong'}).status_code == 401
     result = login(c)
     assert result['expires_in'] == 28800
     assert c.get('/buying/catalog').headers['cache-control'] == 'no-store'
     assert c.post('/buying/auth/logout').status_code == 200
     assert c.get('/buying/cart').status_code == 401
     login(c)
-    monkeypatch.setattr(settings, 'buying_shared_password','rotated-password-for-test')
+    monkeypatch.setattr(settings, 'buying_session_secret','rotated-session-secret-long-enough-for-test')
     assert c.get('/buying/cart').status_code == 401
 
 
 def test_auth_fail_closed_and_rate_limit(workspace, monkeypatch):
     c,_,_ = workspace
     for _ in range(30):
-        assert c.post('/buying/auth/login',json={'password':'wrong'}).status_code == 401
-    assert c.post('/buying/auth/login',json={'password':'wrong'}).status_code == 429
+        assert c.post('/buying/auth/login',json={'username':'manager','password':'wrong'}).status_code == 401
+    assert c.post('/buying/auth/login',json={'username':'manager','password':'wrong'}).status_code == 429
     monkeypatch.setattr(settings,'buying_session_secret','')
-    assert c.post('/buying/auth/login',json={'password':'wrong'}).status_code == 503
+    assert c.post('/buying/auth/login',json={'username':'manager','password':'wrong'}).status_code == 503
 
 
 @pytest.mark.parametrize('qty',[0,-1,True,1.5,'2',100001])

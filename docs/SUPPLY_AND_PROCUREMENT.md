@@ -152,3 +152,13 @@ the fake receipt adapter in this slice. All suppliers belong to the same logical
 warehouse “Внешние поставщики”.
 
 See [Buying API](BUYING_API.md) for frontend contract and explicit live-write limitations.
+
+## Buying roles and pickup audit (2026-09-25)
+
+Buying now authenticates database accounts with manager/picker roles, not a shared
+password. See [BUYING_ROLES.md](BUYING_ROLES.md) and the complete
+[BUYING_API.md](BUYING_API.md). Receiving persists the first user ID, role, username
+and time with one durable audit event. Replays preserve that actor. Existing old
+received purchases retain null actor fields. Suppliers may have shared pickup
+address, phone and notes; pickup responses exclude all procurement prices/currency.
+All real email/MoySklad write guards remain disabled; fake hooks are unchanged.

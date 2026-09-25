@@ -11,6 +11,24 @@ def allowed_users():
     return {int(v.strip()) for v in os.getenv("MANAGER_TELEGRAM_USER_IDS", "").split(",") if v.strip()}
 
 
+def validate_group_config():
+    mode = os.getenv('MANAGER_TELEGRAM_MODE', 'auto')
+    if mode not in ('auto', 'private', 'group'):
+        raise ValueError('MANAGER_TELEGRAM_MODE must be auto, private or group')
+    try:
+        chat, users = group_id(), allowed_users()
+    except ValueError:
+        raise ValueError('Telegram chat/user IDs must be integers') from None
+    if mode == 'private' and (chat is not None or users):
+        raise ValueError('Private mode cannot contain group configuration')
+    if mode == 'group' or chat is not None or users:
+        if chat is None or chat >= 0:
+            raise ValueError('Group mode requires a negative MANAGER_TELEGRAM_CHAT_ID')
+        if not users or any(user <= 0 for user in users):
+            raise ValueError('Group mode requires positive MANAGER_TELEGRAM_USER_IDS')
+    return 'group' if chat is not None else 'private'
+
+
 def allowed_event(event, callback=False):
     message = event.message if callback else event
     chat = getattr(message, "chat", None)

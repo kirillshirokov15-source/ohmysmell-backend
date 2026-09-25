@@ -10,6 +10,9 @@ from dotenv import dotenv_values
 def main():
     files = subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard"], text=True).splitlines()
     private = []
+    if __import__('os').name == 'nt' and Path('.staging-artifacts/buying-accounts.dpapi').exists():
+        from scripts.buying_staging_accounts import accounts
+        private.extend(value['password'] for value in accounts().values())
     environment = dotenv_values(".env")
     for key, value in environment.items():
         if value and any(word in key for word in ("TOKEN", "SECRET", "PASSWORD")) and len(value) >= 12:

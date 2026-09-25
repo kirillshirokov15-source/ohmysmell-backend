@@ -30,7 +30,8 @@ def main():
             if response.status_code!=200:
                 raise RuntimeError(f'Staging HTTP {response.status_code} at {path.split("?")[0]}')
             return response.json()
-        login=request('POST','/auth/login',json={'password':os.environ['BUYING_SHARED_PASSWORD']})
+        from scripts.buying_staging_accounts import accounts
+        login=request('POST','/auth/login',json=accounts()['manager'])
         http.headers['Authorization']='Bearer '+login['access_token']
         if verify:
             state=json.loads(ARTIFACT.read_text(encoding='utf-8'))
