@@ -1,3 +1,4 @@
+"""Deprecated CUSTOMER-only alias; prefer app.scripts.customer_gmail_oauth."""
 from app.config.settings import settings
 from app.integrations.email.gmail_auth import load_gmail_credentials
 

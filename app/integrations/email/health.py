@@ -9,7 +9,13 @@ class EmailDatabaseUnavailable(RuntimeError):
     pass
 
 
+class MailboxNotConfigured(ValueError):
+    pass
+
+
 def classify(error):
+    if isinstance(error, MailboxNotConfigured):
+        return 'not_configured'
     if isinstance(error, RefreshError):
         # Inspect provider detail locally; never return/log its contents.
         return 'reauth_required' if 'invalid_grant' in str(error) else 'bad_credentials'
@@ -27,6 +33,6 @@ def classify(error):
 
 
 def retry_delay(status, failures, interval):
-    if status in ('reauth_required', 'bad_credentials'):
+    if status in ('reauth_required', 'bad_credentials', 'not_configured'):
         return max(interval, 900)
     return min(900, max(interval, 5) * 2 ** min(max(failures-1, 0), 5))

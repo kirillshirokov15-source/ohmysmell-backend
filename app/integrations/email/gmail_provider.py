@@ -64,6 +64,7 @@ class ReadOnlyHttp:
 
 
 class GmailEmailProvider:
+    mailbox_role = 'customer'
     def __init__(self, service=None, *, allowed_message_ids=None, order_query=None) -> None:
         self.service = service
         self._query_acknowledged = set()
@@ -80,6 +81,8 @@ class GmailEmailProvider:
         if self.service is None:
             self.service = self._build_service()
         account = self.service.users().getProfile(userId=settings.gmail_user_id).execute()["emailAddress"].strip().casefold()
+        from app.integrations.email.mailboxes import verify_identity
+        verify_identity('customer', {'emailAddress': account})
         scope = account + "\n" + (",".join(self.allowed_message_ids) or "inbox:" + settings.gmail_initial_query)
         if self.order_query:
             scope += "\norder-query:" + self.order_query
@@ -94,6 +97,9 @@ class GmailEmailProvider:
         if self.service is None:
             self.service = self._build_service()
         service = self.service
+        from app.integrations.email.mailboxes import expected_email, verify_identity
+        if expected_email('customer') or expected_email('supplier'):
+            verify_identity('customer', service.users().getProfile(userId=settings.gmail_user_id).execute())
         if cursor:
             try:
                 message_ids, next_cursor = self._message_ids_from_history(
@@ -166,6 +172,8 @@ class GmailEmailProvider:
         profile = service.users().getProfile(
             userId=settings.gmail_user_id
         ).execute()
+        from app.integrations.email.mailboxes import verify_identity
+        verify_identity('customer', profile)
         response = service.users().messages().list(
             userId=settings.gmail_user_id,
             labelIds=["INBOX"],

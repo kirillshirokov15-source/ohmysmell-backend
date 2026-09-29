@@ -61,9 +61,10 @@ class Settings:
             "MOYSKLAD_RETAIL_PRICE_TYPE",
             "",
         )
-    gmail_credentials_file: str = os.getenv("GMAIL_CREDENTIALS_FILE", "")
-    gmail_token_file: str = os.getenv("GMAIL_TOKEN_FILE", "")
-    gmail_user_id: str = os.getenv("GMAIL_USER_ID", "me")
+    # Compatibility attributes belong exclusively to CUSTOMER Gmail.
+    gmail_credentials_file: str = os.getenv("CUSTOMER_GMAIL_CREDENTIALS_FILE", os.getenv("GMAIL_CREDENTIALS_FILE", ""))
+    gmail_token_file: str = os.getenv("CUSTOMER_GMAIL_TOKEN_FILE", os.getenv("GMAIL_TOKEN_FILE", ""))
+    gmail_user_id: str = os.getenv("CUSTOMER_GMAIL_USER_ID", os.getenv("GMAIL_USER_ID", "me"))
     gmail_initial_query: str = os.getenv(
         "GMAIL_INITIAL_QUERY", "label:inbox is:unread"
     )

@@ -244,13 +244,16 @@ async def receive(session, identifier, actor):
     return p
 
 
-async def ingest_reply(session, *, message_id, thread_id, sender, received_at, subject, body, attachments=None):
+async def ingest_reply(session, *, message_id, thread_id, sender, received_at, subject, body, attachments=None, mailbox_account=None):
     """Provider entry point: only exact purchase thread AND supplier sender match."""
     await lock(session)
     existing = await session.get(BuyingReply, message_id)
     if existing:
         return existing
-    pairs = (await session.execute(select(BuyingPurchase, Supplier).join(Supplier).where(BuyingPurchase.thread_id == thread_id))).all()
+    query = select(BuyingPurchase, Supplier).join(Supplier).where(BuyingPurchase.thread_id == thread_id)
+    if mailbox_account is not None:
+        query = query.where(BuyingPurchase.supplier_mailbox_account == mailbox_account)
+    pairs = (await session.execute(query)).all()
     matches = [(p,s) for p,s in pairs if s.email and s.email.casefold() == sender.casefold() and message_id != p.message_id]
     if len(matches) != 1:
         return None

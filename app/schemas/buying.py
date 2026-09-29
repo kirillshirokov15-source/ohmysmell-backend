@@ -16,6 +16,20 @@ class BuyingLoginRead(BaseModel):
     expires_in: int
 
 
+class GmailStatusRead(BaseModel):
+    status: Literal['connected', 'reauth_required', 'not_configured', 'error']
+    checked_at: datetime | None
+
+
+class BuyingIntegrationsRead(BaseModel):
+    customer_gmail: GmailStatusRead
+    supplier_gmail: GmailStatusRead
+    moysklad: dict
+    telegram: dict
+    fx: dict
+    supplier_email: dict
+
+
 class OfferRead(BaseModel):
     id: int
     product_id: str

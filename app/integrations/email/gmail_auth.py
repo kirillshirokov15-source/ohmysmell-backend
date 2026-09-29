@@ -9,29 +9,31 @@ GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 GMAIL_SCOPES = (GMAIL_READONLY_SCOPE,)
 
 
-def validate_token_scopes(data):
+def validate_token_scopes(data, scopes=GMAIL_SCOPES):
     if not isinstance(data, dict):
         raise ValueError("Invalid Gmail token document")
-    scopes = data.get("scopes", [])
-    if isinstance(scopes, str):
-        scopes = scopes.split()
-    if not isinstance(scopes, list) or set(scopes) != set(GMAIL_SCOPES):
-        raise ValueError("Gmail token must grant exactly gmail.readonly")
+    granted = data.get("scopes", [])
+    if isinstance(granted, str):
+        granted = granted.split()
+    if not isinstance(granted, list) or set(granted) != set(scopes):
+        raise ValueError("Gmail token must grant exactly gmail.readonly" if tuple(scopes) == GMAIL_SCOPES else "Supplier Gmail token must grant exactly gmail.readonly and gmail.send")
 
 
-def load_gmail_credentials(*, allow_interactive: bool = False):
+def load_gmail_credentials(*, allow_interactive: bool = False, mailbox_role='customer'):
     """Load/refresh Gmail credentials, optionally running desktop OAuth once."""
     from google.auth.transport.requests import Request
     from app.integrations.http_tls import verified_session
     from google.oauth2.credentials import Credentials
 
-    token_path = _configured_path(settings.gmail_token_file, "GMAIL_TOKEN_FILE")
+    from app.integrations.email.mailboxes import mailbox
+    config = mailbox(mailbox_role)
+    token_path = _configured_path(config.token_file, config.prefix + '_TOKEN_FILE')
 
     credentials = None
     if token_path.exists():
-        validate_token_scopes(json.loads(token_path.read_text(encoding="utf-8-sig")))
+        validate_token_scopes(json.loads(token_path.read_text(encoding="utf-8-sig")), config.scopes)
         credentials = Credentials.from_authorized_user_file(
-            str(token_path), GMAIL_SCOPES
+            str(token_path), config.scopes
         )
 
     changed = False
@@ -61,12 +63,12 @@ def load_gmail_credentials(*, allow_interactive: bool = False):
         from google_auth_oauthlib.flow import InstalledAppFlow
 
         credentials_path = _configured_path(
-            settings.gmail_credentials_file, "GMAIL_CREDENTIALS_FILE"
+            config.credentials_file, config.prefix + '_CREDENTIALS_FILE'
         )
         if not credentials_path.is_file():
             raise RuntimeError("GMAIL_CREDENTIALS_FILE does not exist")
         flow = InstalledAppFlow.from_client_secrets_file(
-            str(credentials_path), GMAIL_SCOPES
+            str(credentials_path), config.scopes
         )
         credentials = flow.run_local_server(port=0)
         changed = True
@@ -78,7 +80,8 @@ def load_gmail_credentials(*, allow_interactive: bool = False):
 
 def _configured_path(value: str, variable_name: str) -> Path:
     if not value:
-        raise RuntimeError(f"{variable_name} is not configured")
+        from app.integrations.email.health import MailboxNotConfigured
+        raise MailboxNotConfigured(f"{variable_name} is not configured")
     return Path(value).expanduser()
 
 

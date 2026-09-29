@@ -21,6 +21,8 @@ class EmailIngestionWorker:
         provider_name: str = "gmail",
     ) -> None:
         self.provider = provider or GmailEmailProvider()
+        if getattr(self.provider, 'mailbox_role', 'customer') != 'customer':
+            raise ValueError('Wholesale intake accepts CUSTOMER Gmail only')
         self.pipeline = pipeline or DraftOrderService()
         self.cursor_repository = cursor_repository or EmailCursorRepository()
         self.provider_name = provider_name

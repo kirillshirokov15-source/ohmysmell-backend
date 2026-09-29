@@ -94,6 +94,7 @@ def test_buying_group_events_delivered_once(workspace,monkeypatch):
 
 
 def test_supplier_readonly_poller_any_reply_including_archived(workspace,monkeypatch):
+    monkeypatch.setenv('SUPPLIER_GMAIL_EXPECTED_EMAIL','procurement@example.invalid')
     _,factory,_=workspace
     from app.workers import supplier_replies as worker
     from app.models.buying import BuyingPurchase,BuyingReply
@@ -111,11 +112,15 @@ def test_supplier_readonly_poller_any_reply_including_archived(workspace,monkeyp
             assert kw['id']=='real-linked-thread' and kw['format']=='full'
             return self
         def execute(self):return raw
-    poller=worker.SupplierReplyPoller(GmailEmailProvider(service=ThreadAPI()))
+    from app.integrations.email.supplier_gmail import SupplierGmailProvider
+    poller=worker.SupplierReplyPoller(SupplierGmailProvider(service=ThreadAPI()))
     async def run():
         async with factory() as s,s.begin():
             supplier=Supplier(name='SYNTHETIC',email='supplier@example.invalid',supplier_type='external_wholesaler');s.add(supplier);await s.flush()
-            s.add(BuyingPurchase(supplier_id=supplier.id,snapshot={},status='sent',send_state='sent',thread_id='real-linked-thread',message_id='outbound',external_ids={}))
+            s.add(BuyingPurchase(supplier_id=supplier.id,snapshot={},status='sent',send_state='sent',thread_id='real-linked-thread',supplier_mailbox_account='procurement@example.invalid',message_id='outbound',external_ids={}))
+            # Legacy/customer and another supplier account's threads must never be fetched.
+            for account in (None, 'other-mailbox@example.invalid'):
+                s.add(BuyingPurchase(supplier_id=supplier.id,snapshot={},status='sent',send_state='sent',thread_id='forbidden-thread',supplier_mailbox_account=account,external_ids={}))
         assert await poller.run_once()==1
         assert await poller.run_once()==0
         assert await poller.run_once()==1

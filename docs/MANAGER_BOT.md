@@ -110,3 +110,10 @@ The notifier accepts event labels for future email_sent/procurement_error events
 Delivery remains at-least-once across a crash after Telegram accepts a message but
 before DB commit; event IDs let operators recognize that narrow retry window.
 Normal successful delivery and repeated received actions produce no duplicates.
+
+## Supplier mailbox isolation — 2026-09-29
+
+Supplier replies originate only from the separate supplier-email worker, never
+from CUSTOMER Gmail. The manager notifier still delivers the same durable Buying
+reply events and does not run another Gmail or Telegram intake loop. See
+[GMAIL_MAILBOXES.md](GMAIL_MAILBOXES.md) for the two service/env configurations.

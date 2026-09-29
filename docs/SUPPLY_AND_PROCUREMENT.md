@@ -162,3 +162,12 @@ and time with one durable audit event. Replays preserve that actor. Existing old
 received purchases retain null actor fields. Suppliers may have shared pickup
 address, phone and notes; pickup responses exclude all procurement prices/currency.
 All real email/MoySklad write guards remain disabled; fake hooks are unchanged.
+
+## Procurement Gmail account binding — 2026-09-29
+
+Migration o48ca532ab65 adds an internal supplier_mailbox_account field to purchases.
+Only threads bound to the verified SUPPLIER address are eligible for polling.
+Existing unbound references are quarantined; fake IDs stay excluded. Future live
+sending must persist the verified account alongside Gmail message/thread IDs.
+Customer token/scopes/runtime are never used for supplier sending or reply reads.
+No outbound behavior or procurement-cost snapshot changes are enabled here.

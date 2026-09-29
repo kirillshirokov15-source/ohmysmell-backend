@@ -107,6 +107,7 @@ class BuyingPurchase(Timestamps, Base):
     send_state: Mapped[str] = mapped_column(String(20))
     message_id: Mapped[str | None] = mapped_column(String(255), unique=True)
     thread_id: Mapped[str | None] = mapped_column(String(255), index=True)
+    supplier_mailbox_account: Mapped[str | None] = mapped_column(String(320))
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     received_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("buying_users.id"))

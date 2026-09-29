@@ -21,11 +21,17 @@ class FakeSupplierEmailSender:
 
 
 class DisabledGmailSupplierSender:
+    def __init__(self, provider=None):
+        from app.integrations.email.supplier_gmail import SupplierGmailProvider
+        if provider is not None and not isinstance(provider, SupplierGmailProvider):
+            raise ValueError('Supplier sending accepts SUPPLIER Gmail only')
+        self.provider = provider or SupplierGmailProvider()
+
     async def send(self, *, key, recipient, body):
         if not settings.external_writes_enabled or not settings.supplier_email_send_enabled:
             raise ValueError("Supplier email sending is disabled")
         # A live implementation must reconcile uncertain outcomes before retrying.
-        raise ValueError("Separate supplier OAuth and reconciliation adapter required")
+        raise ValueError("SUPPLIER Gmail reconciliation adapter required before live sending")
 
 
 class ProcurementAdapter(Protocol):

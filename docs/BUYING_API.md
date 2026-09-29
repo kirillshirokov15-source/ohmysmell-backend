@@ -953,10 +953,13 @@ Request: none (no body).
 Response JSON (200):
 ```json
 {
-  "gmail": {
+  "customer_gmail": {
     "status": "reauth_required",
-    "checked_at": "2026-09-25T12:00:00Z",
-    "reauth_required": true
+    "checked_at": "2026-09-25T12:00:00Z"
+  },
+  "supplier_gmail": {
+    "status": "not_configured",
+    "checked_at": null
   },
   "moysklad": {
     "status": "configured",
@@ -977,7 +980,7 @@ Response JSON (200):
 }
 ```
 
-Error status codes: 401, 403, 422, 503. Gmail is worker heartbeat: connected, reauth_required, bad_credentials, network_unavailable, database_unavailable, worker_error, worker_stale or unknown. Stale heartbeat is not healthy. MoySklad configured means credentials present, not a live probe; Telegram configured means validated group configuration. FX cached is not a live quote; display date. No provider call is triggered by Settings.
+Error status codes: 401, 403, 422, 503. Two independent Gmail worker heartbeats: connected, reauth_required, not_configured or error. Missing worker configuration is not_configured; stale heartbeat/provider failure is error. No shared gmail field. Customer readonly and supplier readonly+send tokens are isolated; send remains disabled. MoySklad configured means credentials present, not a live probe; Telegram configured means validated group configuration. FX cached is not a live quote; display date. No provider call is triggered by Settings.
 
 
 ## GET /buying/picker/pickups

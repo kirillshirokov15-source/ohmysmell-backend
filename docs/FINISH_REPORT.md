@@ -1,6 +1,37 @@
 ﻿# OhMySmell — internal readiness completed
 
-## Buying roles / Sites readiness — 2026-09-25
+## Separate Gmail mailboxes — 2026-09-29
+
+CUSTOMER and SUPPLIER Gmail now have separate configuration, exact scope policies,
+providers, process entrypoints, ownership locks and heartbeat rows. Customer keeps
+the existing wholesale cursor/selector/idempotency. Supplier has no customer intake
+method and cannot be passed to EmailIngestionWorker. The supplier sender and reply
+poller reject customer providers. Customer is readonly only; supplier is readonly
+plus send, never modify. Real sending remains disabled/fail-closed.
+
+Additive migration `o48ca532ab65` binds live purchase threads to a supplier account.
+Fresh migration, existing staging upgrade, Alembic current/check passed; unbound
+legacy threads remain quarantined. PostgreSQL regression: 22 passed without
+infrastructure exceptions. Local validation: 419 passed, 22 skipped,
+7 subtests. Compileall, pip check, diff/secret scan and OSV (58 packages) passed.
+Independent mailbox smoke: CUSTOMER `reauth_required`; SUPPLIER `not_configured`.
+No browser consent or real email was attempted. Customer staging secrets were
+copied to explicit CUSTOMER keys without changing token contents or scopes.
+
+Settings now exposes `customer_gmail` and `supplier_gmail`, each independently
+connected / reauth_required / not_configured / error, with checked_at. The generic
+gmail field is removed. Frontend/OpenAPI contract has been updated.
+
+The existing staging email service is CUSTOMER-only. A separate supplier service
+is required; its executable runtime and `railway.supplier-email.staging.toml` are
+prepared, but no supplier Railway service has been created or credentials copied.
+Use staging only, feature/sales-core-v2, and populate supplier JSON secrets after
+explicit owner OAuth. No production/main or real MoySklad writes occurred.
+
+Exact four OAuth/smoke commands, Railway variables, identity checks, token upload
+and worker startup: [GMAIL_MAILBOXES.md](GMAIL_MAILBOXES.md).
+
+## Buying roles / Sites readiness — 2026-09-25 (historical checkpoint)
 
 Branch: `feature/sales-core-v2`. Additive migration head: `n37b9421fa54`.
 Fresh PostgreSQL migration, existing staging upgrade, current and check passed.
@@ -38,7 +69,11 @@ Telegram-accepted/DB-commit crash window; normal replay does not duplicate event
 
 External write and supplier-send flags remain false across all staging services.
 No real supplier email, MoySklad write, payment, production or main change occurred.
-Staging deployment/HTTP acceptance results are recorded below after deployment.
+Checkpoint c2dfcb27cf9f738aeb7006b83d8c828d52820695 deployed successfully to backend
+and email staging. HTTP Sites preflight and manager/picker login → me → endpoint →
+logout passed; picker access restrictions, receiving actor and replay audit passed.
+Observed HTTPS round trips: login 409–640 ms, catalog 410 ms, purchase detail 307 ms,
+pickup list 283 ms. Email process was live with reauth_required, not functionally ready.
 
 ## Historical Buying staging checkpoint — 2026-09-23
 

@@ -4710,9 +4710,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "type": "object",
-                  "title": "Response Integration Status Buying Settings Status Get"
+                  "$ref": "#/components/schemas/BuyingIntegrationsRead"
                 }
               }
             }
@@ -9025,6 +9023,46 @@
         ],
         "title": "ApiError"
       },
+      "BuyingIntegrationsRead": {
+        "properties": {
+          "customer_gmail": {
+            "$ref": "#/components/schemas/GmailStatusRead"
+          },
+          "supplier_gmail": {
+            "$ref": "#/components/schemas/GmailStatusRead"
+          },
+          "moysklad": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Moysklad"
+          },
+          "telegram": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Telegram"
+          },
+          "fx": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Fx"
+          },
+          "supplier_email": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Supplier Email"
+          }
+        },
+        "type": "object",
+        "required": [
+          "customer_gmail",
+          "supplier_gmail",
+          "moysklad",
+          "telegram",
+          "fx",
+          "supplier_email"
+        ],
+        "title": "BuyingIntegrationsRead"
+      },
       "BuyingLoginRead": {
         "properties": {
           "access_token": {
@@ -9810,6 +9848,38 @@
           "type"
         ],
         "title": "ErrorField"
+      },
+      "GmailStatusRead": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "connected",
+              "reauth_required",
+              "not_configured",
+              "error"
+            ],
+            "title": "Status"
+          },
+          "checked_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "checked_at"
+        ],
+        "title": "GmailStatusRead"
       },
       "ImportConfirm": {
         "properties": {

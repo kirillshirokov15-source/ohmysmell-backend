@@ -504,7 +504,10 @@ async def pickup_received(purchase_id: int, user: dict = Depends(session_access)
         return pickup_view(p, config)
 
 
-@router.get('/settings/status')
+from app.schemas.buying import BuyingIntegrationsRead
+
+
+@router.get('/settings/status', response_model=BuyingIntegrationsRead)
 async def integration_status() -> dict:
     import os
     from app.models.buying import IntegrationHealth
@@ -515,15 +518,19 @@ async def integration_status() -> dict:
     except ValueError:
         telegram = 'invalid_configuration'
     async with async_session() as session:
-        health = await session.get(IntegrationHealth, 'gmail')
-        gmail = {'status': 'unknown'}
-        if health:
-            fresh = service.now().timestamp() - health.checked_at.timestamp() < max(180, health.retry_after_seconds + 120)
-            gmail = dict(status=health.status if fresh else 'worker_stale', checked_at=health.checked_at,
-                         reauth_required=health.status == 'reauth_required')
+        gmail = {}
+        for name in ('customer_gmail', 'supplier_gmail'):
+            health = await session.get(IntegrationHealth, name)
+            status = 'not_configured'
+            if health:
+                from datetime import timezone
+                checked = health.checked_at if health.checked_at.tzinfo else health.checked_at.replace(tzinfo=timezone.utc)
+                fresh = service.now().timestamp() - checked.timestamp() < max(180, health.retry_after_seconds + 120)
+                status = health.status if fresh and health.status in ('connected','reauth_required','not_configured') else 'error'
+            gmail[name] = dict(status=status, checked_at=health.checked_at if health else None)
         quote = await session.scalar(select(SupplierOffer).where(SupplierOffer.currency_code == 'USD', SupplierOffer.current_fx_rate_to_rub.is_not(None)).order_by(SupplierOffer.fx_rate_date.desc()).limit(1))
         fx = dict(status='no_cached_rate', rate=None, updated_at=None, source=None)
         if quote:
             fx = dict(status='cached', rate=str(quote.current_fx_rate_to_rub), updated_at=quote.fx_rate_date, source=quote.fx_source)
-        return dict(gmail=gmail, moysklad=dict(status='configured' if os.getenv('MOYSKLAD_TOKEN') else 'not_configured', writes_enabled=False),
+        return dict(**gmail, moysklad=dict(status='configured' if os.getenv('MOYSKLAD_TOKEN') else 'not_configured', writes_enabled=False),
                     telegram=dict(status=telegram), fx=fx, supplier_email=dict(status='disabled'))

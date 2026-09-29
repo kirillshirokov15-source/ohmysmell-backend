@@ -210,8 +210,8 @@ and implement durable sending/unknown/reconciled states before enabling live sen
 A deterministic Message-ID alone does not guarantee exactly-once Gmail delivery.
 After a send timeout, reconcile remotely before retrying; never blindly resend.
 
-`SUPPLIER_REPLIES_ENABLED=true` enables readonly polling of linked real Gmail thread
-IDs in the existing email worker. Fake threads are excluded; customer allowed-message
+Supplier replies now run only in `app.workers.supplier_email_runtime`; the customer
+worker ignores `SUPPLIER_REPLIES_ENABLED`. Fake/unbound threads are excluded; customer allowed-message
 selectors and mass-intake activation remain unchanged. Every matching sender reply
 is saved without attempting supplier confirmation semantics. Received HTML is converted
 to text; attachment metadata only is retained. Unique Gmail message IDs deduplicate.
@@ -246,3 +246,12 @@ still needs mailbox-owner consent; this sprint does not perform browser OAuth.
 Buying settings expose sanitized worker heartbeat/configuration/cached FX status.
 `BUYING_ALLOWED_ORIGINS` applies only to Buying; the exact Sites origin is documented
 in [BUYING_API.md](BUYING_API.md). Both external-write flags remain false.
+
+## Two independent Gmail accounts — 2026-09-29
+
+The previous shared-runtime supplier reply description is superseded by
+[GMAIL_MAILBOXES.md](GMAIL_MAILBOXES.md). CUSTOMER Gmail remains readonly and owns
+wholesale intake/cursors only. SUPPLIER Gmail has separate readonly+send credentials
+and a separate reply worker. No gmail.modify scope is allowed. Real send is still
+disabled, including during smoke tests. Settings exposes customer_gmail and
+supplier_gmail independently; the generic gmail field has been removed.

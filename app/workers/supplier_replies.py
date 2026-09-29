@@ -11,6 +11,10 @@ from app.config.settings import settings
 
 class SupplierReplyPoller:
     def __init__(self, provider):
+        if getattr(provider, 'mailbox_role', None) != 'supplier':
+            raise ValueError('Supplier replies require SUPPLIER Gmail only')
+        if not provider.account:
+            raise ValueError('Supplier mailbox identity must be configured')
         self.provider = provider
         self.after_id = 0
 
@@ -18,6 +22,7 @@ class SupplierReplyPoller:
         async with async_session() as session:
             rows = (await session.execute(select(BuyingPurchase.id, BuyingPurchase.thread_id).where(
                 BuyingPurchase.thread_id.is_not(None), ~BuyingPurchase.thread_id.like('fake-%'),
+                BuyingPurchase.supplier_mailbox_account == self.provider.account,
                 BuyingPurchase.id > self.after_id).order_by(BuyingPurchase.id).limit(50))).all()
         if not rows:
             self.after_id = 0
@@ -25,7 +30,7 @@ class SupplierReplyPoller:
         count = 0
         for pid, thread in rows:
             raw = await asyncio.to_thread(lambda: self.provider.service.users().threads().get(
-                userId=settings.gmail_user_id, id=thread, format='full').execute())
+                userId=self.provider.user_id, id=thread, format='full').execute())
             for message in raw.get('messages',[]):
                 payload = message.get('payload',{})
                 headers = {h['name'].casefold():h['value'] for h in payload.get('headers',[])}
@@ -41,6 +46,7 @@ class SupplierReplyPoller:
                 async with async_session() as session, session.begin():
                     reply = await ingest_reply(session,message_id=message['id'],thread_id=thread,
                         sender=parseaddr(headers.get('from',''))[1],
+                        mailbox_account=self.provider.account,
                         received_at=datetime.fromtimestamp(int(message.get('internalDate','0'))/1000,timezone.utc),
                         subject=headers.get('subject',''), body=self.provider._body_text(payload), attachments=attachments)
                     count += bool(reply)

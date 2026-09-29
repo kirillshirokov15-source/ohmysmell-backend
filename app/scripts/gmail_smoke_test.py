@@ -1,3 +1,4 @@
+"""Deprecated CUSTOMER-only alias; prefer app.scripts.customer_gmail_smoke_test."""
 from app.integrations.email.gmail_provider import GmailEmailProvider
 
 
