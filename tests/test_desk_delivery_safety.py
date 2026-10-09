@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import pytest
@@ -12,7 +13,7 @@ from app.bot.worker_errors import WorkerConfigurationError, startup_error_catego
 @pytest.fixture
 def restricted(monkeypatch):
     monkeypatch.setattr(settings, "environment", "staging")
-    for suffix in ("CLIENT_RECIPIENT_IDS", "MANAGER_CHAT_IDS", "MESSAGE_IDS", "DRAFT_IDS"):
+    for suffix in ("CLIENT_RECIPIENT_IDS", "MANAGER_CHAT_IDS", "MESSAGE_IDS", "DRAFT_IDS", "NOT_BEFORE"):
         monkeypatch.delenv("ORDER_DESK_STAGING_" + suffix, raising=False)
 
 
@@ -27,9 +28,10 @@ def test_destination_and_explicit_scope_are_both_required(restricted, monkeypatc
     monkeypatch.setenv("ORDER_DESK_STAGING_CLIENT_RECIPIENT_IDS", "898019732")
     monkeypatch.setenv("ORDER_DESK_STAGING_MESSAGE_IDS", "1")
     monkeypatch.setenv("ORDER_DESK_STAGING_DRAFT_IDS", "10")
+    monkeypatch.setenv("ORDER_DESK_STAGING_NOT_BEFORE", "2026-10-09T00:00:00Z")
     policy = DeskDeliveryPolicy.load("client")
     assert policy.permits(SimpleNamespace(id=1,draft_id=None,destination=898019732))
-    assert policy.permits(SimpleNamespace(id=2,draft_id=10,destination=898019732))
+    assert policy.permits(SimpleNamespace(id=2,draft_id=10,destination=898019732,created_at=datetime(2026,10,9,tzinfo=timezone.utc)))
     assert not policy.permits(SimpleNamespace(id=2,draft_id=None,destination=898019732))
     assert not policy.permits(SimpleNamespace(id=1,draft_id=10,destination=333))
     assert not DeskDeliveryPolicy.load("manager").permits(SimpleNamespace(id=1,draft_id=10,destination=-100123456))

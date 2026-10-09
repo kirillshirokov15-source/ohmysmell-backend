@@ -19,13 +19,15 @@ async def shipments_for(order_id):
 
 
 def order_card(order, shipments=()):
-    lines = [f"Заказ №{order.id}", f"Клиент: {order.customer_name}", f"Тип: {customer_type_label(order.customer_type)}",
+    from app.services.desk_status import stage_label
+    lines = [f"Заказ №{order.id}", f"Статус: {stage_label(None, None, order)}", f"Клиент: {order.customer_name}", f"Тип: {customer_type_label(order.customer_type)}",
         f"Email: {getattr(order, 'customer_email', None) or 'не указан'}",
         f"Телефон: {order.phone or 'не указан'}", f"Telegram: {order.telegram or 'не указан'}",
         f"Источник: {SOURCE_LABELS.get(order.source, order.source)}",
-        f"Контрагент: {order.counterparty_name or order.counterparty_id or 'не выбран'}",
         f"Сборка: {FULFILLMENT_LABELS[order.fulfillment_status]}", f"Оплата: {PAYMENT_LABELS[order.payment_status]}",
         f"Доставка: {DELIVERY_LABELS[order.delivery_method]} · {DELIVERY_STATUS[order.delivery_status]}"]
+    if not getattr(order, "manual_fulfillment", False):
+        lines.append(f"Контрагент: {order.counterparty_name or order.counterparty_id or 'не выбран'}")
     if order.delivery_reference:
         lines.append(f"Номер доставки: {order.delivery_reference}")
     if getattr(order, "assigned_manager_telegram_id", None):
@@ -49,7 +51,8 @@ def order_card(order, shipments=()):
         lines.append("Ручное выполнение: наличие, сборка и отгрузка подтверждаются менеджером."
             if getattr(order, "manual_fulfillment", False) else "Распределение по складам ещё не выполнено.")
     text = "\n".join(lines)
-    return text if len(text) <= 4000 else text[:3850] + f"\nВсе позиции и склады: /items {order.id}"
+    raw = text.encode("utf-16-le")
+    return text if len(raw) <= 8000 else raw[:7600].decode("utf-16-le", errors="ignore") + f"\nВсе позиции и склады: /items {order.id}"
 
 
 def order_keyboard(order, shipments=()):

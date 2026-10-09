@@ -3,6 +3,10 @@
 Актуальный staging go-live, ограничения адресатов и результаты повторного аудита:
 [ORDER_DESK_STAGING_GO_LIVE.md](ORDER_DESK_STAGING_GO_LIVE.md).
 
+Последующие локальные исправления статусов, Outbox и план обновления:
+[ORDER_DESK_HARDENING.md](ORDER_DESK_HARDENING.md). Контракт для разработчика сайта:
+[TILDA_INTEGRATION_HANDOFF.md](TILDA_INTEGRATION_HANDOFF.md).
+
 ## 1. Архитектура
 
 Используется существующий sales core: `InboundMessage(source=website)` →

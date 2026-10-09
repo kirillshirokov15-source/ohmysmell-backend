@@ -18,6 +18,16 @@ from app.bot.worker_errors import WorkerConfigurationError, startup_error_catego
 logger = logging.getLogger("app.bot.runtime")
 
 
+def worker_port():
+    try:
+        port = int(os.getenv("PORT", "8081"))
+        if not 1 <= port <= 65535:
+            raise ValueError()
+        return port
+    except ValueError:
+        raise WorkerConfigurationError("invalid_worker_port") from None
+
+
 def validate_worker(role):
     if role not in {"manager", "client"}:
         raise WorkerConfigurationError("invalid_worker_role")
@@ -44,6 +54,7 @@ def validate_worker(role):
         raise WorkerConfigurationError("client_worker_disabled")
     from app.services.desk_delivery_policy import DeskDeliveryPolicy
     DeskDeliveryPolicy.load(role)
+    worker_port()
     return token
 
 
@@ -120,7 +131,7 @@ async def run_worker(role="manager", *, drop_pending_updates=False):
     server = worker_health_app(state, failure)
     runner = web.AppRunner(server)
     await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8081"))).start()
+    await web.TCPSite(runner, "0.0.0.0", worker_port()).start()
     lock_key = int.from_bytes(hashlib.sha256(f"telegram-poller:{bot.id}".encode()).digest()[:8], "big", signed=True)
     tasks = []
     try:

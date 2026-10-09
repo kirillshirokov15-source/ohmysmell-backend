@@ -1,6 +1,7 @@
 """Durable Telegram sends. Unknown outcomes require explicit reconciliation."""
 import asyncio
 import logging
+import os
 from datetime import timedelta
 from sqlalchemy import select, update
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter, TelegramUnauthorizedError
@@ -14,6 +15,8 @@ logger = logging.getLogger(__name__)
 
 
 async def run_once(bot, role):
+    if os.getenv("ORDER_DESK_SEND_ENABLED", "false").lower() != "true":
+        return False
     policy = DeskDeliveryPolicy.load(role)
     direction = "to_manager" if role == "manager" else "to_customer"
     async with async_session() as session, session.begin():
@@ -51,6 +54,13 @@ async def run_once(bot, role):
         state, reason, delay = "sent", None, 0
     async with async_session() as session, session.begin():
         current = await session.get(DeskMessage, message.id, with_for_update=True)
+        # An operator may have reconciled an expired lease while this send was
+        # in flight. An old attempt must never overwrite that decision/receipt.
+        if current.attempts != message.attempts or not (current.status == "sending" or
+                (current.status == "uncertain" and current.error_code == "lease_expired")):
+            log_event(logger, "desk_delivery_late_result", message_id=message.id,
+                      draft_id=message.draft_id, result=state)
+            return True
         current.status, current.error_code = state, reason
         current.available_at = now() + timedelta(seconds=delay)
         if state == "sent":
@@ -58,9 +68,16 @@ async def run_once(bot, role):
         # Notify managers of failed customer delivery without exposing message content in logs.
         if direction == "to_customer" and message.sender_type == "manager" and state in {"blocked", "failed", "uncertain"}:
             from app.services.order_desk import enqueue
-            enqueue(session, draft_id=message.draft_id, key=f"delivery-failed:{message.id}:{message.attempts}",
-                direction="to_manager", destination=manager_chat(),
-                body=f"Сообщение #{message.id} по заявке №{message.draft_id}: {state}. /outbox_retry ID после проверки доставки.")
+            try:
+                chat = manager_chat()
+            except ValueError:
+                # A missing alarm route must not roll back the known send result.
+                log_event(logger, "desk_failure_notification_unavailable", message_id=message.id,
+                          draft_id=message.draft_id, result="manager_configuration_invalid")
+            else:
+                enqueue(session, draft_id=message.draft_id, key=f"delivery-failed:{message.id}:{message.attempts}",
+                    direction="to_manager", destination=chat,
+                    body=f"Сообщение #{message.id} по заявке №{message.draft_id}: {state}. /outbox_retry ID после проверки доставки.")
     event = ("manager_reply_sent" if state == "sent" else "manager_reply_failed") if message.sender_type == "manager" else (
         "desk_message_sent" if state == "sent" else "desk_delivery_failed")
     log_event(logger, event,

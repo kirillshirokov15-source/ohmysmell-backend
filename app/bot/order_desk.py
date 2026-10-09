@@ -98,6 +98,10 @@ def register(dp, check_access, safe_callback_answer):
             elif action == "reply":
                 await callback.message.answer(f"Ответ только через явную команду: /reply {draft_id} текст\nПроверьте номер заявки перед отправкой.")
                 return
+            elif action == "history":
+                from app.services.desk_display import desk_history
+                await callback.message.answer(await desk_history(draft_id), parse_mode=None, protect_content=True)
+                return
             elif action in {"wait", "payment"}:
                 await service.stage(draft_id, callback.from_user.id, callback.message.chat.id,
                     "awaiting_confirmation" if action == "wait" else "awaiting_payment")

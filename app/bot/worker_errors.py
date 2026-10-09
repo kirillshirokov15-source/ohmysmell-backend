@@ -5,7 +5,7 @@ class WorkerConfigurationError(ValueError):
     def __init__(self, code, message=None):
         self.code = code if code in {"invalid_worker_role", "production_activation_required", "database_url_missing",
             "external_writes_forbidden", "manager_group_configuration_invalid", "manager_bot_token_missing",
-            "client_bot_token_missing", "bot_roles_share_identity", "client_worker_disabled"} else "runtime_configuration_invalid"
+            "client_bot_token_missing", "bot_roles_share_identity", "client_worker_disabled", "invalid_worker_port"} else "runtime_configuration_invalid"
         super().__init__(message or self.code)
 
 

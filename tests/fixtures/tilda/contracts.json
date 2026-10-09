@@ -1,0 +1,61 @@
+[
+  {
+    "name": "flat-json",
+    "provenance": "synthetic adapter fixture; site capture still required",
+    "content_type": "application/json",
+    "fields": {},
+    "item_fields": {},
+    "body": "{\"tranid\": \"synthetic-contract\", \"amount\": \"30.30\", \"products\": [{\"externalid\": \"sku-a\", \"name\": \"SYNTHETIC A\", \"quantity\": \"2\", \"price\": \"10.10\"}, {\"externalid\": \"sku-b\", \"name\": \"SYNTHETIC B\", \"quantity\": \"1\", \"price\": \"10.10\"}], \"unknown\": \"ignored\"}"
+  },
+  {
+    "name": "form-products-json",
+    "provenance": "synthetic adapter fixture; site capture still required",
+    "content_type": "application/x-www-form-urlencoded",
+    "fields": {},
+    "item_fields": {},
+    "body": "tranid=synthetic-contract&amount=30.30&products=%5B%7B%22externalid%22%3A+%22sku-a%22%2C+%22name%22%3A+%22SYNTHETIC+A%22%2C+%22quantity%22%3A+%222%22%2C+%22price%22%3A+%2210.10%22%7D%2C+%7B%22externalid%22%3A+%22sku-b%22%2C+%22name%22%3A+%22SYNTHETIC+B%22%2C+%22quantity%22%3A+%221%22%2C+%22price%22%3A+%2210.10%22%7D%5D&unknown=ignored"
+  },
+  {
+    "name": "form-product-array",
+    "provenance": "synthetic adapter fixture; site capture still required",
+    "content_type": "application/x-www-form-urlencoded",
+    "fields": {},
+    "item_fields": {},
+    "body": "tranid=synthetic-contract&amount=30.30&products%5B0%5D%5Bexternalid%5D=sku-a&products%5B0%5D%5Bname%5D=SYNTHETIC+A&products%5B0%5D%5Bquantity%5D=2&products%5B0%5D%5Bprice%5D=10.10&products%5B1%5D%5Bexternalid%5D=sku-b&products%5B1%5D%5Bname%5D=SYNTHETIC+B&products%5B1%5D%5Bquantity%5D=1&products%5B1%5D%5Bprice%5D=10.10"
+  },
+  {
+    "name": "form-payment-envelope",
+    "provenance": "synthetic adapter fixture; site capture still required",
+    "content_type": "application/x-www-form-urlencoded",
+    "fields": {
+      "items": "payment.products",
+      "total": "payment.amount"
+    },
+    "item_fields": {},
+    "body": "tranid=synthetic-contract&payment%5Bamount%5D=30.30&payment%5Bproducts%5D%5B0%5D%5Bexternalid%5D=sku-a&payment%5Bproducts%5D%5B0%5D%5Bname%5D=SYNTHETIC+A&payment%5Bproducts%5D%5B0%5D%5Bquantity%5D=2&payment%5Bproducts%5D%5B0%5D%5Bprice%5D=10.10&payment%5Bproducts%5D%5B1%5D%5Bexternalid%5D=sku-b&payment%5Bproducts%5D%5B1%5D%5Bname%5D=SYNTHETIC+B&payment%5Bproducts%5D%5B1%5D%5Bquantity%5D=1&payment%5Bproducts%5D%5B1%5D%5Bprice%5D=10.10"
+  },
+  {
+    "name": "json-payment-sku-explicit-map",
+    "provenance": "synthetic adapter fixture; site capture still required",
+    "content_type": "application/json",
+    "fields": {
+      "items": "payment.products",
+      "total": "payment.amount"
+    },
+    "item_fields": {
+      "id": "sku"
+    },
+    "body": "{\"tranid\": \"synthetic-contract\", \"payment\": {\"amount\": \"30.30\", \"products\": [{\"sku\": \"sku-a\", \"name\": \"SYNTHETIC A\", \"quantity\": \"2\", \"price\": \"10.10\"}, {\"sku\": \"sku-b\", \"name\": \"SYNTHETIC B\", \"quantity\": \"1\", \"price\": \"10.10\"}]}}"
+  },
+  {
+    "name": "form-payment-json",
+    "provenance": "synthetic adapter fixture; site capture still required",
+    "content_type": "application/x-www-form-urlencoded",
+    "fields": {
+      "items": "payment.products",
+      "total": "payment.amount"
+    },
+    "item_fields": {},
+    "body": "tranid=synthetic-contract&payment=%7B%22amount%22%3A+%2230.30%22%2C+%22products%22%3A+%5B%7B%22externalid%22%3A+%22sku-a%22%2C+%22name%22%3A+%22SYNTHETIC+A%22%2C+%22quantity%22%3A+%222%22%2C+%22price%22%3A+%2210.10%22%7D%2C+%7B%22externalid%22%3A+%22sku-b%22%2C+%22name%22%3A+%22SYNTHETIC+B%22%2C+%22quantity%22%3A+%221%22%2C+%22price%22%3A+%2210.10%22%7D%5D%7D"
+  }
+]

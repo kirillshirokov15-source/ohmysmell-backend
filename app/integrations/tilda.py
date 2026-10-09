@@ -15,6 +15,74 @@ class TildaInvalid(ValueError):
     pass
 
 
+class TildaConfigurationError(ValueError):
+    """Only a safe category is exposed, never the malformed variable value."""
+
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise TildaInvalid("duplicate_field")
+        result[key] = value
+    return result
+
+
+def decode_json(value):
+    def invalid_constant(_):
+        raise TildaInvalid("invalid_json_number")
+    return json.loads(value, parse_float=Decimal, object_pairs_hook=unique_object,
+                      parse_constant=invalid_constant)
+
+
+def field_map(variable, defaults):
+    try:
+        mapping = json.loads(os.getenv(variable, "{}"))
+        if not isinstance(mapping, dict) or not mapping.keys() <= defaults.keys():
+            raise ValueError()
+        if any(not isinstance(v, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*){0,4}", v)
+               for v in mapping.values()):
+            raise ValueError()
+        return {**defaults, **mapping}
+    except (ValueError, TypeError):
+        raise TildaConfigurationError("invalid_tilda_field_map") from None
+
+
+def form_object(pairs):
+    """Bounded bracket encoding, including payment[products][0][externalid].
+
+    Never merge a scalar with an object, or ambiguous/non-contiguous indexes.
+    This is a transport adapter; the site's actual paths still require fixtures.
+    """
+    result = {}
+    for key, value in pairs:
+        if "[" not in key and "]" not in key:
+            parts = [key]
+        else:
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\[(?:[A-Za-z_][A-Za-z0-9_]*|0|[1-9][0-9]?)\]){1,5}", key):
+                raise TildaInvalid("invalid_array")
+            parts = re.findall(r"[^\[\]]+", key)
+        node = result
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+            if not isinstance(node, dict):
+                raise TildaInvalid("ambiguous_field")
+        if parts[-1] in node:
+            raise TildaInvalid("duplicate_field")
+        node[parts[-1]] = value
+
+    def arrays(node):
+        if not isinstance(node, dict):
+            return node
+        numeric = [key.isascii() and key.isdigit() for key in node]
+        if any(numeric):
+            if not all(numeric) or sorted(map(int, node)) != list(range(len(node))):
+                raise TildaInvalid("invalid_array")
+            return [arrays(node[str(i)]) for i in range(len(node))]
+        return {key: arrays(value) for key, value in node.items()}
+    return arrays(result)
+
+
 def money(value):
     if isinstance(value, (bool, float)) or value is None:
         raise TildaInvalid("invalid_money")
@@ -33,31 +101,16 @@ def money(value):
 def parse_body(body, content_type):
     try:
         if content_type == "application/json":
-            value = json.loads(body, parse_float=Decimal)
+            value = decode_json(body)
         elif content_type == "application/x-www-form-urlencoded":
-            pairs = parse_qsl(body.decode("utf-8"), keep_blank_values=True, max_num_fields=1500)
-            value = {}
-            for key, item in pairs:
-                if key in value:
-                    raise TildaInvalid("duplicate_field")
-                value[key] = item
-            # PHP-style arrays, with bounded contiguous indexes. No generic object injection.
-            arrays = {}
-            for key in list(value):
-                match = re.fullmatch(r"([A-Za-z_]+)\[(\d{1,3})\]\[([A-Za-z_]+)\]", key)
-                if match:
-                    root, index, field = match.groups()
-                    arrays.setdefault(root, {}).setdefault(int(index), {})[field] = value.pop(key)
-            for root, rows in arrays.items():
-                if root in value or sorted(rows) != list(range(len(rows))):
-                    raise TildaInvalid("invalid_array")
-                value[root] = [rows[i] for i in range(len(rows))]
+            pairs = parse_qsl(body.decode("utf-8"), keep_blank_values=True, max_num_fields=1500, errors="strict")
+            value = form_object(pairs)
         else:
             raise TildaInvalid("unsupported_content_type")
         if not isinstance(value, dict):
             raise TildaInvalid("invalid_object")
         return value
-    except (ValueError, UnicodeError, TypeError):
+    except (ValueError, UnicodeError, TypeError, RecursionError):
         raise TildaInvalid("invalid_payload") from None
 
 
@@ -66,41 +119,50 @@ def path_value(payload, path):
     for part in path.split("."):
         if isinstance(value, str):
             try:
-                value = json.loads(value, parse_float=Decimal)
-            except ValueError:
+                value = decode_json(value)
+            except (ValueError, RecursionError):
                 return None
         value = value.get(part) if isinstance(value, dict) else None
     return value
 
 
 def normalize(payload, delivery_key=None):
-    fields = {**DEFAULT_FIELDS, **json.loads(os.getenv("TILDA_FIELD_MAP_JSON", "{}"))}
+    fields = field_map("TILDA_FIELD_MAP_JSON", DEFAULT_FIELDS)
     get = lambda key: path_value(payload, fields[key])
-    external = get("external_id") or delivery_key
-    if not isinstance(external, (str, int)) or not 1 <= len(str(external)) <= 200:
+    external = get("external_id")
+    if external in (None, ""):
+        external = delivery_key
+    if type(external) not in (str, int) or not 1 <= len(str(external).strip()) <= 200:
         raise TildaInvalid("stable_external_id_required")
     items = get("items")
     if isinstance(items, str):
         try:
-            items = json.loads(items, parse_float=Decimal)
-        except ValueError:
+            items = decode_json(items)
+        except (ValueError, RecursionError):
             raise TildaInvalid("invalid_cart") from None
     if not isinstance(items, list) or not 1 <= len(items) <= 100:
         raise TildaInvalid("invalid_cart")
-    item_fields = {"id": "externalid", "name": "name", "qty": "quantity", "price": "price",
-                   **json.loads(os.getenv("TILDA_ITEM_FIELD_MAP_JSON", "{}"))}
+    item_fields = field_map("TILDA_ITEM_FIELD_MAP_JSON", {"id": "externalid", "name": "name", "qty": "quantity", "price": "price"})
     problems, rows = [], []
     for item in items:
         if not isinstance(item, dict):
             raise TildaInvalid("invalid_item")
         val = lambda key: path_value(item, item_fields[key])
         try:
-            qty = Decimal(str(val("qty")))
+            raw_qty = val("qty")
+            if isinstance(raw_qty, (float, bool)):
+                raise TildaInvalid("invalid_quantity")
+            qty = Decimal(str(raw_qty))
             if not qty.is_finite() or not 1 <= qty <= 10000 or qty != qty.to_integral_value():
                 raise TildaInvalid("invalid_quantity")
         except InvalidOperation:
             raise TildaInvalid("invalid_quantity") from None
-        identifier, name = str(val("id") or ""), str(val("name") or "Товар")
+        identifier, name = val("id"), val("name")
+        if identifier is not None and type(identifier) not in (str, int):
+            raise TildaInvalid("invalid_product_id")
+        if name is not None and not isinstance(name, str):
+            raise TildaInvalid("invalid_item_name")
+        identifier, name = str(identifier or ""), name or "Товар"
         if len(identifier) > 255 or len(name) > 500:
             raise TildaInvalid("invalid_item")
         try:
@@ -140,13 +202,16 @@ def digest(payload):
 
 def product_map():
     """Operator-maintained retail snapshot; never reads a wholesale price."""
-    result = json.loads(os.getenv("TILDA_PRODUCT_MAP_JSON", "{}"))
+    try:
+        result = json.loads(os.getenv("TILDA_PRODUCT_MAP_JSON", "{}"))
+    except ValueError:
+        raise TildaConfigurationError("invalid_product_map") from None
     if not isinstance(result, dict):
-        raise TildaInvalid("invalid_product_map")
+        raise TildaConfigurationError("invalid_product_map")
     for key, value in result.items():
         if (not isinstance(value, dict) or not isinstance(value.get("product_id"), str)
                 or not 1 <= len(value["product_id"]) <= 255):
-            raise TildaInvalid("invalid_product_mapping")
+            raise TildaConfigurationError("invalid_product_mapping")
         if (type(value.get("retail_price_minor")) is not int
                 or not 1 <= value["retail_price_minor"] <= 100_000_000_000):
             value["retail_price_minor"] = None

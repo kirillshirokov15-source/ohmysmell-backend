@@ -281,75 +281,83 @@ class DraftOrderRepository:
             await session.commit()
             return draft
 
-    async def finalize(self, draft_id: int) -> Order | None:
-        async with async_session() as session:
-            result = await session.execute(
-                self._query().where(DraftOrder.id == draft_id).with_for_update()
+    async def finalize(self, draft_id: int, *, session=None) -> Order | None:
+        if session is not None:
+            return await self._finalize(session, draft_id, commit=False)
+        async with async_session() as owned_session:
+            return await self._finalize(owned_session, draft_id, commit=True)
+
+    async def _finalize(self, session, draft_id: int, *, commit: bool) -> Order | None:
+        result = await session.execute(
+            self._query().where(DraftOrder.id == draft_id).with_for_update()
+        )
+        draft = result.scalar_one_or_none()
+        if draft is None:
+            return None
+        if draft.finalized_order_id:
+            order_result = await session.execute(
+                select(Order)
+                .options(selectinload(Order.items))
+                .where(Order.id == draft.finalized_order_id)
             )
-            draft = result.scalar_one_or_none()
-            if draft is None:
-                return None
-            if draft.finalized_order_id:
-                order_result = await session.execute(
-                    select(Order)
-                    .options(selectinload(Order.items))
-                    .where(Order.id == draft.finalized_order_id)
-                )
-                return order_result.scalar_one_or_none()
-            if self.expected_revision is not None and draft.revision != self.expected_revision:
-                raise InvalidOrderTransitionError("Карточка устарела; обновите черновик")
-            ensure_order_transition(draft.status, OrderStatus.NEW)
-            if (draft.customer_type != order_customer_type(draft.source, draft.customer_type)
-                    or draft.customer_type == "unknown" or (not draft.counterparty_id and not (draft.contact_details or {}).get("tilda_review_approved"))
-                    or not draft.items or draft.total is None
-                    or any(i.qty <= 0 or i.quantity_confidence != "confirmed" or i.price is None or i.price < 0
-                           or not i.product_id or i.match_status != "matched"
-                           or i.item_total != i.price * i.qty for i in draft.items)
-                    or draft.total != sum(i.item_total for i in draft.items)):
-                raise InvalidOrderTransitionError("Черновик требует повторной проверки")
-            order = Order(
-                customer_id=draft.customer_id,
-                customer_type=draft.customer_type,
-                source=draft.source,
-                customer_name=draft.customer_name or draft.sender_email,
-                phone=(draft.contact_details or {}).get("phone", ""),
-                telegram=(draft.contact_details or {}).get("telegram"),
-                counterparty_id=draft.counterparty_id,
-                counterparty_name=draft.counterparty_name,
-                comment=(draft.contact_details or {}).get("comment") or f"{draft.source}: {draft.subject or 'без темы'}",
-                status=OrderStatus.NEW,
-                total=draft.total,
-                manual_fulfillment=bool((draft.contact_details or {}).get("tilda")),
+            return order_result.scalar_one_or_none()
+        if self.expected_revision is not None and draft.revision != self.expected_revision:
+            raise InvalidOrderTransitionError("Карточка устарела; обновите черновик")
+        ensure_order_transition(draft.status, OrderStatus.NEW)
+        if (draft.customer_type != order_customer_type(draft.source, draft.customer_type)
+                or draft.customer_type == "unknown" or (not draft.counterparty_id and not (draft.contact_details or {}).get("tilda_review_approved"))
+                or not draft.items or draft.total is None
+                or any(i.qty <= 0 or i.quantity_confidence != "confirmed" or i.price is None or i.price < 0
+                       or not i.product_id or i.match_status != "matched"
+                       or i.item_total != i.price * i.qty for i in draft.items)
+                or draft.total != sum(i.item_total for i in draft.items)):
+            raise InvalidOrderTransitionError("Черновик требует повторной проверки")
+        order = Order(
+            customer_id=draft.customer_id,
+            customer_type=draft.customer_type,
+            source=draft.source,
+            customer_name=draft.customer_name or draft.sender_email,
+            phone=(draft.contact_details or {}).get("phone", ""),
+            telegram=(draft.contact_details or {}).get("telegram"),
+            counterparty_id=draft.counterparty_id,
+            counterparty_name=draft.counterparty_name,
+            comment=(draft.contact_details or {}).get("comment") or f"{draft.source}: {draft.subject or 'без темы'}",
+            status=OrderStatus.NEW,
+            total=draft.total,
+            manual_fulfillment=bool((draft.contact_details or {}).get("tilda")),
+        )
+        order.items.extend(
+            OrderItem(
+                product_id=item.product_id,
+                name=item.product_name or item.raw_product_text,
+                article=item.article,
+                price=item.price,
+                qty=item.qty,
+                item_total=item.item_total,
             )
-            order.items.extend(
-                OrderItem(
-                    product_id=item.product_id,
-                    name=item.product_name or item.raw_product_text,
-                    article=item.article,
-                    price=item.price,
-                    qty=item.qty,
-                    item_total=item.item_total,
-                )
-                for item in draft.items
-            )
-            session.add(order)
+            for item in draft.items
+        )
+        session.add(order)
+        await session.flush()
+        draft.finalized_order_id = order.id
+        if order.manual_fulfillment:
+            from app.models.order_desk import OrderDesk
+            from app.services.order_desk import status_notification
+            desk = await session.get(OrderDesk, draft.id, with_for_update=True)
+            if not desk or not (draft.contact_details or {}).get("tilda_review_approved"):
+                raise InvalidOrderTransitionError("Сначала подтвердите заявку через карточку сайта")
+            desk.order_id = order.id
             await session.flush()
-            draft.finalized_order_id = order.id
-            if order.manual_fulfillment:
-                from app.models.order_desk import OrderDesk
-                from app.services.order_desk import status_notification
-                desk = await session.get(OrderDesk, draft.id, with_for_update=True)
-                if not desk or not (draft.contact_details or {}).get("tilda_review_approved"):
-                    raise InvalidOrderTransitionError("Сначала подтвердите заявку через карточку сайта")
-                desk.order_id = order.id
-                await session.flush()
-                await status_notification(session, order, desk.actor_telegram_id)
-            else:
-                from app.services.supply_service import capture_order_supply
-                await capture_order_supply(session, order)
-            draft.status = OrderStatus.NEW
-            await session.execute(update(InboundMessage).where(
-                InboundMessage.id == draft.inbound_message_id).values(order_id=order.id))
+            await status_notification(session, order, desk.actor_telegram_id)
+        else:
+            from app.services.supply_service import capture_order_supply
+            await capture_order_supply(session, order)
+        draft.status = OrderStatus.NEW
+        await session.execute(update(InboundMessage).where(
+            InboundMessage.id == draft.inbound_message_id).values(order_id=order.id))
+        if commit:
             await session.commit()
-            await session.refresh(order, attribute_names=["customer_email", "desk_draft_id", "assigned_manager_telegram_id"])
-            return order
+        else:
+            await session.flush()
+        await session.refresh(order, attribute_names=["customer_email", "desk_draft_id", "assigned_manager_telegram_id"])
+        return order

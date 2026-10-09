@@ -1,7 +1,8 @@
 ﻿# Manager Telegram workspace
 
 Запуск: `python -m app.bot.runtime`, `BOT_ROLE=manager`. FastAPI не запускает polling.
-Работает только с активными записями managers и только в личном чате.
+Работает только с активными записями managers. В group-режиме обязательны настроенная
+группа и actor allowlist; private-режим используется только без group configuration.
 
 Обеспечение: меню **«Требуют закупки»**, `/procurement [ORDER_ID]`, ручной курс
 `/fx PROCUREMENT_ID REVISION 90.50`. Выберите поставщика → отметьте запрос отправленным
@@ -150,3 +151,14 @@ reply events and does not run another Gmail or Telegram intake loop. See
 scope. Пустые списки в staging запрещают отправку; `/outbox_retry` и `/outbox_sent`
 также не могут менять исключённые сообщения. Полный порядок проверки и переменные:
 [ORDER_DESK_STAGING_GO_LIVE.md](ORDER_DESK_STAGING_GO_LIVE.md).
+# Order Desk hardening
+
+`/help` показывает команды `/site`, `/reply`, `/orders`, `/order`, `/drafts`,
+`/procurements` и кнопки списков. Карточка сайта использует текущие payment/fulfillment/
+delivery состояния подтверждённого Order. Кнопка «История действий» открывает только
+чтение аудита, без содержимого переписки. Старый Desk.stage не определяет статус заказа.
+
+Перед новым staging окном с draft scope требуется `ORDER_DESK_STAGING_NOT_BEFORE`
+(ISO-8601 с timezone). Старые сообщения допускаются только отдельно проверенными
+message IDs и только разрешённым адресатам. Сообщение №7 остаётся исключённым.
+План обновления и ограничения: [ORDER_DESK_HARDENING.md](ORDER_DESK_HARDENING.md).

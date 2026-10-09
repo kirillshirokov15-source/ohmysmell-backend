@@ -204,7 +204,7 @@ def test_fake_tilda_to_manager_client_helpdesk_and_manual_lifecycle(desk_db,monk
         async with factory() as s:
             replies={row.idempotency_key:row for row in (await s.scalars(select(DeskMessage).where(DeskMessage.destination==client_id))).all()}
             for mid in (13,14):
-                assert replies[f"desk:client:{client_id}:{mid}:ack"].body==f"Ваши заявки:\n/status {did} · /message {did} текст"
+                assert ("/status НОМЕР" if mid == 13 else f"/status {did}") in replies[f"desk:client:{client_id}:{mid}:ack"].body
             assert replies[f"desk:client:{client_id}:15:ack"].body==f"Заявка №{did}: В работе"
         await dispatcher.feed_update(client_bot,client_update(2,f"/message {did} <b>Здравствуйте</b>"))
         await dp.feed_update(manager_bot,group_update(201,"Internal group conversation"))

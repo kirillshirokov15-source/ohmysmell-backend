@@ -21,6 +21,7 @@ def payload(identifier="synthetic-order"):
 
 @pytest.fixture
 def tilda_config(monkeypatch):
+    monkeypatch.setenv("ORDER_DESK_SEND_ENABLED", "true")
     monkeypatch.setenv("TILDA_ENABLED", "true")
     monkeypatch.setenv("TILDA_WEBHOOK_SECRET", "synthetic-tilda-secret-32-characters-only")
     monkeypatch.setenv("TILDA_ALLOW_QUERY_SECRET", "false")

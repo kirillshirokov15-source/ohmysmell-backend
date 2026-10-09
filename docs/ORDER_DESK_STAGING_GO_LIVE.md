@@ -1,5 +1,9 @@
 # Order Desk: staging go-live
 
+Последующие локальные исправления, новая временная граница draft scope и план безопасного
+обновления описаны в [ORDER_DESK_HARDENING.md](ORDER_DESK_HARDENING.md).
+Исторические примеры ниже не заменяют текущие требования `ORDER_DESK_STAGING_NOT_BEFORE`.
+
 Результаты отдельно разрешённого живого synthetic прогона и восстановления настроек:
 [ORDER_DESK_LIVE_ACCEPTANCE.md](ORDER_DESK_LIVE_ACCEPTANCE.md).
 

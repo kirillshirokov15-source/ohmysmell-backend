@@ -141,6 +141,9 @@ class DeskService:
             if desk.manager_id:
                 log_event(logger, "manager_claim_conflicted" if desk.manager_id != manager.id else "manager_claim_replayed", draft_id=draft_id, actor_telegram_id=actor)
                 return desk
+            draft = await session.get(DraftOrder, draft_id)
+            if not draft or draft.status == "rejected" or desk.order_id:
+                raise DeskError("Заявка закрыта для назначения.")
             desk.manager_id, desk.actor_telegram_id, desk.assigned_at = manager.id, actor, now()
             desk.stage = "working"
             audit(session, desk, "manager_claim_succeeded", actor)
@@ -208,15 +211,28 @@ class DeskService:
     async def _client(self, session, actor, message_id, text, key):
         if text is None:
             return "Поддерживаются только текстовые сообщения. Вложения передайте менеджеру другим согласованным способом.", None
+        text = text.strip()
+        if not text:
+            return "Сообщение пустое. /help — доступные команды.", None
         if text.startswith("/start "):
             desk = await self.consume(session, text.split(maxsplit=1)[1], actor)
-            return (f"Спасибо за заказ (заявка №{desk.draft_id})! Мы получили вашу заявку. "
-                "В ближайшее время менеджер свяжется с вами, подтвердит наличие товаров и согласует оплату и доставку.\n"
+            return (f"Спасибо за заказ (заявка №{desk.draft_id})! Telegram подключён.\n"
+                + await public_status(session, desk) + "\n"
+                "Менеджер поможет с наличием, оплатой и доставкой.\n"
                 f"/status {desk.draft_id} — статус; /message {desk.draft_id} текст — написать менеджеру; /orders — мои заказы.", desk.draft_id)
-        if text in {"/start", "/help", "/orders", "Мой заказ"}:
+        help_text = ("Здесь можно проверить заказ и написать менеджеру.\n"
+            "/orders — ваши заявки\n/status НОМЕР — актуальный статус\n"
+            "/message НОМЕР текст — сообщение по выбранной заявке\n"
+            "Откройте персональную ссылку после оформления заказа и нажмите Start. "
+            "Если ссылки нет или она истекла, запросите новую у менеджера. "
+            "Оплата согласуется с менеджером; бот не принимает платежи.")
+        if text in {"/start", "/help"}:
+            return help_text, None
+        if text in {"/orders", "Мой заказ"}:
             desks = (await session.scalars(select(OrderDesk).where(OrderDesk.customer_telegram_id == actor)
-                .order_by(OrderDesk.draft_id.desc()).limit(30))).all()
-            return ("Ваши заявки:\n" + "\n".join(f"/status {d.draft_id} · /message {d.draft_id} текст" for d in desks)
+                .order_by(OrderDesk.draft_id.desc()).limit(10))).all()
+            return ("Ваши заявки (до 10 последних):\n" + "\n".join([
+                f"{await public_status(session, d)}\n/status {d.draft_id} · /message {d.draft_id} текст" for d in desks])
                 if desks else "Откройте персональную ссылку после оформления заказа. Если ссылки нет, свяжитесь с менеджером.", None)
         parts = text.split(maxsplit=2)
         if parts[0] not in {"/status", "/message", "/manager"} or len(parts) < 2 or not parts[1].isascii() or not parts[1].isdigit() or len(parts[1]) > 9:
@@ -262,12 +278,19 @@ class DeskService:
             raise DeskError("Недопустимый этап.")
         async with async_session() as session, session.begin():
             await authorized_manager(session, actor, chat_id)
+            # Match OrderOperations' lock order: Order before Desk. Recheck after
+            # the lock in case confirmation completed while this card was open.
+            order_id = await session.scalar(select(OrderDesk.order_id).where(OrderDesk.draft_id == draft_id))
+            order = await session.get(Order, order_id, with_for_update=True) if order_id else None
             desk = await session.get(OrderDesk, draft_id, with_for_update=True)
             if not desk:
                 raise DeskError("Заявка не найдена.")
             require_owner(desk, actor)
+            if desk.order_id != order_id:
+                raise DeskError("Карточка изменилась. Обновите заявку.")
             if desk.order_id:
-                order = await session.get(Order, desk.order_id)
+                if stage != "awaiting_payment":
+                    raise DeskError("Заказ уже подтверждён. Используйте карточку заказа.")
                 if order.fulfillment_status == "cancelled" or order.delivery_status == "delivered" or order.payment_status == "paid":
                     raise DeskError("Этап недоступен для закрытого или оплаченного заказа.")
             else:
@@ -282,8 +305,7 @@ class DeskService:
                 if desk.customer_telegram_id:
                     event_key = secrets.token_hex(12)
                     enqueue(session, draft_id=draft_id, key=f"stage:{draft_id}:{event_key}", direction="to_customer",
-                        destination=desk.customer_telegram_id, body="Заявка №" + str(draft_id) + ": " +
-                        ("Ожидает оплаты. Способ и реквизиты согласуйте с менеджером." if stage == "awaiting_payment" else "Ожидает подтверждения."))
+                        destination=desk.customer_telegram_id, body=await public_status(session, desk))
 
     async def cancel(self, draft_id, actor, chat_id):
         async with async_session() as session, session.begin():
@@ -313,7 +335,8 @@ class DeskService:
             if not draft.finalized_order_id:
                 if draft.revision != revision or draft.status == "rejected":
                     raise DeskError("Карточка устарела или заявка отменена.")
-                if any(i.price is None or i.price <= 0 or not i.product_id or i.qty <= 0 for i in draft.items):
+                if not draft.items or any(i.price is None or i.price <= 0 or not i.product_id or i.qty <= 0
+                        or i.quantity_confidence != "confirmed" or i.match_status != "matched" for i in draft.items):
                     raise DeskError("Нужны проверенные товары и розничные цены. Исправьте mapping и выполните /sitereprice.")
                 draft.total = sum(i.price * i.qty for i in draft.items)
                 for item in draft.items:
@@ -321,8 +344,8 @@ class DeskService:
                 draft.status = "ready"
                 draft.contact_details = {**draft.contact_details, "tilda_review_approved": True}
                 audit(session, desk, "tilda_review_approved", actor, total_minor=draft.total, revision=revision)
-        from app.repositories.draft_order_repository import DraftOrderRepository
-        return await DraftOrderRepository().finalize(draft_id)
+            from app.repositories.draft_order_repository import DraftOrderRepository
+            return await DraftOrderRepository().finalize(draft_id, session=session)
 
     async def reprice(self, draft_id, actor, chat_id):
         mapping = product_map()
@@ -349,18 +372,10 @@ class DeskService:
 
 
 async def public_status(session, desk):
-    from app.services.manager_workspace import FULFILLMENT_LABELS, PAYMENT_LABELS
-    if desk.order_id:
-        order = await session.get(Order, desk.order_id)
-        state = "Доставлен" if order.delivery_status == "delivered" else FULFILLMENT_LABELS[order.fulfillment_status]
-        if desk.stage == "awaiting_payment" and order.payment_status == "unpaid" and order.fulfillment_status == "new":
-            state = "Ожидает оплаты"
-        elif order.fulfillment_status == "new" and desk.stage in {"working", "awaiting_confirmation"}:
-            state = "В работе" if desk.stage == "working" else "Ожидает подтверждения"
-        return f"Заявка №{desk.draft_id}, заказ №{order.id}: {state}. {PAYMENT_LABELS[order.payment_status]}."
+    from app.services.desk_status import public_summary
     draft = await session.get(DraftOrder, desk.draft_id)
-    labels = {"new": "Получен", "working": "В работе", "awaiting_confirmation": "Ожидает подтверждения", "awaiting_payment": "Ожидает оплаты"}
-    return f"Заявка №{desk.draft_id}: " + ("Отменена" if draft.status == "rejected" else labels[desk.stage])
+    order = await session.get(Order, desk.order_id) if desk.order_id else None
+    return public_summary(desk, draft, order)
 
 
 async def status_notification(session, order, actor):

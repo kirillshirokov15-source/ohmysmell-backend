@@ -144,7 +144,7 @@ def change(state,role,values):
     assert v['APP_ENV']=='staging' and v['EXTERNAL_WRITES_ENABLED']=='false'
     allowed={'TILDA_ENABLED','TILDA_WEBHOOK_SECRET','TILDA_FIELD_MAP_JSON','TILDA_ITEM_FIELD_MAP_JSON','TILDA_PRODUCT_MAP_JSON',
         'CLIENT_TELEGRAM_BOT_USERNAME','MANAGER_TELEGRAM_CHAT_ID','MANAGER_TELEGRAM_USER_IDS','ORDER_DESK_SEND_ENABLED',
-        SCOPE+'CLIENT_RECIPIENT_IDS',SCOPE+'MANAGER_CHAT_IDS',SCOPE+'MESSAGE_IDS',SCOPE+'DRAFT_IDS'}
+        SCOPE+'CLIENT_RECIPIENT_IDS',SCOPE+'MANAGER_CHAT_IDS',SCOPE+'MESSAGE_IDS',SCOPE+'DRAFT_IDS',SCOPE+'NOT_BEFORE'}
     assert set(values)<=allowed
     state['services'][role]['touched']=sorted(set(state['services'][role]['touched'])|set(values))
     save(state) # Recovery inventory precedes mutation.
@@ -160,7 +160,7 @@ def configure(state):
                         'synthetic-b':{'product_id':state['run']+'-b','retail_price_minor':1010}})
     routing={'MANAGER_TELEGRAM_CHAT_ID':str(state['group']),'MANAGER_TELEGRAM_USER_IDS':str(APPROVED_USER)}
     scope={SCOPE+'CLIENT_RECIPIENT_IDS':str(APPROVED_USER),SCOPE+'MANAGER_CHAT_IDS':str(state['group']),
-           SCOPE+'MESSAGE_IDS':'',SCOPE+'DRAFT_IDS':'','ORDER_DESK_SEND_ENABLED':'false'}
+           SCOPE+'MESSAGE_IDS':'',SCOPE+'DRAFT_IDS':'',SCOPE+'NOT_BEFORE':state['created_at'],'ORDER_DESK_SEND_ENABLED':'false'}
     for role in ('manager','client'):
         change(state,role,{**routing,**scope,**({'TILDA_PRODUCT_MAP_JSON':mapping} if role=='manager' else {})})
     change(state,'backend',{**routing,'TILDA_ENABLED':'true','TILDA_WEBHOOK_SECRET':state['secret'],

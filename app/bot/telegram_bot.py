@@ -140,6 +140,27 @@ async def chat_id_handler(message: Message):
     )
 
 
+MANAGER_HELP = (
+    "Кабинет менеджера OhMySmell\n"
+    "/site НОМЕР — заявка сайта, ответственный и история\n"
+    "/reply НОМЕР текст — ответ клиенту по номеру заявки, не заказа\n"
+    "/orders — список заказов; /order НОМЕР — карточка заказа\n"
+    "/drafts — заявки на проверку; /procurements — закупки\n\n"
+    "В карточке сайта нажмите «Взять заказ», затем согласуйте товары и сумму. "
+    "Оплату и выполнение отмечайте в карточке подтверждённого заказа. "
+    "Обычные сообщения в группе клиентам не пересылаются."
+)
+
+
+@dp.message(Command("help"))
+async def help_handler(message: Message):
+    if not await check_access(message):
+        return
+    await message.answer(MANAGER_HELP, parse_mode=None, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [{"text": "Заказы", "callback_data": "orders:all:0"}],
+        [{"text": "Заявки на проверку", "callback_data": "draftpage:needs_review:0"}]]))
+
+
 @dp.message(CommandStart())
 async def start_handler(message: Message):
     if not await check_access(message):
@@ -147,7 +168,7 @@ async def start_handler(message: Message):
 
     from app.bot.manager_group import group_id
     if group_id() is not None:
-        await message.answer("Общий кабинет менеджеров: /drafts · /orders · /order НОМЕР · /procurements. Обычные сообщения игнорируются.")
+        await help_handler(message)
         return
 
     await message.answer(

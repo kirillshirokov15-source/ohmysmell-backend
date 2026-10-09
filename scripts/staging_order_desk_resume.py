@@ -45,7 +45,7 @@ def begin(state):
     state.pop('restored_at',None)
     save(state)
     scope={SCOPE+'CLIENT_RECIPIENT_IDS':str(APPROVED_USER),SCOPE+'MANAGER_CHAT_IDS':str(state['group']),
-        SCOPE+'DRAFT_IDS':str(DRAFT),SCOPE+'MESSAGE_IDS':'','ORDER_DESK_SEND_ENABLED':'false',
+        SCOPE+'DRAFT_IDS':str(DRAFT),SCOPE+'MESSAGE_IDS':'',SCOPE+'NOT_BEFORE':state['resume_started_at'],'ORDER_DESK_SEND_ENABLED':'false',
         'MANAGER_TELEGRAM_CHAT_ID':str(state['group']),'MANAGER_TELEGRAM_USER_IDS':str(APPROVED_USER)}
     for role in ('manager','client'):change(state,role,scope)
     change(state,'backend',{'CLIENT_TELEGRAM_BOT_USERNAME':'OhMySmell_OrdersBot','TILDA_ENABLED':'false'})
