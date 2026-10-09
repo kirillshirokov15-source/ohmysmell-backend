@@ -1,5 +1,8 @@
 # Tilda → OhMySmell → Telegram: staging MVP
 
+Актуальный staging go-live, ограничения адресатов и результаты повторного аудита:
+[ORDER_DESK_STAGING_GO_LIVE.md](ORDER_DESK_STAGING_GO_LIVE.md).
+
 ## 1. Архитектура
 
 Используется существующий sales core: `InboundMessage(source=website)` →

@@ -8,17 +8,20 @@ from app.database.session import async_session
 from app.models.order_desk import DeskMessage
 from app.services.order_desk import now, manager_chat
 from app.logging_utils import log_event
+from app.services.desk_delivery_policy import DeskDeliveryPolicy
 
 logger = logging.getLogger(__name__)
 
 
 async def run_once(bot, role):
+    policy = DeskDeliveryPolicy.load(role)
     direction = "to_manager" if role == "manager" else "to_customer"
     async with async_session() as session, session.begin():
         # A crash may happen after Telegram accepted a send. Never blindly resend it.
         await session.execute(update(DeskMessage).where(DeskMessage.direction == direction,
-            DeskMessage.status == "sending", DeskMessage.available_at < now()).values(status="uncertain", error_code="lease_expired"))
+            policy.sql_scope(), DeskMessage.status == "sending", DeskMessage.available_at < now()).values(status="uncertain", error_code="lease_expired"))
         message = await session.scalar(select(DeskMessage).where(DeskMessage.direction == direction,
+            policy.sql_scope(),
             DeskMessage.status == "pending", DeskMessage.available_at <= now())
             .order_by(DeskMessage.id).limit(1).with_for_update(skip_locked=True))
         if not message:
@@ -58,7 +61,9 @@ async def run_once(bot, role):
             enqueue(session, draft_id=message.draft_id, key=f"delivery-failed:{message.id}:{message.attempts}",
                 direction="to_manager", destination=manager_chat(),
                 body=f"Сообщение #{message.id} по заявке №{message.draft_id}: {state}. /outbox_retry ID после проверки доставки.")
-    log_event(logger, "manager_reply_sent" if state == "sent" else "desk_delivery_failed",
+    event = ("manager_reply_sent" if state == "sent" else "manager_reply_failed") if message.sender_type == "manager" else (
+        "desk_message_sent" if state == "sent" else "desk_delivery_failed")
+    log_event(logger, event,
         message_id=message.id, draft_id=message.draft_id, result=state)
     return True
 

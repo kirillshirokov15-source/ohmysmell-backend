@@ -144,3 +144,9 @@ reply events and does not run another Gmail or Telegram intake loop. See
 `/outbox_sent ID TELEGRAM_MESSAGE_ID` фиксирует подтверждённую доставку без повтора.
 При uncertain Telegram мог уже доставить сообщение: сначала проверить адресата.
 Новая очередь включается `ORDER_DESK_SEND_ENABLED=true` только для разрешённого smoke.
+# Order Desk staging: ограниченная отправка
+
+Перед включением Order Desk sending обязательно настроить recipient AND message/draft
+scope. Пустые списки в staging запрещают отправку; `/outbox_retry` и `/outbox_sent`
+также не могут менять исключённые сообщения. Полный порядок проверки и переменные:
+[ORDER_DESK_STAGING_GO_LIVE.md](ORDER_DESK_STAGING_GO_LIVE.md).

@@ -55,6 +55,10 @@ def register(dp, check_access, safe_callback_answer):
                         raise DeskError("Сообщение не требует восстановления.")
                     desk = await session.get(OrderDesk, task.draft_id)
                     require_owner(desk, message.from_user.id)
+                    from app.services.desk_delivery_policy import DeskDeliveryPolicy
+                    role = "client" if task.direction == "to_customer" else "manager"
+                    if not DeskDeliveryPolicy.load(role).permits(task):
+                        raise DeskError("Сообщение не включено в разрешённую staging-проверку.")
                     if action == "/outbox_sent":
                         sent_id = int(parts[2])
                         if sent_id <= 0:

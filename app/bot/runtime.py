@@ -13,31 +13,37 @@ from aiogram.methods import GetUpdates
 from sqlalchemy import text
 from app.config.settings import settings
 from app.logging_utils import configure_application_logging, log_event
+from app.bot.worker_errors import WorkerConfigurationError, startup_error_category
 
 logger = logging.getLogger("app.bot.runtime")
 
 
 def validate_worker(role):
     if role not in {"manager", "client"}:
-        raise ValueError("Unknown worker role")
+        raise WorkerConfigurationError("invalid_worker_role")
     if settings.environment == "production" and os.getenv("BOT_PRODUCTION_ACTIVATED", "false").lower() != "true":
-        raise ValueError("Production worker requires explicit activation")
+        raise WorkerConfigurationError("production_activation_required")
+    if not settings.database_url:
+        raise WorkerConfigurationError("database_url_missing")
+    if settings.external_writes_enabled and settings.environment != "production":
+        raise WorkerConfigurationError("external_writes_forbidden")
     settings.validate_runtime(role)
     if role == 'manager':
         from app.bot.manager_group import validate_group_config
-        validate_group_config()
-    if settings.external_writes_enabled and settings.environment != "production":
-        raise ValueError("Worker requires external writes disabled")
+        try:
+            validate_group_config()
+        except ValueError:
+            raise WorkerConfigurationError("manager_group_configuration_invalid") from None
     key = "TELEGRAM_BOT_TOKEN" if role == "manager" else "CLIENT_TELEGRAM_BOT_TOKEN"
     token = os.getenv(key, "")
     if not token:
-        raise ValueError(key + " is required")
+        raise WorkerConfigurationError("manager_bot_token_missing" if role == "manager" else "client_bot_token_missing", key + " is required")
     if role == "client" and token.split(":")[0] == os.getenv("TELEGRAM_BOT_TOKEN", "").split(":")[0]:
-        raise ValueError("Client and manager require different bot tokens")
+        raise WorkerConfigurationError("bot_roles_share_identity", "Client and manager require different bot tokens")
     if role == "client" and os.getenv("CLIENT_TELEGRAM_ENABLED", "false").lower() != "true":
-        raise ValueError("Client Telegram worker is disabled")
-    if not settings.database_url:
-        raise ValueError("Database is required")
+        raise WorkerConfigurationError("client_worker_disabled")
+    from app.services.desk_delivery_policy import DeskDeliveryPolicy
+    DeskDeliveryPolicy.load(role)
     return token
 
 
@@ -82,6 +88,17 @@ async def durable_client_poll(dp, bot):
             offset = update.update_id + 1
 
 
+def worker_health_app(state, failure):
+    async def health(_):
+        return web.json_response(state, status=503 if failure.is_set() else 200)
+    async def ready(_):
+        return web.json_response(state, status=200 if state["polling"] and not failure.is_set() else 503)
+    server = web.Application()
+    server.router.add_get("/health", health)
+    server.router.add_get("/ready", ready)
+    return server
+
+
 async def run_worker(role="manager", *, drop_pending_updates=False):
     token = validate_worker(role)
     configure_application_logging()
@@ -100,13 +117,7 @@ async def run_worker(role="manager", *, drop_pending_updates=False):
         from app.bot.client_bot import create_dispatcher
         dp = create_dispatcher()
     state = {"status": "starting", "role": role, "environment": settings.environment, "polling": False, "external_writes": settings.external_writes_enabled}
-    async def health(_):
-        return web.json_response(state, status=503 if failure.is_set() else 200)
-    async def ready(_):
-        return web.json_response(state, status=200 if state["polling"] and not failure.is_set() else 503)
-    server = web.Application()
-    server.router.add_get("/health", health)
-    server.router.add_get("/ready", ready)
+    server = worker_health_app(state, failure)
     runner = web.AppRunner(server)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8081"))).start()
@@ -184,7 +195,9 @@ def main(role=None):
         asyncio.run(run_worker(role or os.getenv("BOT_ROLE", "manager")))
     except Exception as error:
         configure_application_logging()
-        log_event(logger, "worker_startup_failed", level=logging.ERROR, result=type(error).__name__)
+        selected_role = role or os.getenv("BOT_ROLE", "manager")
+        log_event(logger, "worker_startup_failed", level=logging.ERROR, result=type(error).__name__,
+            reason=startup_error_category(error), role=selected_role if selected_role in {"manager", "client"} else "invalid")
         raise SystemExit(1)
 
 

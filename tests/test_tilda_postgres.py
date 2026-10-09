@@ -23,6 +23,10 @@ pytestmark = pytest.mark.staging
 @pytest.fixture
 def desk_db(staging_sessions, tilda_config, monkeypatch):
     factory, engine = staging_sessions
+    # Baseline fake transport tests exercise unrestricted delivery; staging safety
+    # tests below explicitly override this and configure audited scopes.
+    from app.config.settings import settings
+    monkeypatch.setattr(settings, "environment", "development")
     for module in ("app.services.order_desk", "app.services.desk_display", "app.workers.desk_outbox", "app.database.session", "app.repositories.manager_repository"):
         monkeypatch.setattr(importlib.import_module(module), "async_session", factory)
     # IDs are unique per test, and never use any real manager identity.
@@ -350,4 +354,61 @@ def test_customer_blocks_bot_and_restart_requires_reconciliation(desk_db):
             alarm=await s.scalar(select(DeskMessage).where(DeskMessage.idempotency_key==f"delivery-failed:{mid}:1"))
             assert alarm.direction=="to_manager" and "blocked" in alarm.body and "SYNTHETIC reply" not in alarm.body
         await bot.session.close();await engine.dispose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("state", ["pending","sending","uncertain","failed","blocked"])
+def test_staging_allowlist_leaves_other_recipients_and_unapproved_rows_untouched(desk_db,monkeypatch,state):
+    from app.config.settings import settings
+    from app.workers.desk_outbox import run_once
+    from aiogram import Bot
+    from tests.telegram_transport import TelegramSession
+    factory,engine,actors=desk_db
+    monkeypatch.setattr(settings,"environment","staging")
+    monkeypatch.setenv("ORDER_DESK_SEND_ENABLED","true")
+    monkeypatch.setenv("ORDER_DESK_STAGING_CLIENT_RECIPIENT_IDS","898019732")
+    monkeypatch.delenv("ORDER_DESK_STAGING_DRAFT_IDS",raising=False)
+    async def run():
+        async with factory() as s,s.begin():
+            selected=DeskMessage(idempotency_key=uuid4().hex,direction="to_customer",destination=898019732,
+                body="SYNTHETIC allowed",sender_type="system",status="pending")
+            outsider=DeskMessage(idempotency_key=uuid4().hex,direction="to_customer",destination=333,
+                body="SYNTHETIC excluded",sender_type="system",status=state,available_at=now()-timedelta(minutes=10))
+            unselected=DeskMessage(idempotency_key=uuid4().hex,direction="to_customer",destination=898019732,
+                body="SYNTHETIC unapproved",sender_type="system",status=state,available_at=now()-timedelta(minutes=10))
+            s.add_all([selected,outsider,unselected]);await s.flush()
+            chosen,other,unapproved=selected.id,outsider.id,unselected.id
+        # Explicit message ID still cannot authorize an unapproved recipient.
+        monkeypatch.setenv("ORDER_DESK_STAGING_MESSAGE_IDS",f"{chosen},{other}")
+        transport=TelegramSession();bot=Bot("67890:"+"b"*35,session=transport)
+        assert await run_once(bot,"client")
+        assert not await run_once(bot,"client")
+        assert len(transport.calls)==1 and transport.calls[0].chat_id==898019732
+        async with factory() as s:
+            assert (await s.get(DeskMessage,chosen)).status=="sent"
+            for mid in (other,unapproved):
+                row=await s.get(DeskMessage,mid)
+                assert row.status==state and row.attempts==0 and row.telegram_message_id is None
+        await bot.session.close();await engine.dispose()
+    asyncio.run(run())
+
+
+def test_staging_default_deny_does_not_mutate_queue(desk_db,monkeypatch):
+    from app.config.settings import settings
+    from app.workers.desk_outbox import run_once
+    factory,engine,actors=desk_db
+    monkeypatch.setattr(settings,"environment","staging")
+    for suffix in ("CLIENT_RECIPIENT_IDS","MANAGER_CHAT_IDS","MESSAGE_IDS","DRAFT_IDS"):
+        monkeypatch.delenv("ORDER_DESK_STAGING_"+suffix,raising=False)
+    async def run():
+        async with factory() as s:
+            before=(await s.execute(select(DeskMessage.id,DeskMessage.status,DeskMessage.attempts).order_by(DeskMessage.id))).all()
+        bot=SimpleNamespace(send_message=AsyncMock())
+        assert not await run_once(bot,"client")
+        assert not await run_once(bot,"manager")
+        bot.send_message.assert_not_awaited()
+        async with factory() as s:
+            after=(await s.execute(select(DeskMessage.id,DeskMessage.status,DeskMessage.attempts).order_by(DeskMessage.id))).all()
+            assert before==after
+        await engine.dispose()
     asyncio.run(run())
