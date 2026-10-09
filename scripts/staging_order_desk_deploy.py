@@ -4,11 +4,39 @@ Default is a redacted plan. --execute supports backend/client only, after tests
 and with existing send/write flags disabled. Manager redeploy is separately approved.
 """
 import argparse
+import io
 import json
 from pathlib import Path
 import subprocess
+import tarfile
+import tempfile
 import time
 from scripts.staging_order_desk_audit import cli, PROJECT, ENVIRONMENT, SERVICES
+
+
+def prepare_upload(revision, role):
+    """Upload only committed files, never the working tree or its credentials."""
+    artifact_root = Path(".staging-artifacts").resolve()
+    artifact_root.mkdir(exist_ok=True)
+    upload = Path(tempfile.mkdtemp(prefix="order-desk-upload-" + role + "-", dir=artifact_root))
+    archive = subprocess.check_output(["git", "archive", "--format=tar", revision])
+    with tarfile.open(fileobj=io.BytesIO(archive)) as source:
+        for member in source.getmembers():
+            target = (upload / member.name).resolve()
+            if not target.is_relative_to(upload):
+                raise RuntimeError("invalid_archive_path")
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            elif member.isfile():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(source.extractfile(member).read())
+            else:
+                raise RuntimeError("unsupported_archive_entry")
+    if role == "client":
+        # Existing service has no custom config path. Apply the reviewed worker
+        # config to this upload without modifying Railway variables/source settings.
+        (upload / "railway.toml").write_bytes((upload / "railway.client-bot.staging.toml").read_bytes())
+    return upload
 
 
 def main():
@@ -36,15 +64,18 @@ def main():
     plan = {"project":"eloquent-wisdom","environment":"staging","service":SERVICES[args.service],
         "service_id":service["serviceId"],"source_commit":revision,"variables_changed":[],
         "sending_enabled":False,"external_writes":False,"tilda_enabled":False,
-        "client_healthcheck":"/health" if args.service=="client" else None}
+        "client_healthcheck":"/health" if args.service=="client" else None,
+        "upload_config":"railway.client-bot.staging.toml as railway.toml" if args.service=="client" else "Dockerfile"}
     print(json.dumps({"plan":plan}),flush=True)
     if not args.execute:
         return
     if subprocess.check_output(["git","status","--porcelain"],text=True).strip():
         raise RuntimeError("commit_reviewed_changes_before_deploy")
     before = service["latestDeployment"]["id"]
-    # CLI honors .gitignore: .env, local DB, dumps and artifacts are not uploaded.
-    cli("up",*target,"--detach","--message","order-desk safe code "+revision)
+    upload = prepare_upload(revision, args.service)
+    # Archive includes only reviewed commit files. --no-gitignore is required
+    # because its safe temporary parent is itself ignored in the original repo.
+    cli("up",str(upload),"--path-as-root","--no-gitignore",*target,"--detach","--message","order-desk safe code "+revision)
     deadline = time.monotonic()+360
     result = None
     while time.monotonic()<deadline:

@@ -72,11 +72,18 @@ Deploy по умолчанию выводит план. `--execute` разреш
 тестов и commit: проверяет UUID проекта/environment/сервиса, ветку и выключенные
 external writes/sending/Tilda. Переменные не меняет, миграции не запускает, manager
 не обновляет. Git push не нужен, чтобы не инициировать обновление других services.
-Локальные секреты и артефакты исключены `.gitignore`/`.dockerignore`.
+Upload собирается только из `git archive` проверенного commit; локальные `.env`,
+БД, backup и артефакты не попадают в него. Для client конфиг копируется под стандартным
+именем `railway.toml`: текущая service не настроена на custom config path. Это изменение
+содержимого code upload, без изменения variables или source settings Railway.
+Архив upload остаётся в игнорируемой `.staging-artifacts` для проверки.
 Результат deployment сохраняется в `.staging-artifacts/order-desk-deploy-ROLE.json`.
 
 Client start command: `python -m app.workers.client_bot`; config
 `railway.client-bot.staging.toml`, healthcheck `/health`, timeout 120.
+До включения GitHub autodeploy для client отдельно настроить custom config path:
+без него последующий deploy из GitHub не прочитает этот TOML. Такое live изменение
+настроек в текущий read-only/code-only scope не входит.
 `/health` отражает отсутствие отказа процесса, `/ready` дополнительно требует polling.
 Во время переключения deployment новый процесс может ожидать advisory lock старого;
 поэтому rollout healthcheck использует `/health`, после запуска проверяется worker_ready.
