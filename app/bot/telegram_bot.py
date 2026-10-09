@@ -675,3 +675,5 @@ from app.bot.procurement import register as register_procurement, supply_order_c
 register_procurement(dp, check_access, safe_callback_answer, manager_repository)
 from app.bot.buying_commands import register as register_buying_commands
 register_buying_commands(dp, check_access, show_order_list)
+from app.bot.order_desk import register as register_order_desk
+register_order_desk(dp, check_access, safe_callback_answer)

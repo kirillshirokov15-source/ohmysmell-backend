@@ -129,3 +129,18 @@ Supplier replies originate only from the separate supplier-email worker, never
 from CUSTOMER Gmail. The manager notifier still delivers the same durable Buying
 reply events and does not run another Gmail or Telegram intake loop. See
 [GMAIL_MAILBOXES.md](GMAIL_MAILBOXES.md) for the two service/env configurations.
+# Заказы сайта Tilda (staging MVP)
+
+Полный контракт: [TILDA_ORDER_FLOW.md](TILDA_ORDER_FLOW.md).
+`/site D` открывает заявку сайта; «Взять заказ» атомарно назначает ответственного.
+`D` — номер заявки, `O` — номер подтверждённого Order (виден в карточке).
+Только ответственный согласовывает сумму, отвечает и меняет статусы заказа.
+`/reply D текст` — явный ответ клиенту; обычный текст/reply группы не пересылается.
+`/sitereprice D` применяет исправленный оператором retail mapping к незакрытой заявке.
+`/siteitems D` показывает полный список позиций и розничных цен.
+Кнопки «Ожидает подтверждения», «Подтвердить товары и розничную сумму», «Ожидает оплаты»
+дополняют существующие кнопки оплаты/сборки/доставки. Отгрузка полностью ручная.
+`/outbox_retry ID` повторяет failed/blocked/uncertain сообщение после ручной проверки;
+`/outbox_sent ID TELEGRAM_MESSAGE_ID` фиксирует подтверждённую доставку без повтора.
+При uncertain Telegram мог уже доставить сообщение: сначала проверить адресата.
+Новая очередь включается `ORDER_DESK_SEND_ENABLED=true` только для разрешённого smoke.

@@ -16,11 +16,22 @@ def create_dispatcher(service=None):
 
     @router.callback_query()
     async def no_manager_callbacks(callback):
-        await callback.answer("Действие недоступно в клиентском боте.", show_alert=True)
+        from aiogram.exceptions import TelegramBadRequest
+        try:
+            await callback.answer("Действие недоступно в клиентском боте.", show_alert=True)
+        except TelegramBadRequest:
+            # A stale, non-business callback must not stall durable polling.
+            pass
 
     @router.message()
     async def message(message):
         if message.chat.type != "private" or not message.from_user:
+            return
+        import os
+        if os.getenv("CLIENT_ORDER_DESK_ENABLED", "false").lower() == "true":
+            from app.services.order_desk import DeskService
+            # A failed DB commit must fail the update; never acknowledge a lost message.
+            await DeskService().client(message.from_user.id, message.message_id, message.text)
             return
         phone = None
         if message.contact:

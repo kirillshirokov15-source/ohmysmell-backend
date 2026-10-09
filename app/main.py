@@ -57,6 +57,8 @@ app = FastAPI(
 )
 from app.api.public import router as public_router
 app.include_router(public_router)
+from app.api.tilda import router as tilda_router
+app.include_router(tilda_router)
 from app.api.supply import router as supply_router
 app.include_router(supply_router)
 from app.api.buying import router as buying_router, auth_router as buying_auth_router, picker_router
@@ -86,6 +88,9 @@ def serialize_order(order):
         "customer_type": order.customer_type,
         "source": order.source,
         "status": order.status,
+        "manual_fulfillment": getattr(order, "manual_fulfillment", False),
+        "desk_draft_id": getattr(order, "desk_draft_id", None),
+        "assigned_manager_telegram_id": getattr(order, "assigned_manager_telegram_id", None),
         **{key: getattr(order, key, None) for key in ("revision", "fulfillment_status", "payment_status", "needs_review", "status_changed_at", "status_changed_by_manager_id", "assembling_at", "assembled_at", "shipped_at", "paid_at", "paid_by_manager_id", "payment_note", "delivery_method", "delivery_status", "delivery_reference")},
         "phone": order.phone,
         "email": getattr(order, "customer_email", None),

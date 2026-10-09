@@ -15,6 +15,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship, column_property
 from app.models.customer import CustomerIdentity
 from app.models.draft_order import DraftOrder
+from app.models.order_desk import OrderDesk
 
 from app.database.base import Base
 from app.models.sales import CustomerType, OrderSource
@@ -54,6 +55,7 @@ class Order(Base):
     fulfillment_status: Mapped[str] = mapped_column(String(20), default="new", server_default="new", index=True)
     payment_status: Mapped[str] = mapped_column(String(20), default="unpaid", server_default="unpaid", index=True)
     needs_review: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    manual_fulfillment: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     status_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status_changed_by_manager_id: Mapped[int | None] = mapped_column(ForeignKey("managers.id"))
     assembling_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -99,6 +101,10 @@ class Order(Base):
             CustomerIdentity.identity_type == "email").order_by(CustomerIdentity.id).limit(1)
             .correlate_except(CustomerIdentity).scalar_subquery(),
     ), expire_on_flush=False)
+    desk_draft_id = column_property(select(OrderDesk.draft_id).where(OrderDesk.order_id == id)
+        .correlate_except(OrderDesk).scalar_subquery(), expire_on_flush=False)
+    assigned_manager_telegram_id = column_property(select(OrderDesk.actor_telegram_id).where(OrderDesk.order_id == id)
+        .correlate_except(OrderDesk).scalar_subquery(), expire_on_flush=False)
 
     telegram: Mapped[str | None] = mapped_column(
         String(255),

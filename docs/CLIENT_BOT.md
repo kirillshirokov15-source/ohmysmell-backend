@@ -45,3 +45,15 @@ See EXTERNAL_INTEGRATIONS.md for exact token/live acceptance steps.
 Client polling handles updates sequentially: dialogue messages remain ordered and
 the polling offset advances after the handler completes its durable transaction.
 Manager polling remains bounded concurrent; order row locks/revisions serialize effects.
+# Клиент заказов Tilda
+
+Для order desk: `CLIENT_TELEGRAM_ENABLED=true`, `CLIENT_ORDER_DESK_ENABLED=true`,
+отдельный `CLIENT_TELEGRAM_BOT_TOKEN`; `ORDER_DESK_SEND_ENABLED=true` разрешает
+исходящие Telegram sends. Все flags в примере выключены до staging acceptance.
+Старый режим `/request` сохраняется при выключенном `CLIENT_ORDER_DESK_ENABLED`.
+`/start OPAQUE_TOKEN` связывает только конкретную заявку; `/orders` — свои заявки,
+`/status D` — публичный статус, `/message D текст` — сообщение менеджеру.
+Личный Telegram Start обязателен; номер заказа сам по себе не даёт доступ.
+Текст до 3000 UTF-16 units, без parse_mode, вложения не поддерживаются.
+Подробности, TTL, безопасная выдача ссылки и Railway:
+[TILDA_ORDER_FLOW.md](TILDA_ORDER_FLOW.md).

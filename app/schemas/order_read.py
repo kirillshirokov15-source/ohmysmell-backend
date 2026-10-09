@@ -26,6 +26,9 @@ class OrderRead(BaseModel):
     customer_type: CustomerType
     source: OrderSource
     status: OrderStatus
+    manual_fulfillment: bool = False
+    desk_draft_id: int | None = None
+    assigned_manager_telegram_id: int | None = None
     revision: int
     fulfillment_status: Literal["new", "assembling", "assembled", "shipped", "cancelled"]
     payment_status: Literal["unpaid", "paid"]

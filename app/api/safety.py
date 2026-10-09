@@ -34,6 +34,17 @@ class RequestSafetyMiddleware:
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
         started = perf_counter()
+        if scope.get("path") == "/integrations/tilda/orders":
+            # Mutate the original server scope before Uvicorn formats access logs.
+            # Proxy/edge logs need independent query suppression before enabling this mode.
+            from urllib.parse import parse_qs
+            query = scope.get("query_string", b"")
+            scope["query_string"] = b""
+            try:
+                values = parse_qs(query.decode("ascii"), max_num_fields=10).get("secret", [])
+                scope["tilda_query_secret"] = values[0] if len(values) == 1 else ""
+            except (ValueError, UnicodeError):
+                scope["tilda_query_secret"] = ""
         # Only the bounded Excel endpoint accepts a larger binary request body.
         limit = 2 * 1024 * 1024 if scope.get("path", "").startswith("/buying/suppliers/") and scope.get("path", "").endswith("/price-lists/preview") else self.max_body
         chunks, size = [], 0

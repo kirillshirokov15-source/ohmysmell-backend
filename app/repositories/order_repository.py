@@ -49,7 +49,7 @@ async def create_order(validated_order: dict) -> Order:
         from app.services.supply_service import capture_order_supply
         await capture_order_supply(session, order)
         await session.commit()
-        await session.refresh(order, attribute_names=["customer_email"])
+        await session.refresh(order, attribute_names=["customer_email", "desk_draft_id", "assigned_manager_telegram_id"])
         return order
 
 

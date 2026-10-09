@@ -31,6 +31,8 @@ class ShipmentExportService:
                 .options(selectinload(Order.items)))).scalar_one()
             if not order.moysklad_order_id:
                 raise ValueError("Сначала требуется подтверждённый customerorder")
+            if order.manual_fulfillment:
+                raise ValueError("Заказы Tilda обслуживаются вручную")
             items = {i.id: i for i in order.items}
             payload = demand(settings.moysklad_organization_id, order.counterparty_id,
                 shipment.warehouse_id, order.moysklad_order_id,

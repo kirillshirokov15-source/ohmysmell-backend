@@ -107,6 +107,17 @@ class OrderOperations:
                 .options(selectinload(Order.items)).with_for_update())).scalar_one_or_none()
             if not order:
                 raise OperationError("Заказ не найден.")
+            if order.manual_fulfillment:
+                from app.models.order_desk import OrderDesk
+                from app.services.order_desk import authorized_manager, manager_chat, require_owner, DeskError
+                try:
+                    await authorized_manager(session, telegram_id, manager_chat())
+                    desk = await session.scalar(select(OrderDesk).where(OrderDesk.order_id == order_id))
+                    if not desk:
+                        raise DeskError("Нет привязанной заявки.")
+                    require_owner(desk, telegram_id)
+                except DeskError as error:
+                    raise ManagerDenied(str(error)) from None
             previous = (await session.execute(select(OrderEvent).where(OrderEvent.order_id == order_id,
                 OrderEvent.idempotency_key == request.idempotency_key))).scalar_one_or_none()
             if previous:
@@ -120,7 +131,7 @@ class OrderOperations:
                     XSettlement.order_id == order_id, XSettlement.status == "requires_financial_review"))
                 if financial_review:
                     raise OperationError("Продажа ниже стоимости X требует отдельного финансового решения; обычная проверка не снимает блокировку.")
-            if request.action == "assembling":
+            if request.action == "assembling" and not order.manual_fulfillment:
                 plans = list((await session.execute(select(Shipment).where(Shipment.order_id == order_id)
                     .options(selectinload(Shipment.allocations)))).scalars())
                 quantities = {}
@@ -150,6 +161,9 @@ class OrderOperations:
                     procurement.revision += 1
             session.add(OrderEvent(order_id=order.id, manager_id=manager.id, action=request.action,
                 idempotency_key=request.idempotency_key, request_hash=digest, before=before, after=snapshot(order)))
+            if order.manual_fulfillment:
+                from app.services.order_desk import status_notification
+                await status_notification(session, order, telegram_id)
             await session.flush()
         event = {"paid": "payment_marked", "delivery": "delivery_status_changed"}.get(request.action, "fulfillment_status_changed")
         log_event(logger, event, order_id=order.id, manager_id=manager.id,

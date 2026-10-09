@@ -20,7 +20,7 @@ async def request(app, method, path, payload=None, headers=None, content=None, r
     scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
         "method": method, "scheme": "http", "path": path, "raw_path": path.encode(),
         "query_string": url.query.encode(), "root_path": "", "server": ("test", 80), "client": ("127.0.0.1", 1),
-        "headers": [(b"content-type", b"application/json")] +
+        "headers": ([] if any(k.lower() == "content-type" for k in (headers or {})) else [(b"content-type", b"application/json")]) +
                    [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]}
     try:
         await app(scope, receive, send)

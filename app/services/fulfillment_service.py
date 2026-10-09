@@ -20,6 +20,8 @@ class FulfillmentService:
                      .options(selectinload(Order.items)).with_for_update())).scalar_one_or_none()
             if not order:
                 raise StockAllocationError("Заказ не найден")
+            if order.manual_fulfillment:
+                raise StockAllocationError("Заказы Tilda распределяются и отгружаются вручную")
             if expected_revision is not None and order.revision != expected_revision:
                 raise StockAllocationError("Карточка устарела; обновите заказ")
             if order.fulfillment_status != "new" or order.needs_review:

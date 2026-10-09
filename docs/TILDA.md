@@ -151,3 +151,9 @@ missing retail price is shown as price on request, with manager review and no pa
 Order operational states are internal. Never send X-Internal-API-Token or
 X-Manager-Telegram-ID from Tilda. Client Telegram is an optional intake channel,
 not a replacement storefront. Browser tests remain dependent on the final site.
+# Новый staging order desk
+
+Для оформления без оплаты и общения через отдельный Telegram bot используйте
+[TILDA_ORDER_FLOW.md](TILDA_ORDER_FLOW.md). Endpoint: `POST /integrations/tilda/orders`.
+Ниже сохранена документация прежнего website checkout; это отдельный контракт,
+не описание native Tilda webhook payload. Не подключать оба intake к одному checkout.

@@ -15,7 +15,7 @@ def main():
     if report.get("alembic_check") != "passed":
         raise RuntimeError("Fresh schema validation must pass first")
     environment = dict(os.environ, OMS_STAGING_TESTS="1", OMS_STAGING_SCHEMA=report["schema"])
-    result = subprocess.run([sys.executable, "-m", "pytest", "tests/test_postgres_staging.py", "-q",
+    result = subprocess.run([sys.executable, "-m", "pytest", "tests/test_postgres_staging.py", "tests/test_tilda_postgres.py", "-q",
                              "--tb=short", "--junitxml=.staging-artifacts/staging-tests.xml", *sys.argv[1:]], env=environment)
     raise SystemExit(result.returncode)
 

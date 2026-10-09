@@ -86,6 +86,8 @@ def build_draft_card(draft: DraftOrder) -> str:
 
 
 def build_draft_keyboard(draft: DraftOrder) -> dict:
+    if (getattr(draft, "contact_details", None) or {}).get("tilda"):
+        return {"inline_keyboard": [[{"text": "Открыть заявку сайта", "callback_data": f"desk:refresh:{draft.id}"}]]}
     if str(draft.status) in {"new", "rejected"}:
         return {"inline_keyboard": []}
     rows = [] if channel_customer_type(getattr(draft, "source", "email")) else [[

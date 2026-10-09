@@ -70,3 +70,9 @@ Operations: [Production configuration](docs/PRODUCTION_READINESS.md),
 [Incident response](docs/INCIDENT_RUNBOOK.md), [PII and test fixtures](docs/DATA_RETENTION.md).
 Production template: `deploy/production.env.example`; prepared future services:
 `deploy/worker-services.json`. Optional monitoring is disabled by default.
+# Tilda / Telegram order management (staging)
+
+Полный новый flow, deployment и ручной acceptance:
+[docs/TILDA_ORDER_FLOW.md](docs/TILDA_ORDER_FLOW.md).
+Приём Tilda и новая Telegram-очередь по умолчанию выключены;
+`EXTERNAL_WRITES_ENABLED=false`. Нужен отдельный client bot worker.

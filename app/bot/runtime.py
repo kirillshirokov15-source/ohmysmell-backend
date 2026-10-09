@@ -32,8 +32,10 @@ def validate_worker(role):
     token = os.getenv(key, "")
     if not token:
         raise ValueError(key + " is required")
-    if role == "client" and token == os.getenv("TELEGRAM_BOT_TOKEN"):
+    if role == "client" and token.split(":")[0] == os.getenv("TELEGRAM_BOT_TOKEN", "").split(":")[0]:
         raise ValueError("Client and manager require different bot tokens")
+    if role == "client" and os.getenv("CLIENT_TELEGRAM_ENABLED", "false").lower() != "true":
+        raise ValueError("Client Telegram worker is disabled")
     if not settings.database_url:
         raise ValueError("Database is required")
     return token
@@ -51,6 +53,33 @@ class OwnedBot(Bot):
             # An unmanaged poller may use another DB: fail closed, never fight it.
             self.failed.set()
             raise
+
+
+async def durable_client_poll(dp, bot):
+    """Confirm Telegram offsets only after the update and reply outbox commit.
+
+    Aiogram's standard polling loop catches handler exceptions and advances its
+    offset; order-desk intake must instead retry the same update after DB failure.
+    """
+    offset = None
+    while True:
+        try:
+            updates = await bot(GetUpdates(offset=offset, timeout=25, allowed_updates=dp.resolve_used_update_types()))
+        except TelegramConflictError:
+            raise
+        except Exception as error:
+            log_event(logger, "client_poll_retry", result=type(error).__name__)
+            await asyncio.sleep(2)
+            continue
+        for update in updates:
+            while True:
+                try:
+                    await dp.feed_update(bot, update)
+                    break
+                except Exception as error:
+                    log_event(logger, "client_update_retry", result=type(error).__name__)
+                    await asyncio.sleep(2)
+            offset = update.update_id + 1
 
 
 async def run_worker(role="manager", *, drop_pending_updates=False):
@@ -112,9 +141,14 @@ async def run_worker(role="manager", *, drop_pending_updates=False):
             log_event(logger, "worker_ready", role=role, external_writes=settings.external_writes_enabled, polling_instances=1)
             # Client dialogue updates stay ordered, and polling offset advances
             # only after the handler commits. Manager actions serialize in DB.
-            polling = asyncio.create_task(dp.start_polling(bot, handle_signals=False, handle_as_tasks=role == "manager", tasks_concurrency_limit=8, close_bot_session=False))
+            durable = role == "client" and os.getenv("CLIENT_ORDER_DESK_ENABLED", "false").lower() == "true"
+            polling = asyncio.create_task(durable_client_poll(dp, bot) if durable else
+                dp.start_polling(bot, handle_signals=False, handle_as_tasks=role == "manager", tasks_concurrency_limit=8, close_bot_session=False))
             watch = asyncio.create_task(watchdog())
             tasks = [polling, watch]
+            if os.getenv("ORDER_DESK_SEND_ENABLED", "false").lower() == "true":
+                from app.workers.desk_outbox import main as desk_outbox
+                tasks.append(asyncio.create_task(desk_outbox(bot, role)))
             tasks.append(asyncio.create_task(stop.wait()))
             if role == "manager":
                 from app.workers.notifications import main as notifications
@@ -123,7 +157,10 @@ async def run_worker(role="manager", *, drop_pending_updates=False):
             for task in done:
                 task.result()
             if not polling.done():
-                await dp.stop_polling()
+                if durable:
+                    polling.cancel()
+                else:
+                    await dp.stop_polling()
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)

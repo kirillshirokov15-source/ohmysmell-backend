@@ -46,6 +46,8 @@ class DraftOrderRepository:
             return draft
     @staticmethod
     def _ensure_editable(draft):
+        if (getattr(draft, "contact_details", None) or {}).get("tilda"):
+            raise InvalidOrderTransitionError("Используйте карточку заявки сайта /site НОМЕР")
         if draft.finalized_order_id or draft.status not in {"draft", "needs_review", "ready"}:
             raise InvalidOrderTransitionError("Черновик уже закрыт; обновите карточку")
 
@@ -298,7 +300,7 @@ class DraftOrderRepository:
                 raise InvalidOrderTransitionError("Карточка устарела; обновите черновик")
             ensure_order_transition(draft.status, OrderStatus.NEW)
             if (draft.customer_type != order_customer_type(draft.source, draft.customer_type)
-                    or draft.customer_type == "unknown" or not draft.counterparty_id
+                    or draft.customer_type == "unknown" or (not draft.counterparty_id and not (draft.contact_details or {}).get("tilda_review_approved"))
                     or not draft.items or draft.total is None
                     or any(i.qty <= 0 or i.quantity_confidence != "confirmed" or i.price is None or i.price < 0
                            or not i.product_id or i.match_status != "matched"
@@ -317,6 +319,7 @@ class DraftOrderRepository:
                 comment=(draft.contact_details or {}).get("comment") or f"{draft.source}: {draft.subject or 'без темы'}",
                 status=OrderStatus.NEW,
                 total=draft.total,
+                manual_fulfillment=bool((draft.contact_details or {}).get("tilda")),
             )
             order.items.extend(
                 OrderItem(
@@ -332,11 +335,21 @@ class DraftOrderRepository:
             session.add(order)
             await session.flush()
             draft.finalized_order_id = order.id
-            from app.services.supply_service import capture_order_supply
-            await capture_order_supply(session, order)
+            if order.manual_fulfillment:
+                from app.models.order_desk import OrderDesk
+                from app.services.order_desk import status_notification
+                desk = await session.get(OrderDesk, draft.id, with_for_update=True)
+                if not desk or not (draft.contact_details or {}).get("tilda_review_approved"):
+                    raise InvalidOrderTransitionError("Сначала подтвердите заявку через карточку сайта")
+                desk.order_id = order.id
+                await session.flush()
+                await status_notification(session, order, desk.actor_telegram_id)
+            else:
+                from app.services.supply_service import capture_order_supply
+                await capture_order_supply(session, order)
             draft.status = OrderStatus.NEW
             await session.execute(update(InboundMessage).where(
                 InboundMessage.id == draft.inbound_message_id).values(order_id=order.id))
             await session.commit()
-            await session.refresh(order, attribute_names=["customer_email"])
+            await session.refresh(order, attribute_names=["customer_email", "desk_draft_id", "assigned_manager_telegram_id"])
             return order

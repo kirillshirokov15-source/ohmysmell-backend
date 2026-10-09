@@ -29,6 +29,8 @@ class MoySkladOrderService:
             )
 
         # Заказ в МойСкладе уже был создан
+        if getattr(order, "manual_fulfillment", False):
+            raise MoySkladOrderError("Заказы Tilda обслуживаются вручную; экспорт отключён")
         if order.moysklad_order_id:
             return {
                 "id": order.moysklad_order_id,

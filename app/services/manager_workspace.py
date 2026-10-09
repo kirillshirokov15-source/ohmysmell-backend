@@ -28,6 +28,8 @@ def order_card(order, shipments=()):
         f"Доставка: {DELIVERY_LABELS[order.delivery_method]} · {DELIVERY_STATUS[order.delivery_status]}"]
     if order.delivery_reference:
         lines.append(f"Номер доставки: {order.delivery_reference}")
+    if getattr(order, "assigned_manager_telegram_id", None):
+        lines.append(f"Ответственный: Telegram ID {order.assigned_manager_telegram_id}")
     if order.needs_review:
         lines.append("⚠️ Требует проверки")
     if order.paid_at:
@@ -44,7 +46,8 @@ def order_card(order, shipments=()):
             item = by_id.get(allocation.order_item_id)
             lines.append(f"• {item.name[:100] if item else allocation.order_item_id}: {allocation.qty} шт.")
     if not shipments:
-        lines.append("Распределение по складам ещё не выполнено.")
+        lines.append("Ручное выполнение: наличие, сборка и отгрузка подтверждаются менеджером."
+            if getattr(order, "manual_fulfillment", False) else "Распределение по складам ещё не выполнено.")
     text = "\n".join(lines)
     return text if len(text) <= 4000 else text[:3850] + f"\nВсе позиции и склады: /items {order.id}"
 
@@ -60,7 +63,7 @@ def order_keyboard(order, shipments=()):
         else:
             if order.fulfillment_status == "new":
                 external_only = getattr(order, "supply_external_only", False)
-                can_start = bool(shipments) or (external_only and getattr(order, "supply_received", False))
+                can_start = bool(shipments) or getattr(order, "manual_fulfillment", False) or (external_only and getattr(order, "supply_received", False))
                 waiting_supply = getattr(order, "supply_has_external", False) and not getattr(order, "supply_received", False)
                 if not waiting_supply and (not external_only or can_start):
                     add("Начать сборку" if can_start else "Распределить по складам", "assembling" if can_start else "allocate")
@@ -80,6 +83,8 @@ def order_keyboard(order, shipments=()):
         elif order.delivery_status == "dispatched":
             add("Доставлен", "delivered")
     add("Обновить", "refresh")
+    if getattr(order, "desk_draft_id", None):
+        buttons.append([{"text": "Заявка сайта / связь с клиентом", "callback_data": f"desk:refresh:{order.desk_draft_id}"}])
     if getattr(order, "supply_has_external", False):
         add("Закупки по заказу", "procurement")
     return {"inline_keyboard": buttons}
