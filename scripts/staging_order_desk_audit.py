@@ -40,6 +40,8 @@ def read_service(instance):
         "domains": [d["domain"] for d in instance.get("domains", {}).get("serviceDomains", [])]}
     deploy = (meta.get("serviceManifest") or {}).get("deploy") or {}
     result["deployment_config"] = {k: deploy.get(k) for k in ("startCommand", "healthcheckPath", "healthcheckTimeout")}
+    result["healthcheck_file_property_detected"] = "deploy.healthcheckPath" in (meta.get("propertyFileMapping") or {})
+    # A file-property mapping alone is not proof that a platform HTTP probe ran.
     try:
         rows = cli("logs", *target, "--lines", "150", "--json").splitlines()
         messages = [json.loads(row).get("message", "") for row in rows if row.strip()]

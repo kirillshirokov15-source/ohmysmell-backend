@@ -81,9 +81,11 @@ Upload собирается только из `git archive` проверенно
 
 Client start command: `python -m app.workers.client_bot`; config
 `railway.client-bot.staging.toml`, healthcheck `/health`, timeout 120.
-До включения GitHub autodeploy для client отдельно настроить custom config path:
-без него последующий deploy из GitHub не прочитает этот TOML. Такое live изменение
-настроек в текущий read-only/code-only scope не входит.
+Перед следующим GitHub deploy проверить источник effective healthcheck config:
+одного наличия TOML в repo недостаточно. Изменение live service settings согласовывается
+отдельно. Согласно [актуальной документации Railway](https://docs.railway.com/config-as-code),
+Config as Code deprecated и имеет ограничения для новых services; нельзя считать
+распознавание file-property доказательством применения healthcheck.
 `/health` отражает отсутствие отказа процесса, `/ready` дополнительно требует polling.
 Во время переключения deployment новый процесс может ожидать advisory lock старого;
 поэтому rollout healthcheck использует `/health`, после запуска проверяется worker_ready.
@@ -158,3 +160,22 @@ Fake transport E2E покрывает webhook → draft → manager card/claim �
 двусторонний текст → Order → paid/assembled/shipped/delivered. Настоящие FastAPI,
 SQLAlchemy и aiogram handlers, но сеть Telegram заменена. Это не live Telegram/Tilda E2E.
 Live staging БД при аудите только читалась; новая миграция для этой доработки не нужна.
+
+## Результат безопасного deployment
+
+- Backend: code `ba7b197f1d99146cb1450aef4517116b48e0a70f`, deployment
+  `39418f53-f93a-40ec-8df2-791b0c2150a1`, SUCCESS; HTTP `/`, `/health/db`, OpenAPI — 200.
+- Client: code `efa7b96e95ef2c949038c1dc220ace489b3c6a23`, deployment
+  `9a7f0c24-b4b4-4e27-b5d8-62b6656b26df`, SUCCESS; новый worker_ready, без startup/polling errors.
+- Manager: прежний `ddb7d65`, SUCCESS; `/health` и `/ready` — 200, polling=true.
+- Queue до/после одинакова: единственное approved pending сообщение 1, attempts=0.
+  Миграции/variables/tokens не менялись; sending выключен, external writes=false.
+
+**Healthcheck client: частичная проверка.** Локальные HTTP routes проверены;
+Railway распознал `deploy.healthcheckPath` в file-property mapping upload, но
+возвращает `healthcheckPath=null` в serviceManifest и пустой fileServiceManifest.
+HTTP probe платформы не подтверждён. У client нет публичного домена, SSH read-only probe
+недоступен без зарегистрированного SSH key. Не считать SUCCESS доказательством HTTP
+healthcheck. После разрешения на live settings требуется явно проверить/задать
+healthcheck `/health`, затем подтвердить `/ready` и один polling owner.
+Создание домена/SSH key в текущей проверке не выполнялось.

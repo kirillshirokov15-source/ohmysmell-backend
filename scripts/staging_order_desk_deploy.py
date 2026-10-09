@@ -64,7 +64,7 @@ def main():
     plan = {"project":"eloquent-wisdom","environment":"staging","service":SERVICES[args.service],
         "service_id":service["serviceId"],"source_commit":revision,"variables_changed":[],
         "sending_enabled":False,"external_writes":False,"tilda_enabled":False,
-        "client_healthcheck":"/health" if args.service=="client" else None,
+        "requested_client_healthcheck":"/health" if args.service=="client" else None,
         "upload_config":"railway.client-bot.staging.toml as railway.toml" if args.service=="client" else "Dockerfile"}
     print(json.dumps({"plan":plan}),flush=True)
     if not args.execute:
