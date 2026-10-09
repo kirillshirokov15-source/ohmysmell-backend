@@ -95,6 +95,7 @@ def test_no_wholesale_fallback(monkeypatch):
 def test_webhook_auth_fails_closed(tilda_config, monkeypatch, secret, enabled, status):
     monkeypatch.setenv("TILDA_ENABLED", enabled)
     if secret == "missing-config": monkeypatch.delenv("TILDA_WEBHOOK_SECRET")
+    if secret == "correct": secret = "synthetic-tilda-secret-32-characters-only"
     app = FastAPI(); app.include_router(tilda.router)
     actual = asyncio.run(request(app, "POST", "/integrations/tilda/orders", payload(), headers={"X-Tilda-Secret":secret}))[0]
     assert actual == status
