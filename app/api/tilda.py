@@ -1,10 +1,14 @@
 import hmac
 import logging
 import os
+import re
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from app.api.auth import require_internal_api_token
-from app.integrations.tilda import TildaInvalid, TildaConfigurationError, normalize, parse_body
+from app.integrations.tilda import (
+    TildaInvalid, TildaConfigurationError, normalize, parse_body,
+    DEFAULT_FIELDS, field_map, path_value,
+)
 from app.services.order_desk import TildaIntake, DeskService, DeskError
 from app.logging_utils import log_event
 
@@ -37,7 +41,23 @@ async def receive_order(request: Request):
         if data == {"test": "test"}:
             log_event(logger, "tilda_webhook_handshake_accepted")
             return PlainTextResponse("ok", status_code=200, headers={"Cache-Control": "no-store"})
-        if os.getenv("TILDA_ENABLED", "false").lower() != "true":
+        # Staging-only live-cart test. Non-test buyers remain handled by the
+        # existing Tilda receivers; this endpoint does not persist their data.
+        enabled = os.getenv("TILDA_ENABLED", "false").lower() == "true"
+        test_mode = os.getenv("TILDA_TEST_MODE", "false").lower() == "true"
+        if test_mode:
+            if enabled or os.getenv("RAILWAY_ENVIRONMENT_NAME", "").lower() != "staging":
+                raise HTTPException(503, "tilda_test_mode_invalid")
+            allowed = os.getenv("TILDA_TEST_EMAIL", "").strip().casefold()
+            if len(allowed) > 320 or not re.fullmatch(r"[^@\s]+@[^@\s]+", allowed):
+                raise HTTPException(503, "tilda_test_email_not_configured")
+            email_path = field_map("TILDA_FIELD_MAP_JSON", DEFAULT_FIELDS)["email"]
+            incoming = path_value(data, email_path)
+            if not isinstance(incoming, str) or incoming.strip().casefold() != allowed:
+                log_event(logger, "tilda_test_order_ignored")  # Never log buyer PII.
+                return PlainTextResponse("ignored", status_code=200,
+                                         headers={"Cache-Control": "no-store"})
+        elif not enabled:
             raise HTTPException(503, "tilda_not_configured")
         payload = normalize(data, request.headers.get("Idempotency-Key"))
         result = await TildaIntake().submit(payload)
