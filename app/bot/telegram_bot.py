@@ -125,6 +125,21 @@ async def check_access(message: Message) -> bool:
 
     return True
 
+@dp.message(F.text, Command("chatid"))
+async def chat_id_handler(message: Message):
+    from app.config.settings import settings
+
+    # Bootstrap diagnostics only: never relax the group action allowlist.
+    if settings.environment != "staging":
+        return
+    if message.from_user is None or message.sender_chat is not None:
+        return
+    await message.answer(
+        f"chat_id={message.chat.id}\nuser_id={message.from_user.id}",
+        parse_mode=None,
+    )
+
+
 @dp.message(CommandStart())
 async def start_handler(message: Message):
     if not await check_access(message):
@@ -448,6 +463,11 @@ class ManagerRecoveryMiddleware(BaseMiddleware):
         started = perf_counter()
         message = event.message if isinstance(event, CallbackQuery) else event
         from app.bot.manager_group import allowed_event
+        from app.config.settings import settings
+        if (settings.environment == "staging" and isinstance(event, Message)
+                and event.text and await Command("chatid")(event, data["bot"])):
+            # Dispatch only this diagnostic; never grant access to other handlers.
+            return await chat_id_handler(event)
         if not allowed_event(event, isinstance(event, CallbackQuery)):
             return
         try:

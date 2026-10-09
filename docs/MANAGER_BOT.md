@@ -62,6 +62,18 @@ existing private testing mode remains. No topics are used. Anonymous admin posts
 wrong chats, unknown actors and ordinary group conversation are ignored.
 Keep BotFather privacy mode enabled; commands and inline callbacks are sufficient.
 
+Staging bootstrap diagnostic: with `APP_ENV=staging`, send `/chatid` (or
+`/chatid@BOT_USERNAME`) from your personal Telegram account in the target group.
+The reply contains only `chat_id=<numeric chat id>` and `user_id=<numeric sender id>`
+on separate lines. No manager registration or group allowlist is needed for this
+command. Anonymous admin posts are ignored because they do not identify the person.
+Before IDs are known, use `MANAGER_TELEGRAM_MODE=auto` and leave both
+`MANAGER_TELEGRAM_CHAT_ID` and `MANAGER_TELEGRAM_USER_IDS` empty; explicit `group`
+mode still requires complete configuration at startup. Then configure the returned
+IDs and restart the staging worker. All business commands and callbacks keep their
+existing access checks. The diagnostic remains staging-only and is disabled in
+production and development.
+
 Use `/start`, `/orders`, `/drafts`, `/order ID`, `/draft ID`, existing procurement
 commands and inline buttons. Group setup requires a real group ID; synthetic tests
 do not constitute a live Telegram group acceptance.
