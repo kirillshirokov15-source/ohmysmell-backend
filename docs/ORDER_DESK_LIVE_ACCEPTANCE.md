@@ -58,18 +58,53 @@ Telegram API receipts prove acceptance by Telegram, not that the human read the 
 Actual user Start, claim, two-way text and lifecycle actions are evaluated separately from
 transport receipts. Synthetic Telegram updates must not be substituted for those actions.
 
-## Scope of completed acceptance
+## Resumed live acceptance: draft 36, finalized Order 15
 
-No genuine Start/link consume or manager claim arrived during the observation window.
-Drafts 36 and 37 remain unassigned and unlinked; no finalized Order was created.
-Consequently real two-way conversation, manager payment acknowledgement and assembly/
-shipment/delivery transitions are **not yet verified live**. The operator requested Start,
-`/message 36 SYNTHETIC CLIENT E2E`, the claim button and `/reply 36 SYNTHETIC MANAGER E2E`;
-none may be simulated and reported as actual user interaction.
+The initial window ended before genuine user actions. A separately approved window
+reused draft **36** and existing group card **176**, without creating another draft.
+Both workers allowed only draft 36 and the approved private user/existing group;
+the explicit message-ID scope was empty. Intake stayed disabled throughout the resume.
+The expiring link was renewed and privately delivered with Outbox **5**, Telegram **4**.
+`scripts.staging_order_desk_resume` checks this exact session/draft before every action;
+the link sender uses the current encrypted delivery key instead of the original envelope.
+
+Actual Telegram user actions and PostgreSQL audit confirm:
+
+| Check | Evidence |
+|---|---|
+| Claim | manager 1, actor `898019732`, assigned timestamp; DeskEvent 3 |
+| Client link | customer `898019732`, linked timestamp; DeskEvent 4 |
+| Manager → client | Outbox 10, incoming group message 180, client receipt 8 |
+| Client → group | Outbox 11, incoming client message 9, group receipt 182 |
+| Order confirmation | DeskEvent 8; exactly one finalized Order 15, retail, 3030 minor units |
+| Payment | OrderEvent 36, revision 1, paid |
+| Assembly | OrderEvents 37/38, revisions 2/3, assembling → assembled |
+| Manual courier | OrderEvent 39, revision 4, delivery method manual |
+| Shipment status | OrderEvent 40, revision 5, shipped/dispatched |
+| Delivery status | OrderEvent 41, revision 6, delivered |
+| Final client `/status 36` | Outbox 22, client receipt 21, sent |
+
+All conversation envelopes were sent in one attempt. Boolean checks against the two
+approved synthetic text markers verified their routing without dumping message bodies.
+Every human audit action resolves to the approved actor; no synthetic Telegram updates
+were injected. The user confirmed completion of the genuine UI actions.
+The authoritative Order statuses are paid/shipped/delivered. The separate desk workflow
+stage retains `awaiting_payment`; it is not the source of truth for actual payment or delivery.
+
+The first client command preceded link consumption and correctly failed ownership checks.
+Its response is Outbox **7**, draft null, approved test recipient, pending, attempts 0.
+It was excluded from the draft-only scope and was neither sent, deleted nor relabelled.
+After linking, the repeated command produced exactly one customer message and receipt.
+Global idempotency-key duplicate groups: **0**. At acceptance completion: **21 sent,
+1 pending**, no sending/uncertain/failed/blocked; no unapproved recipients.
+All draft-36 envelopes are sent. Draft 37 was not included in this window or changed.
+
+Order 15 has `manual_fulfillment=true`, no MoySklad ID, and **zero Shipment rows**.
+Global external operations remain **0**. No stock, procurement or real payment was created.
 
 The full local regression rerun passed **531 tests + 7 subtests**, including 41 real
-PostgreSQL tests in a fresh local schema. The fake-network lifecycle E2E passes, but is
-separate evidence from this partial live acceptance. Compileall, pip check, Alembic head/
+PostgreSQL tests in a fresh local schema. The fake-network lifecycle E2E passes and is
+separate evidence from the actual Telegram acceptance above. Compileall, pip check, Alembic head/
 fresh upgrade/check, secret scan and diff whitespace checks pass. No staging migration
 was run; head remains `p59db643bc76`. The local test PostgreSQL server was stopped.
 
@@ -86,7 +121,8 @@ Final sanitized evidence is stored locally in
 Do not interpret old test cards or the previous link as an open sending window after cleanup.
 Resuming acceptance requires reopening the same bounded scope and checking link expiry.
 
-Final verification at **2026-10-09 18:31 UTC**:
+Historical first-window verification at **2026-10-09 18:31 UTC** (superseded by the
+resumed acceptance above and the final recovery artifact):
 
 - All three raw variable collections exactly match the baseline; sending/intake false,
   `EXTERNAL_WRITES_ENABLED=false`; no token rotation or Gmail/MoySklad setting changes.
@@ -99,6 +135,38 @@ Final verification at **2026-10-09 18:31 UTC**:
 - Actual client message delivery was proven. The separate Railway HTTP healthcheck
   verification limitation from the go-live report is not resolved by a send receipt.
 
+## Post-acceptance recovery, 2026-10-09 19:17 UTC
+
+- Backend, manager and client raw variable collections exactly match their encrypted
+  baseline, including original absence of temporary keys. Sending and intake are false;
+  `EXTERNAL_WRITES_ENABLED=false`. Existing tokens and Gmail/MoySklad configuration match.
+- All three deployments are SUCCESS; both workers report `worker_ready`, startup errors 0.
+  Backend `/` and `/health/db` return 200; the actual disabled Tilda webhook returns 503.
+- Queue remains **21 sent / 1 pending** (excluded Outbox 7); every draft-36 message is sent.
+  No unapproved recipients, sending/uncertain/failed/blocked, or new external operations.
+- Draft 36 points to paid/shipped/delivered manual Order 15. Draft 37 is unchanged.
+  Shipment and procurement counts for Order 15 are both zero.
+- Final regression: **531 passed + 7 subtests, 0 failed, 0 skipped**, including **41**
+  PostgreSQL tests. Fresh local migration upgrade/check passed; staging migrations were
+  not run. Compileall, pip check, secret scan and diff check passed. No linter is configured.
+  Test artifacts: `acceptance-final-tests.xml`, `acceptance-final-migrations.log`,
+  `validation.json`, all in ignored `.staging-artifacts`. The local test server is stopped.
+- Live evidence: `.staging-artifacts/acceptance-resumed-live-evidence.json`; recovery
+  evidence: `order-desk-approved-final-verification.json` in the same private directory.
+  The latter is regenerated after deployment and is the current deployment inventory.
+
+The application tree is unchanged after live acceptance; subsequent changes are the
+operator resume/link-delivery tooling and this evidence report. Deploy final committed
+snapshots with sending/intake off, then verify their revision before any feature push.
+
+Push preflight found an enabled GitHub autodeploy for the staging email worker on
+`feature/sales-core-v2`, with no watch-path filter. An ordinary push also redeploys that
+worker. Do not assume a commit-message skip tag prevents Railway deployment: the
+[documented control](https://docs.railway.com/deployments/github-autodeploys) is the service
+autodeploy setting. Changing that unrelated worker's setting requires a narrowly approved
+exception to the instruction not to touch Gmail. Its running deployment, variables and
+credentials must remain unchanged. Production is connected to `main`, outside this task.
+
 ## Remaining real Tilda work
 
 1. Obtain a synthetic payload from the actual Tilda project and confirm field/item mapping.
@@ -109,6 +177,8 @@ Final verification at **2026-10-09 18:31 UTC**:
 4. Implement checkout ownership verification and a trusted success-page bridge. Native webhook
    JSON response is not assumed to be available to the browser. Never expose an internal API token.
 5. Keep stable transaction IDs across retries; test independent identical carts as separate orders.
-6. Finish genuine Telegram acceptance and operational handling of blocked/uncertain delivery.
+6. Rehearse operational handling of blocked/uncertain delivery. Genuine link, claim,
+   two-way text and the internal lifecycle have now passed; a second live manager and
+   actual bot blocking were not exercised with the single approved test account.
 7. Approve live intake/sending separately. Keep automatic Tilda→MoySklad sync, payments and
    warehouse document creation disabled; production remains outside this acceptance.

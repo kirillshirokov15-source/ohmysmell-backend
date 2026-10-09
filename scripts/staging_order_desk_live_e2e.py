@@ -253,7 +253,7 @@ def deliver_link(state):
     assert v['EXTERNAL_WRITES_ENABLED']=='false' and v['ORDER_DESK_SEND_ENABLED']=='true'
     assert v[SCOPE+'CLIENT_RECIPIENT_IDS']==str(APPROVED_USER)
     assert did in {int(x) for x in v[SCOPE+'DRAFT_IDS'].split(',')}
-    record=rows('SELECT id,status,attempts,destination,draft_id FROM desk_messages WHERE idempotency_key=%s',(state['run']+':test-link',))[0]
+    record=rows('SELECT id,status,attempts,destination,draft_id FROM desk_messages WHERE idempotency_key=%s',(state.get('link_delivery_key',state['run']+':test-link'),))[0]
     assert record['destination']==APPROVED_USER and record['draft_id']==did
     assert record['status']=='sending' and record['attempts']==0
     connection=db();connection.set_session(readonly=False)
