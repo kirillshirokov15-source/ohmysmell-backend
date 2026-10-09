@@ -1,5 +1,8 @@
 # Order Desk: staging go-live
 
+Результаты отдельно разрешённого живого synthetic прогона и восстановления настроек:
+[ORDER_DESK_LIVE_ACCEPTANCE.md](ORDER_DESK_LIVE_ACCEPTANCE.md).
+
 ## Проверенный исходный снимок, 2026-10-09
 
 Проект `eloquent-wisdom`, только environment `staging`. Три сервиса backend/manager/client
