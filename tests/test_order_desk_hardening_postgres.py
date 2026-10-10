@@ -33,7 +33,7 @@ async def confirmed(factory,actors):
 
 def test_confirmed_lifecycle_projects_to_desk_client_and_order_without_backfill(desk_db):
     from app.services.manager_workspace import order_card
-    from app.models.fulfillment import Shipment,ExternalOperation
+    from app.models.fulfillment import Shipment,ExternalOperation,WarehouseAllocation
     from app.models.supply import ProcurementRequest
     factory,engine,actors=desk_db
     async def run():
@@ -46,6 +46,14 @@ def test_confirmed_lifecycle_projects_to_desk_client_and_order_without_backfill(
             ('delivery',{'delivery_status':'delivered'},'Доставлен')]
         for action,extra,label in steps:
             request=OrderAction(action=action,expected_revision=order.revision,idempotency_key=uuid4().hex,**extra)
+            if action == 'assembling':
+                with pytest.raises(OperationError, match='складам'):
+                    await ops.act(order.id,actors[0],request)
+                # Synthetic source evidence to test downstream projections.
+                async with factory() as s,s.begin():
+                    shipment=Shipment(order_id=order.id,warehouse_id='synthetic-projection-source')
+                    shipment.allocations=[WarehouseAllocation(order_item_id=i.id,qty=i.qty,managed_source=True) for i in order.items]
+                    s.add(shipment)
             order=await ops.act(order.id,actors[0],request)
             assert (await ops.act(order.id,actors[0],request)).revision==order.revision
             card,kb=await desk_card(did)
@@ -67,8 +75,8 @@ def test_confirmed_lifecycle_projects_to_desk_client_and_order_without_backfill(
                 assert 'Доставлен' in ack.body and 'Ожидает оплаты' not in ack.body
             assert await s.scalar(select(func.count()).select_from(OrderEvent).where(OrderEvent.order_id==order.id))==6
             assert await s.scalar(select(func.count()).select_from(DeskEvent).where(DeskEvent.draft_id==did,DeskEvent.action=='tilda_review_approved'))==1
-            for model in (Shipment,ProcurementRequest):
-                assert await s.scalar(select(func.count()).select_from(model).where(model.order_id==order.id))==0
+            assert await s.scalar(select(func.count()).select_from(Shipment).where(Shipment.order_id==order.id))==1
+            assert await s.scalar(select(func.count()).select_from(ProcurementRequest).where(ProcurementRequest.order_id==order.id))==0
             assert await s.scalar(select(func.count()).select_from(ExternalOperation))==external_before
         await engine.dispose()
     asyncio.run(run())

@@ -347,6 +347,7 @@ def staging_sessions(monkeypatch):
                    "app.services.external_operation_service", "app.workers.notifications",
                    "app.services.order_operations", "app.services.client_channel", "app.services.manager_workspace", "app.services.supply_service", "app.bot.procurement", "app.api.supply", "app.api.buying", "app.workers.supplier_replies", "app.workers.buying_notifications"):
         monkeypatch.setattr(importlib.import_module(module), "async_session", factory)
+    monkeypatch.setattr(importlib.import_module("app.services.order_source_service"), "async_session", factory)
     monkeypatch.setattr(settings, "external_writes_enabled", False)
     monkeypatch.setattr(settings, "warehouse_ids", ())
     return factory, engine

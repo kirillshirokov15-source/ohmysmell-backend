@@ -187,14 +187,39 @@ async def checkout_confirm(session, key, expected, actor):
         fail("Cart or prices changed; review a new preview")
     ids = []
     for snapshot in preview["suppliers"]:
-        purchase = BuyingPurchase(supplier_id=snapshot["supplier_id"], snapshot=snapshot, status="draft", send_state="disabled")
-        session.add(purchase)
-        await session.flush()
+        purchase = await create_purchase(session, snapshot, actor)
         ids.append(purchase.id)
-        session.add(BuyingEvent(purchase_id=purchase.id, action="created", actor=actor))
     session.add(BuyingCheckout(key=key, fingerprint=expected, purchase_ids=ids))
     await session.execute(delete(BuyingCart))
     return ids
+
+
+async def create_purchase(session, snapshot, actor):
+    """Shared purchase creation; caller owns transaction and idempotency lock.
+
+    Both shared-cart checkout and explicit order allocations use this path. No
+    customer contacts or selling prices are copied into the supplier snapshot.
+    """
+    purchase = BuyingPurchase(supplier_id=snapshot["supplier_id"], snapshot=snapshot,
+                              status="draft", send_state="disabled")
+    session.add(purchase)
+    await session.flush()
+    session.add(BuyingEvent(purchase_id=purchase.id, action="created", actor=actor))
+    return purchase
+
+
+async def cancel_unsubmitted_purchase(session, identifier, actor):
+    """Cancelling a source may withdraw its exclusive, still-unsent purchase.
+
+    A sent/received purchase is retained for reconciliation, never undone by
+    pretending that an already ordered or received quantity disappeared.
+    """
+    await lock(session)
+    purchase = await purchase_get(session, identifier)
+    await session.refresh(purchase, with_for_update=True)
+    if purchase.status == "draft":
+        purchase.status = "cancelled"
+        session.add(BuyingEvent(purchase_id=purchase.id, action="cancelled", actor=actor))
 
 
 async def purchase_get(session, identifier):

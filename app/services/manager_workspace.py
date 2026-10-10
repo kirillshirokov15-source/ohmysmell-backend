@@ -2,7 +2,7 @@
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from app.database.session import async_session
-from app.models.fulfillment import Shipment
+from app.models.fulfillment import Shipment, WarehouseAllocation
 from app.services.telegram_display import telegram_rubles, customer_type_label
 
 FULFILLMENT_LABELS = {"new": "Новый", "assembling": "В сборке", "assembled": "Собран", "shipped": "Отгружен", "cancelled": "Отменён"}
@@ -15,7 +15,8 @@ SOURCE_LABELS = {"telegram": "Telegram", "email": "Почта", "website": "Са
 async def shipments_for(order_id):
     async with async_session() as session:
         return list((await session.execute(select(Shipment).where(Shipment.order_id == order_id)
-            .options(selectinload(Shipment.allocations)).order_by(Shipment.warehouse_id))).scalars())
+            .options(selectinload(Shipment.allocations).selectinload(WarehouseAllocation.buying_purchase))
+            .order_by(Shipment.warehouse_id))).scalars())
 
 
 def order_card(order, shipments=()):
@@ -40,15 +41,29 @@ def order_card(order, shipments=()):
         lines.append(f"Примечание об оплате: {order.payment_note}")
     lines.append(f"Итого: {telegram_rubles(order.total)}")
     for item in order.items:
-        lines.append(f"• {item.name[:150]} · {item.qty} × {telegram_rubles(item.price)} = {telegram_rubles(item.item_total)}")
+        lines.append(f"• #{item.id} {item.name[:150]} · {item.qty} × {telegram_rubles(item.price)} = {telegram_rubles(item.item_total)}")
     by_id = {i.id: i for i in order.items}
     for index, shipment in enumerate(shipments, 1):
-        lines.append(f"\nСклад {index} ({shipment.warehouse_id}):")
+        lines.append(f"\nСклад {index} ({shipment.warehouse_id}), план: {shipment.status}:")
         for allocation in shipment.allocations:
             item = by_id.get(allocation.order_item_id)
             lines.append(f"• {item.name[:100] if item else allocation.order_item_id}: {allocation.qty} шт.")
+            if getattr(allocation, "managed_source", False):
+                from app.services.order_source_service import allocation_ready
+                from app.services.supply_service import LABELS
+                purchase = allocation.buying_purchase
+                status = {"awaiting_receipt": "ожидает получения", "received": "получено, требуется оприходование",
+                    "confirmed": "источник подтверждён", "cancelled": "назначение отменено"}[allocation.supply_status]
+                ready = shipment.status in {"planned", "exported"} and allocation_ready(allocation, manual=True)
+                lines.append(f"  Назначение #{allocation.id}: {LABELS[allocation.source_type]} · {status} · "
+                    f"{'доступно к сборке' if ready else 'недоступно к отгрузке'}")
+                if purchase:
+                    lines.append(f"  Buying B-{purchase.id:06d}: {purchase.status}" +
+                        (" · требуется оформить закупку" if purchase.status == "draft" else ""))
+                if allocation.receipt_simulated:
+                    lines.append("  Получение/оприходование: симуляция, без записи МойСклад")
     if not shipments:
-        lines.append("Ручное выполнение: наличие, сборка и отгрузка подтверждаются менеджером."
+        lines.append("Назначьте источники: /sources НОМЕР_ЗАКАЗА. До подтверждения источников отгрузка заблокирована."
             if getattr(order, "manual_fulfillment", False) else "Распределение по складам ещё не выполнено.")
     text = "\n".join(lines)
     raw = text.encode("utf-16-le")
@@ -66,9 +81,15 @@ def order_keyboard(order, shipments=()):
         else:
             if order.fulfillment_status == "new":
                 external_only = getattr(order, "supply_external_only", False)
-                can_start = bool(shipments) or getattr(order, "manual_fulfillment", False) or (external_only and getattr(order, "supply_received", False))
+                manual = getattr(order, "manual_fulfillment", False)
+                if manual:
+                    from app.services.order_source_service import OrderSourceService
+                    view = OrderSourceService.view(order, shipments)
+                    can_start = bool(view["items"]) and all(i["ready"] == i["qty"] for i in view["items"])
+                else:
+                    can_start = bool(shipments) or (external_only and getattr(order, "supply_received", False))
                 waiting_supply = getattr(order, "supply_has_external", False) and not getattr(order, "supply_received", False)
-                if not waiting_supply and (not external_only or can_start):
+                if not waiting_supply and (not external_only or can_start) and (not manual or can_start):
                     add("Начать сборку" if can_start else "Распределить по складам", "assembling" if can_start else "allocate")
             elif order.fulfillment_status == "assembling":
                 add("Заказ собран", "assembled")

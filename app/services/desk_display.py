@@ -31,6 +31,7 @@ async def desk_card(draft_id):
             lines[0] = "Новый заказ с сайта · заявка №" + str(draft.id)
         if desk.order_id:
             lines.append(f"Заказ №{desk.order_id}")
+            lines.append(f"Назначение источников и получение товаров: /sources {desk.order_id}")
         if order:
             lines.extend(order_details(order))
         if draft.contact_details.get("comment"):

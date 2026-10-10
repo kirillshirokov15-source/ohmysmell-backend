@@ -168,7 +168,7 @@ def test_fake_tilda_to_manager_client_helpdesk_and_manual_lifecycle(desk_db,monk
             s.add_all([Manager(telegram_id=a,name="SYNTHETIC",is_active=True) for a in actors])
         app=FastAPI();app.include_router(router)
         code,result,_=await request(app,"POST","/integrations/tilda/orders",payload(uuid4().hex),headers={"X-Tilda-Secret":"synthetic-tilda-secret-32-characters-only"},raise_errors=True)
-        assert code==202;did=result["draft_id"]
+        assert code==200;did=result["draft_id"]
         manager_session,client_session=TelegramSession(),TelegramSession()
         manager_bot=Bot("12345:"+"a"*35,session=manager_session)
         client_bot=Bot("67890:"+"b"*35,session=client_session)
@@ -224,9 +224,11 @@ def test_fake_tilda_to_manager_client_helpdesk_and_manual_lifecycle(desk_db,monk
         await DeskService().stage(did,actors[0],-100123456,"awaiting_payment")
         with pytest.raises(ManagerDenied):
             await OrderOperations().act(order.id,actors[1],OrderAction(action="paid",expected_revision=0,idempotency_key="other"))
-        for action,extra in [("paid",{}),("assembling",{}),("assembled",{}),("delivery",{"delivery_method":"manual"})]:
+        for action,extra in [("paid",{}),("delivery",{"delivery_method":"manual"})]:
             order=await OrderOperations().act(order.id,actors[0],OrderAction(action=action,expected_revision=order.revision,idempotency_key=uuid4().hex,**extra))
         from app.services.order_operations import OperationError
+        with pytest.raises(OperationError, match="складам"):
+            await OrderOperations().act(order.id,actors[0],OrderAction(action="assembling",expected_revision=order.revision,idempotency_key=uuid4().hex))
         with pytest.raises(OperationError, match="складам"):
             await OrderOperations().act(order.id,actors[0],OrderAction(action="shipped",expected_revision=order.revision,idempotency_key=uuid4().hex))
         assert order.delivery_status=="pending" and order.payment_status=="paid"

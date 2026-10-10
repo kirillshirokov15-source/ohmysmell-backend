@@ -123,7 +123,7 @@ def test_telegram_normalization(value):
 def test_card_displays_two_warehouses_and_context_actions():
     from app.services.manager_workspace import order_card, order_keyboard
     item = SimpleNamespace(id=1, name="Свеча", qty=4, price=2500, item_total=10000)
-    plans = [SimpleNamespace(warehouse_id=w, allocations=[SimpleNamespace(order_item_id=1, qty=2)]) for w in ("w1", "w2")]
+    plans = [SimpleNamespace(warehouse_id=w, status="planned", allocations=[SimpleNamespace(order_item_id=1, qty=2)]) for w in ("w1", "w2")]
     o = order(items=[item])
     card = order_card(o, plans)
     assert "Склад 1" in card and "Склад 2" in card and "Свеча: 2 шт." in card

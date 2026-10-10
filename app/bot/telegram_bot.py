@@ -698,3 +698,5 @@ from app.bot.buying_commands import register as register_buying_commands
 register_buying_commands(dp, check_access, show_order_list)
 from app.bot.order_desk import register as register_order_desk
 register_order_desk(dp, check_access, safe_callback_answer)
+from app.bot.order_sources import register as register_order_sources
+register_order_sources(dp, check_access)
