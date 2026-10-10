@@ -42,8 +42,9 @@ def allowed_event(event, callback=False):
     if not callback and getattr(message, "sender_chat", None):
         return False
     from app.bot.manager_menu import MENU_TEXTS
+    from app.bot.manager_dialog import BUTTONS, waiting
     text = getattr(message, "text", "")
-    return callback or bool(text and (text.startswith("/") or text in MENU_TEXTS))
+    return callback or bool(text and (text.startswith("/") or text in MENU_TEXTS or text in BUTTONS or waiting(message)))
 
 
 def notification_chats(managers):

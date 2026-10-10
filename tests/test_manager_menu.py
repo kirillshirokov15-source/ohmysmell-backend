@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from aiogram import Bot
-from aiogram.types import Chat, Message, Update, User, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from aiogram.types import Chat, Message, Update, User, CallbackQuery, ForceReply, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 
 from tests.telegram_transport import TelegramSession
 
@@ -12,6 +12,8 @@ from tests.telegram_transport import TelegramSession
 @pytest.fixture
 def dispatch(monkeypatch):
     from app.bot import telegram_bot, procurement, order_sources
+    from app.bot.manager_dialog import pending
+    pending.clear()
     monkeypatch.delenv("MANAGER_TELEGRAM_CHAT_ID", raising=False)
     monkeypatch.delenv("MANAGER_TELEGRAM_USER_IDS", raising=False)
     access = AsyncMock(return_value=True)
@@ -23,16 +25,19 @@ def dispatch(monkeypatch):
     monkeypatch.setattr(procurement, "show_procurements", purchases)
     monkeypatch.setattr(order_sources, "OrderSourceService", sources)
 
-    def send(text, *, group=False, actor=11, chat_id=None, anonymous=False):
+    def send(text, *, group=False, actor=11, chat_id=None, anonymous=False, reply=None, callback=None):
         session = TelegramSession()
         bot = Bot("123456:TEST_TOKEN", session=session)
         chat = Chat(id=chat_id or (-100123 if group else actor), type="supergroup" if group else "private")
         message = Message(message_id=42, date=datetime.now(timezone.utc), chat=chat,
                           from_user=User(id=actor, is_bot=False, first_name="Manager"),
-                          sender_chat=chat if anonymous else None, text=text)
+                          sender_chat=chat if anonymous else None, text=text,
+                          reply_to_message=Message(message_id=reply, date=datetime.now(timezone.utc), chat=chat) if reply else None)
         async def run():
             try:
-                await telegram_bot.dp.feed_update(bot, Update(update_id=1, message=message))
+                update = Update(update_id=1, callback_query=CallbackQuery(id="test", from_user=message.from_user,
+                    chat_instance="test", message=message, data=callback)) if callback else Update(update_id=1, message=message)
+                await telegram_bot.dp.feed_update(bot, update)
             finally:
                 await bot.session.close()
         asyncio.run(run())
@@ -49,7 +54,7 @@ def test_menu_target_and_hide(dispatch, monkeypatch, group, text, hidden):
         monkeypatch.setenv("MANAGER_TELEGRAM_CHAT_ID", "-100123")
         monkeypatch.setenv("MANAGER_TELEGRAM_USER_IDS", "11")
     calls = dispatch(text, group=group)
-    assert len(calls) == 1
+    assert len(calls) == (2 if group and not hidden else 1)
     assert isinstance(calls[0].reply_markup, ReplyKeyboardRemove if hidden else ReplyKeyboardMarkup)
     assert calls[0].reply_markup.selective is group
     if group:
@@ -77,7 +82,7 @@ def test_procurements_alias(dispatch, text):
 @pytest.mark.parametrize("text,command", [("Источники", "/sources"), ("Найти заказ", "/order")])
 def test_id_required_without_mutation(dispatch, text, command):
     calls = dispatch(text)
-    assert len(calls) == 1 and command in calls[0].text
+    assert len(calls) == 1 and isinstance(calls[0].reply_markup, ForceReply)
     dispatch.sources.assert_not_called()
     dispatch.orders.assert_not_awaited()
 

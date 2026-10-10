@@ -106,3 +106,4 @@ def register(dp, check_access):
             await message.answer(str(error), parse_mode=None)
         except (ValueError, IndexError):
             await message.answer(HELP, parse_mode=None)
+    return sources

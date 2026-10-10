@@ -153,9 +153,14 @@ async def start_handler(message: Message):
     await message.answer(
         "Меню менеджера. Выберите раздел.\n"
         "Обновить — список заказов. Скрыть: /hide_menu; вернуть: /menu.\n"
-        "Поиск по номеру: /order НОМЕР. Источники: /sources НОМЕР.",
+        "Найти заказ / Источники — ввод номера. Отмена: /cancel.\n"
+        "Все команды: /help.",
         parse_mode=None, **menu_options(message),
     )
+    if message.chat.type in {"group", "supergroup"}:
+        from app.bot.manager_dialog import fallback
+        await message.answer("Если нижние кнопки не отвечают, используйте это меню:",
+                             reply_markup=fallback(message.from_user.id))
 
 
 @dp.message(or_f(Command("hide_menu"), F.text == "Скрыть меню"))
@@ -474,6 +479,10 @@ class ManagerRecoveryMiddleware(BaseMiddleware):
         if not allowed_event(event, isinstance(event, CallbackQuery)):
             return
         try:
+            if isinstance(event, Message):
+                from app.bot.manager_dialog import route
+                if await route(event, check_access, {"order": find_order, "sources": sources_handler}):
+                    return
             return await handler(event, data)
         except Exception as error:
             log_event(logger, "manager_handler_failed", level=logging.ERROR, result=type(error).__name__)
@@ -681,4 +690,25 @@ register_buying_commands(dp, check_access, show_order_list)
 from app.bot.order_desk import register as register_order_desk
 register_order_desk(dp, check_access, safe_callback_answer)
 from app.bot.order_sources import register as register_order_sources
-register_order_sources(dp, check_access)
+sources_handler = register_order_sources(dp, check_access)
+
+
+@dp.callback_query(F.data.startswith("menu:"))
+async def menu_callback(callback):
+    if not await safe_callback_answer(callback):
+        return
+    parts = callback.data.split(":")
+    if len(parts) != 3 or parts[1] != str(callback.from_user.id):
+        return
+    message = callback.message.model_copy(update={"from_user": callback.from_user, "text": "/menu"}).as_(callback.bot)
+    if not await check_access(message):
+        return
+    action = parts[2]
+    from app.bot.manager_dialog import prompt, pending, key
+    pending.pop(key(message), None)
+    if action in {"order", "sources"}:
+        await prompt(message, action)
+    elif action in {"orders", "shipped"}:
+        await show_order_list(message, "all" if action == "orders" else "shipped", 0)
+    elif action == "procurements":
+        await show_procurements(message)
