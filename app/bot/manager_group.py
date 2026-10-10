@@ -41,7 +41,9 @@ def allowed_event(event, callback=False):
     # Anonymous admin posts cannot identify the human actor.
     if not callback and getattr(message, "sender_chat", None):
         return False
-    return callback or bool(getattr(message, "text", "") and message.text.startswith("/"))
+    from app.bot.manager_menu import MENU_TEXTS
+    text = getattr(message, "text", "")
+    return callback or bool(text and (text.startswith("/") or text in MENU_TEXTS))
 
 
 def notification_chats(managers):

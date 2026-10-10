@@ -1,5 +1,6 @@
 """Explicit, versioned manager commands for existing warehouse allocations."""
-from aiogram.filters import Command
+from aiogram import F
+from aiogram.filters import Command, or_f
 from app.services.order_source_service import OrderSourceService
 from app.services.order_desk import DeskError
 from app.schemas.order_sources import SourceAction
@@ -58,7 +59,7 @@ def register(dp, check_access):
         except (ValueError,DeskError,ExternalOperationConflict) as error:
             await message.answer(str(error),parse_mode=None)
 
-    @dp.message(Command("sources", "sourceadd", "sourceaction"))
+    @dp.message(or_f(Command("sources", "sourceadd", "sourceaction"), F.text == "Источники"))
     async def sources(message):
         if not await check_access(message):
             return

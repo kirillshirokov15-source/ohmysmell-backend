@@ -10,11 +10,9 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
     Message,
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-    ReplyKeyboardRemove,
 )
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import Command, or_f
+from app.bot.manager_menu import menu_options
 from app.services.order_lifecycle import InvalidOrderTransitionError
 from app.models.sales import CustomerType
 from app.repositories.draft_order_repository import DraftOrderRepository
@@ -33,21 +31,6 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не найден в .env")
-
-
-main_menu = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="📦 Новые заказы"), KeyboardButton(text="📋 Все заказы")],
-        [KeyboardButton(text="Требуют проверки"), KeyboardButton(text="Готовые заявки")],
-        [KeyboardButton(text="В сборке"), KeyboardButton(text="Собранные")],
-        [KeyboardButton(text="Отгруженные"), KeyboardButton(text="Отменённые")],
-        [KeyboardButton(text="Неоплаченные"), KeyboardButton(text="Оплаченные")],
-        [KeyboardButton(text="Поиск заказа"), KeyboardButton(text="📦 Остатки")],
-        [KeyboardButton(text="👥 Контрагенты"), KeyboardButton(text="⚙️ Настройки")],
-        [KeyboardButton(text="🆔 Мой ID")],
-        [KeyboardButton(text="Требуют закупки")],
-    ], resize_keyboard=True,
-)
 
 
 dp = Dispatcher()
@@ -142,6 +125,7 @@ async def chat_id_handler(message: Message):
 
 MANAGER_HELP = (
     "Кабинет менеджера OhMySmell\n"
+    "/menu — нижнее меню; /hide_menu — скрыть меню\n"
     "/site НОМЕР — заявка сайта, ответственный и история\n"
     "/reply НОМЕР текст — ответ клиенту по номеру заявки, не заказа\n"
     "/orders — список заказов; /order НОМЕР — карточка заказа\n"
@@ -161,27 +145,25 @@ async def help_handler(message: Message):
         [{"text": "Заявки на проверку", "callback_data": "draftpage:needs_review:0"}]]))
 
 
-@dp.message(CommandStart())
+@dp.message(Command("start", "menu"))
 async def start_handler(message: Message):
     if not await check_access(message):
         return
 
-    from app.bot.manager_group import group_id
-    if group_id() is not None:
-        await help_handler(message)
+    await message.answer(
+        "Меню менеджера. Выберите раздел.\n"
+        "Обновить — список заказов. Скрыть: /hide_menu; вернуть: /menu.\n"
+        "Поиск по номеру: /order НОМЕР. Источники: /sources НОМЕР.",
+        parse_mode=None, **menu_options(message),
+    )
+
+
+@dp.message(or_f(Command("hide_menu"), F.text == "Скрыть меню"))
+async def hide_menu_handler(message: Message):
+    if not await check_access(message):
         return
+    await message.answer("Меню скрыто. Вернуть: /menu", **menu_options(message, hide=True))
 
-    await message.answer(
-        "Обновляю меню…",
-        reply_markup=ReplyKeyboardRemove(),
-    )
-
-    await message.answer(
-        "🏠 Главное меню\n\n"
-        "OhMySmell CRM запущена ✅\n\n"
-        "Выберите раздел:",
-        reply_markup=main_menu,
-    )
 
 @dp.message(F.text == "🆔 Мой ID")
 async def my_id_handler(message: Message):
@@ -522,7 +504,7 @@ async def show_order_list(message, category, offset):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
-@dp.message(F.text.in_({"Требуют проверки", "Готовые заявки", "В сборке", "Собранные", "Отгруженные", "Неоплаченные", "Оплаченные", "Отменённые", "Поиск заказа"}))
+@dp.message(F.text.in_({"Требуют проверки", "Готовые заявки", "В сборке", "Собранные", "Отгруженные", "Неоплаченные", "Оплаченные", "Отменённые", "Поиск заказа", "Отгрузки"}))
 async def workspace_section(message):
     if not await check_access(message):
         return
@@ -534,7 +516,7 @@ async def workspace_section(message):
         if status == "needs_review":
             await show_order_list(message, "review", 0)
     else:
-        category = {"В сборке": "assembling", "Собранные": "assembled", "Отгруженные": "shipped",
+        category = {"В сборке": "assembling", "Собранные": "assembled", "Отгруженные": "shipped", "Отгрузки": "shipped",
             "Неоплаченные": "unpaid", "Оплаченные": "paid", "Отменённые": "cancelled"}[message.text]
         await show_order_list(message, category, 0)
 
@@ -564,7 +546,7 @@ async def workspace_page(callback):
         await show_draft_list(callback.message, category, max(0, int(offset)))
 
 
-@dp.message(Command("order", "draft"))
+@dp.message(or_f(Command("order", "draft"), F.text == "Найти заказ"))
 async def find_order(message):
     if not await check_access(message):
         return

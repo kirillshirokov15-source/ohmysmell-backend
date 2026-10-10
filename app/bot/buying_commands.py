@@ -1,16 +1,17 @@
 """Small command surfaces for shared-group mode and quantity corrections."""
-from aiogram.filters import Command
+from aiogram import F
+from aiogram.filters import Command, or_f
 from aiogram.types import InlineKeyboardMarkup
 
 
 def register(dp, check_access, show_order_list):
-    @dp.message(Command("procurements"))
+    @dp.message(or_f(Command("procurements"), F.text == "Закупки"))
     async def procurements(message):
         if await check_access(message):
             from app.bot.procurement import show_procurements
             await show_procurements(message)
 
-    @dp.message(Command("orders"))
+    @dp.message(or_f(Command("orders"), F.text.in_({"Заказы", "Обновить"})))
     async def orders(message):
         if await check_access(message):
             await show_order_list(message, "all", 0)

@@ -302,9 +302,11 @@ def test_manager_email_projection_preserves_existing_identity():
 
 
 def test_manager_menu_exposes_all_daily_sections_in_russian():
-    from app.bot.telegram_bot import main_menu
-    labels = {button.text for row in main_menu.keyboard for button in row}
-    assert {"📦 Новые заказы", "Требуют проверки", "Готовые заявки", "В сборке", "Собранные", "Отгруженные", "Неоплаченные", "Оплаченные", "Отменённые", "Поиск заказа"} <= labels
+    from app.bot.manager_menu import menu_options
+    menu = menu_options(SimpleNamespace(chat=SimpleNamespace(type="private")))["reply_markup"]
+    labels = {button.text for row in menu.keyboard for button in row}
+    assert labels == {"Заказы", "Найти заказ", "Источники", "Отгрузки", "Закупки", "Обновить", "Скрыть меню"}
+    assert menu.resize_keyboard
 
 
 def test_order_card_contains_email():
