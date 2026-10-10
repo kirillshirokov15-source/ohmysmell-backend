@@ -9,6 +9,7 @@ from app.models.order import Order
 from app.services.desk_status import stage_label, order_details
 from app.services.order_desk import DeskError
 from app.services.telegram_display import telegram_rubles
+from app.services.tilda_availability import availability, stock_label
 
 
 async def desk_card(draft_id):
@@ -17,6 +18,7 @@ async def desk_card(draft_id):
         draft = await session.scalar(select(DraftOrder).where(DraftOrder.id == draft_id).options(selectinload(DraftOrder.items)))
         if not desk or not draft:
             raise DeskError("Заявка не найдена.")
+        stocks = await availability(draft.items)
         manager = await session.get(Manager, desk.manager_id) if desk.manager_id else None
         order = await session.get(Order, desk.order_id) if desk.order_id else None
         stage = stage_label(desk, draft, order)
@@ -37,11 +39,19 @@ async def desk_card(draft_id):
             lines.append("Розничная сумма для согласования: " + telegram_rubles(sum(i.price * i.qty for i in draft.items)))
         reported = draft.contact_details.get("reported_total_minor")
         lines.append("Заявлено сайтом: " + (telegram_rubles(reported) if reported is not None else "некорректно/не указано"))
+        lines.append("Проверка суммы: " + ("арифметика согласована; требуется одобрение менеджера"
+            if draft.total is not None and draft.contact_details.get("tilda_price_source") == "webhook"
+            else "требует проверки"))
         if not desk.order_id:
             lines.append("Проверка: " + (draft.review_notes or "Требуется согласование"))
-        lines.append("Источники и наличие проверить. Сборка и отгрузка вручную.")
+        lines.append("Цена Tilda заявлена сайтом; одобрение менеджера обязательно.")
+        lines.append("Источник товара подтвердить до отгрузки. Остаток не является резервом.")
         lines.append(f"Все позиции с ценами: /siteitems {draft_id}")
-        lines += [f"{index}. {i.raw_product_text[:80]} × {i.qty}" for index, i in enumerate(draft.items[:15], 1)]
+        lines += [f"{index}. {i.raw_product_text[:60]} × {i.qty}\n"
+                  f"МойСклад: {(i.product_name or '')[:60] if i.product_id else i.match_status} · "
+                  f"артикул: {i.article or '—'} · Tilda: "
+                  f"{telegram_rubles(i.price) if i.price is not None else 'проверить цену'}\n{stock_label(i, stocks)}"
+                  for index, i in enumerate(sorted(draft.items, key=lambda i: i.id)[:15], 1)]
         if len(draft.items) > 15:
             lines.append(f"Всего позиций: {len(draft.items)}. Остальные: /siteitems {draft_id}")
         rows = [[{"text": "Взять заказ", "callback_data": f"desk:claim:{draft_id}"}]] if not desk.manager_id and draft.status != "rejected" and not desk.order_id else []
@@ -67,9 +77,13 @@ async def desk_items(draft_id):
         if not await session.get(OrderDesk, draft_id):
             raise DeskError("Заявка не найдена.")
         draft = await session.scalar(select(DraftOrder).where(DraftOrder.id == draft_id).options(selectinload(DraftOrder.items)))
-        return [f"Заявка №{draft_id} · позиция {n}: {i.raw_product_text}\nТовар: {i.product_id or 'сопоставление не задано'}\n"
-            f"{i.qty} × {telegram_rubles(i.price) if i.price is not None else 'розничная цена требует проверки'}"
-            for n,i in enumerate(draft.items,1)]
+        stocks = await availability(draft.items)
+        return [f"Заявка №{draft_id} · позиция {n}: {i.raw_product_text}\n"
+            f"МойСклад: {i.product_name if i.product_id else i.match_status} ({i.product_id or '—'})\n"
+            f"Артикул: {i.article or '—'} · цена Tilda (заявленная): "
+            f"{i.qty} × {telegram_rubles(i.price) if i.price is not None else 'требует проверки'}\n"
+            f"{stock_label(i, stocks)}."
+            for n,i in enumerate(sorted(draft.items, key=lambda i: i.id),1)]
 
 
 async def desk_history(draft_id):

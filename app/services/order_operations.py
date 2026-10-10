@@ -131,7 +131,8 @@ class OrderOperations:
                     XSettlement.order_id == order_id, XSettlement.status == "requires_financial_review"))
                 if financial_review:
                     raise OperationError("Продажа ниже стоимости X требует отдельного финансового решения; обычная проверка не снимает блокировку.")
-            if request.action == "assembling" and not order.manual_fulfillment:
+            if ((request.action == "assembling" and not order.manual_fulfillment)
+                    or (request.action == "shipped" and order.manual_fulfillment)):
                 plans = list((await session.execute(select(Shipment).where(Shipment.order_id == order_id)
                     .options(selectinload(Shipment.allocations)))).scalars())
                 quantities = {}

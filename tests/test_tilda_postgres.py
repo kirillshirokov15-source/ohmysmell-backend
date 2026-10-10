@@ -139,7 +139,8 @@ def test_retail_profile_total_review_and_missing_mapping(desk_db, monkeypatch):
             draft=await s.get(DraftOrder,did)
             assert draft.customer_type=="retail" and draft.customer_id==cid and draft.total is None
             assert (await s.get(Customer,cid)).customer_type=="wholesale"
-        monkeypatch.setenv("TILDA_PRODUCT_MAP_JSON","{}")
+        monkeypatch.setattr("app.services.product_matching_service.ProductMatchingService.products_async",
+                            AsyncMock(return_value=[]))
         missing=(await TildaIntake().submit(normalize(payload(uuid4().hex))))["draft_id"]
         async with factory() as s:
             assert (await s.get(DraftOrder,missing)).total is None
@@ -223,15 +224,18 @@ def test_fake_tilda_to_manager_client_helpdesk_and_manual_lifecycle(desk_db,monk
         await DeskService().stage(did,actors[0],-100123456,"awaiting_payment")
         with pytest.raises(ManagerDenied):
             await OrderOperations().act(order.id,actors[1],OrderAction(action="paid",expected_revision=0,idempotency_key="other"))
-        for action,extra in [("paid",{}),("assembling",{}),("assembled",{}),("delivery",{"delivery_method":"manual"}),("shipped",{}),("delivery",{"delivery_status":"delivered"})]:
+        for action,extra in [("paid",{}),("assembling",{}),("assembled",{}),("delivery",{"delivery_method":"manual"})]:
             order=await OrderOperations().act(order.id,actors[0],OrderAction(action=action,expected_revision=order.revision,idempotency_key=uuid4().hex,**extra))
-        assert order.delivery_status=="delivered" and order.payment_status=="paid"
+        from app.services.order_operations import OperationError
+        with pytest.raises(OperationError, match="складам"):
+            await OrderOperations().act(order.id,actors[0],OrderAction(action="shipped",expected_revision=order.revision,idempotency_key=uuid4().hex))
+        assert order.delivery_status=="pending" and order.payment_status=="paid"
         async with factory() as s:
             for model in (Shipment,ProcurementRequest):
                 assert await s.scalar(select(func.count()).select_from(model).where(model.order_id==order.id))==0
             assert order.moysklad_order_id is None
         while await run_once(client_bot,"client"):pass
-        assert any("Доставлен" in c.text for c in client_session.calls)
+        assert not any("Доставлен" in c.text for c in client_session.calls)
         await manager_bot.session.close();await client_bot.session.close();await engine.dispose()
     asyncio.run(run())
 

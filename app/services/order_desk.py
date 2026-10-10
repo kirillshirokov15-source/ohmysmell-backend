@@ -17,7 +17,8 @@ from app.models.order import Order
 from app.models.order_desk import OrderDesk, OrderLink, DeskEvent, DeskMessage
 from app.models.operations import ClientUpdate
 from app.services.checkout_service import transaction_lock
-from app.integrations.tilda import digest, product_map
+from app.integrations.tilda import digest
+from app.services.tilda_review import (review, apply_review, source_rows, confirmation_problems, ITEM_FIELDS)
 from app.logging_utils import log_event
 
 logger = logging.getLogger(__name__)
@@ -97,8 +98,7 @@ class TildaIntake:
                 received_at=now(), processing_status="processed", customer_id=customer.id)
             session.add(inbound)
             await session.flush()
-            mapping = product_map()
-            problems = list(payload["problems"])
+            rows, total, problems = await review(payload)
             draft = DraftOrder(inbound_message_id=inbound.id, customer_id=customer.id, source="website",
                 customer_type="retail", customer_name=payload["name"] or "Клиент сайта", sender_email=email,
                 subject="Заказ Tilda", status="needs_review", counterparty_candidates=[],
@@ -107,22 +107,12 @@ class TildaIntake:
                     "discount_minor": payload["discount"], "currency": payload["currency"],
                     "external_products": [i["externalid"] for i in payload["items"]]})
             for row in payload["items"]:
-                product = mapping.get(row["externalid"])
-                price = product["retail_price_minor"] if product else None
-                if not product or price is None:
-                    problems.append("retail_mapping_required")
-                elif price != row["price_minor"]:
-                    problems.append("retail_price_mismatch")
-                draft.items.append(DraftOrderItem(raw_product_text=row["name"], qty=row["qty"],
-                    product_id=product["product_id"] if product else None, product_name=row["name"],
-                    price=price, item_total=price * row["qty"] if price is not None else None,
-                    match_status="matched" if product else "not_found", candidates=[]))
-            if payload["discount"]:
-                problems.append("discount_requires_agreement")
-            draft.total = sum(i.item_total for i in draft.items) if not problems else None
-            draft.review_notes = ", ".join(sorted(set(problems))) or "Подтвердите наличие, розничную сумму и условия с клиентом."
+                draft.items.append(DraftOrderItem(raw_product_text=row["name"], qty=row["qty"]))
+            apply_review(draft, rows, total, problems)
             session.add(draft)
             await session.flush()
+            draft.contact_details = {**draft.contact_details,
+                "tilda_item_sources": {str(item.id): n for n, item in enumerate(draft.items)}}
             desk = OrderDesk(draft_id=draft.id, external_id=payload["external_id"], payload_hash=fingerprint)
             session.add(desk)
             await session.flush()
@@ -335,40 +325,61 @@ class DeskService:
             if not draft.finalized_order_id:
                 if draft.revision != revision or draft.status == "rejected":
                     raise DeskError("Карточка устарела или заявка отменена.")
-                if not draft.items or any(i.price is None or i.price <= 0 or not i.product_id or i.qty <= 0
-                        or i.quantity_confidence != "confirmed" or i.match_status != "matched" for i in draft.items):
-                    raise DeskError("Нужны проверенные товары и розничные цены. Исправьте mapping и выполните /sitereprice.")
-                draft.total = sum(i.price * i.qty for i in draft.items)
-                for item in draft.items:
-                    item.item_total = item.price * item.qty
+                inbound = await session.get(InboundMessage, draft.inbound_message_id)
+                try:
+                    payload, items, _ = source_rows(draft, desk, inbound)
+                except (ValueError, KeyError, TypeError) as error:
+                    raise DeskError("Исходные позиции требуют проверки. Выполните /sitereprice.") from error
+                if confirmation_problems(draft, payload, items):
+                    raise DeskError("Товары, цены, скидка или сумма требуют проверки. Выполните /sitereprice.")
+                # Revalidate identity against a fresh (TTL-bounded) catalog. Never
+                # silently replace a product or approve an expired match.
+                checked, _, problems = await review(payload)
+                if problems or any(i.product_id != r["product_id"] for i, r in zip(items, checked, strict=True)):
+                    raise DeskError("Каталог недоступен или сопоставление изменилось. Выполните /sitereprice.")
                 draft.status = "ready"
                 draft.contact_details = {**draft.contact_details, "tilda_review_approved": True}
                 audit(session, desk, "tilda_review_approved", actor, total_minor=draft.total, revision=revision)
             from app.repositories.draft_order_repository import DraftOrderRepository
             return await DraftOrderRepository().finalize(draft_id, session=session)
 
-    async def reprice(self, draft_id, actor, chat_id):
-        mapping = product_map()
+    async def reprice(self, draft_id, actor, chat_id, *, dry_run=False):
         async with async_session() as session, session.begin():
             await authorized_manager(session, actor, chat_id)
             draft = await session.scalar(select(DraftOrder).where(DraftOrder.id == draft_id)
                 .options(selectinload(DraftOrder.items)).with_for_update())
             desk = await session.get(OrderDesk, draft_id, with_for_update=True)
-            if not desk or not draft or draft.finalized_order_id or draft.status == "rejected":
+            if (not desk or not draft or desk.order_id or draft.finalized_order_id
+                    or draft.status in {"rejected", "new"} or draft.source != "website"):
                 raise DeskError("Заявка недоступна.")
             require_owner(desk, actor)
-            external = draft.contact_details["external_products"]
-            for item, identifier in zip(sorted(draft.items, key=lambda i: i.id), external):
-                product = mapping.get(identifier)
-                item.product_id = product["product_id"] if product else None
-                item.price = product["retail_price_minor"] if product else None
-                item.item_total = item.price * item.qty if item.price is not None else None
-                item.match_status = "matched" if product else "not_found"
-            draft.total = None
-            draft.status = "needs_review"
-            draft.revision += 1
-            draft.contact_details = {**draft.contact_details, "tilda_review_approved": False}
-            audit(session, desk, "tilda_repriced", actor, revision=draft.revision)
+            inbound = await session.get(InboundMessage, draft.inbound_message_id)
+            try:
+                payload, items, bindings = source_rows(draft, desk, inbound)
+            except (ValueError, KeyError, TypeError) as error:
+                raise DeskError("Нельзя безопасно восстановить исходные позиции.") from error
+            rows, total, problems = await review(payload)
+            from app.services.tilda_review import REVIEW_NOTE
+            changed = (any(any(getattr(i, key) != row[key] for key in ITEM_FIELDS)
+                           for i, row in zip(items, rows, strict=True))
+                or draft.total != total or draft.review_notes != (", ".join(problems) or REVIEW_NOTE)
+                or draft.status != "needs_review" or draft.contact_details.get("tilda_review_approved") is not False
+                or draft.contact_details.get("tilda_item_sources") != bindings
+                or draft.contact_details.get("tilda_review_problems") != problems
+                or draft.contact_details.get("tilda_price_source") != "webhook")
+            result = {"draft_id": draft.id, "revision": draft.revision, "changed": changed,
+                      "total_minor": total, "problems": problems,
+                      "items": [{"item_id": i.id, "sku": r["externalid"], **row}
+                                for i, r, row in zip(items, payload["items"], rows, strict=True)]}
+            if dry_run:
+                return result
+            if changed:
+                apply_review(draft, rows, total, problems, items)
+                draft.contact_details = {**draft.contact_details, "tilda_item_sources": bindings}
+                draft.revision += 1
+            audit(session, desk, "tilda_repriced", actor, revision=draft.revision, changed=changed)
+            result["revision"] = draft.revision
+            return result
 
 
 async def public_status(session, desk):

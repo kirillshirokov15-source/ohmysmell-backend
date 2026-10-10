@@ -21,6 +21,7 @@ def payload(identifier="synthetic-order"):
 
 @pytest.fixture
 def tilda_config(monkeypatch):
+    monkeypatch.setattr("app.integrations.moysklad.client.MOYSKLAD_TOKEN", "synthetic-no-network")
     monkeypatch.setenv("ORDER_DESK_SEND_ENABLED", "true")
     monkeypatch.setenv("TILDA_ENABLED", "true")
     monkeypatch.setenv("TILDA_WEBHOOK_SECRET", "synthetic-tilda-secret-32-characters-only")
@@ -33,6 +34,9 @@ def tilda_config(monkeypatch):
     monkeypatch.setenv("MANAGER_TELEGRAM_USER_IDS", "111,222")
     monkeypatch.setenv("CLIENT_TELEGRAM_BOT_USERNAME", "synthetic_client_bot")
     monkeypatch.setenv("CLIENT_TELEGRAM_LINK_TTL_MINUTES", "30")
+    monkeypatch.setattr("app.services.product_matching_service.ProductMatchingService.products_async",
+        AsyncMock(return_value=[{"id": key, "article": key, "name": key}
+                                for key in ("sku-a", "sku-b")]))
 
 
 @pytest.mark.parametrize("value,expected", [("1.01",101),("1,99",199),(Decimal("10.10"),1010),(0,0),("0.29",29)])

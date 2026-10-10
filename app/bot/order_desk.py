@@ -71,7 +71,17 @@ def register(dp, check_access, safe_callback_answer):
                 await message.answer("Состояние доставки сохранено.")
                 return
             if action == "/sitereprice":
-                await service.reprice(identifier, message.from_user.id, message.chat.id)
+                if len(parts) > 2 and parts[2] != "dry-run":
+                    raise DeskError("Формат: /sitereprice ЗАЯВКА [dry-run]")
+                result = await service.reprice(identifier, message.from_user.id, message.chat.id,
+                                              dry_run=len(parts) > 2)
+                if len(parts) > 2:
+                    await message.answer(
+                        f"Проверка без записи №{identifier}: изменения={result['changed']}; "
+                        f"ревизия={result['revision']}; сумма, коп.={result['total_minor']}; "
+                        f"проблемы={', '.join(result['problems']) or 'нет'}. "
+                        "Подтверждение менеджера обязательно.", parse_mode=None)
+                    return
             text, keyboard = await desk_card(identifier)
             await message.answer(text, reply_markup=keyboard, parse_mode=None)
         except (IndexError, ValueError) as error:

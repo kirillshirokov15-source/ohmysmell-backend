@@ -142,7 +142,7 @@ def normalize(payload, delivery_key=None):
             raise TildaInvalid("invalid_cart") from None
     if not isinstance(items, list) or not 1 <= len(items) <= 100:
         raise TildaInvalid("invalid_cart")
-    item_fields = field_map("TILDA_ITEM_FIELD_MAP_JSON", {"id": "externalid", "name": "name", "qty": "quantity", "price": "price"})
+    item_fields = field_map("TILDA_ITEM_FIELD_MAP_JSON", {"id": "externalid", "name": "name", "qty": "quantity", "price": "price", "total": "amount"})
     problems, rows = [], []
     for item in items:
         if not isinstance(item, dict):
@@ -167,10 +167,21 @@ def normalize(payload, delivery_key=None):
             raise TildaInvalid("invalid_item")
         try:
             price = money(val("price"))
+            if price <= 0:
+                raise TildaInvalid("invalid_reported_price")
         except TildaInvalid:
             price = None
             problems.append("invalid_reported_price")
         rows.append({"externalid": identifier, "name": name, "qty": int(qty), "price_minor": price})
+        if val("total") is not None:
+            try:
+                item_total = money(val("total"))
+            except TildaInvalid:
+                item_total = None
+                problems.append("invalid_item_total")
+            rows[-1]["reported_item_total_minor"] = item_total
+            if price is None or item_total != price * int(qty):
+                problems.append("item_total_mismatch")
     currency = str(get("currency") or os.getenv("TILDA_DEFAULT_CURRENCY", "RUB")).upper()
     if currency != "RUB":
         problems.append("unsupported_currency")
