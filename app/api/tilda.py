@@ -16,7 +16,7 @@ router = APIRouter(tags=["Tilda order desk"])
 logger = logging.getLogger(__name__)
 
 
-@router.post("/integrations/tilda/orders", status_code=202, responses={200: {"description": "Authenticated connection test or duplicate accepted"}})
+@router.post("/integrations/tilda/orders", status_code=200, responses={200: {"description": "Authenticated connection test or order accepted"}})
 async def receive_order(request: Request):
     log_event(logger, "tilda_webhook_received")
     secret = os.getenv("TILDA_WEBHOOK_SECRET", "")
@@ -65,12 +65,12 @@ async def receive_order(request: Request):
         log_event(logger, "tilda_webhook_rejected", reason="configuration")
         raise HTTPException(503, "tilda_configuration_invalid") from None
     except TildaInvalid as error:
-        log_event(logger, "tilda_webhook_rejected", reason="validation")
+        log_event(logger, "tilda_webhook_rejected", reason="validation", validation_code=str(error))
         raise HTTPException(422, str(error)) from None
     except DeskError as error:
         raise HTTPException(409 if str(error) == "external_id_conflict" else 503, "tilda_unavailable_or_conflict") from None
     log_event(logger, "tilda_webhook_accepted", draft_id=result["draft_id"], duplicate=result["duplicate"])
-    return JSONResponse(result, status_code=200 if result["duplicate"] else 202)
+    return JSONResponse(result, status_code=200)
 
 
 @router.post("/internal/tilda/drafts/{draft_id}/telegram-link", dependencies=[Depends(require_internal_api_token)])

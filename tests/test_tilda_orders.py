@@ -112,7 +112,7 @@ def test_webhook_form_query_redaction_and_no_pii_logs(tilda_config, monkeypatch,
     with caplog.at_level(logging.INFO):
         response=asyncio.run(request(app,"POST","/integrations/tilda/orders?secret=synthetic-tilda-secret-32-characters-only",
             headers={"Content-Type":"application/x-www-form-urlencoded"}, content=urlencode(data).encode()))
-    assert response[0]==202 and submit.await_args.args[0]["items"][0]["qty"]==2
+    assert response[0]==200 and submit.await_args.args[0]["items"][0]["qty"]==2
     assert "tilda_webhook_accepted" in caplog.text
     for sensitive in (data["Email"],data["Phone"],data["Name"],"synthetic-tilda-secret-32-characters-only"):
         assert sensitive not in caplog.text

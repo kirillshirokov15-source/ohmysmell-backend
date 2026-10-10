@@ -62,7 +62,7 @@ def test_exact_test_email_proceeds_to_normalization_and_intake(monkeypatch):
     monkeypatch.setattr(tilda_api, "normalize", fake_normalize)
     monkeypatch.setattr(tilda_api, "TildaIntake", FakeIntake)
     result = post({"Email": " TEST@example.com "})
-    assert result.status_code == 202
+    assert result.status_code == 200
     assert result.json()["draft_id"] == 123
     assert captured == [{"Email": " TEST@example.com "}]
 

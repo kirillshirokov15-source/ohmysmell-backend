@@ -39,7 +39,7 @@ def test_native_header_order_authentication(webhook, header, form):
         kwargs = {"content": urlencode(data).encode()}
     else:
         kwargs = {"payload": data}
-    assert asyncio.run(request(app, "POST", URL, headers=headers, **kwargs))[0] == 202
+    assert asyncio.run(request(app, "POST", URL, headers=headers, **kwargs))[0] == 200
     submit.assert_awaited_once()
     assert submit.await_args.args[0]["reported_total"] == 3030
 
@@ -111,7 +111,7 @@ def test_only_exact_probe_shape_bypasses_order_normalization(webhook, body):
     submit.assert_not_awaited()
 
 
-@pytest.mark.parametrize("enabled,expected", [("true", 202), ("false", 503)])
+@pytest.mark.parametrize("enabled,expected", [("true", 200), ("false", 503)])
 def test_real_order_with_test_field_is_never_silently_discarded(webhook, monkeypatch, enabled, expected):
     app, submit = webhook
     monkeypatch.setenv("TILDA_ENABLED", enabled)
