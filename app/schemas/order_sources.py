@@ -11,9 +11,12 @@ class SourcePart(BaseModel):
     supplier_id: int | None = Field(default=None, strict=True, gt=0)
     base_cost_minor: int | None = Field(default=None, strict=True, ge=0, le=100_000_000_000)
     offer_id: int | None = Field(default=None, strict=True, gt=0)
+    purchase_id: int | None = Field(default=None, strict=True, gt=0)
 
     @model_validator(mode="after")
     def source_fields(self):
+        if self.purchase_id is not None and self.source_type != 'external':
+            raise ValueError('purchase_id is only valid for external supply')
         if self.source_type == "partner_x":
             if self.supplier_id is None or self.base_cost_minor is None or self.offer_id is not None:
                 raise ValueError("Для X нужны supplier_id и base_cost_minor, без offer_id")

@@ -44,10 +44,12 @@ def pg_run(name, args, url):
 
 def fingerprint(conn):
     result = {}
+    conn.execute(text("SET LOCAL TIME ZONE 'UTC'"))
     inspector = inspect(conn)
     for table in sorted(inspector.get_table_names(schema="public")):
         quoted = conn.dialect.identifier_preparer.quote(table)
-        rows = conn.execute(text(f'SELECT row_to_json(t)::text FROM public.{quoted} t ORDER BY row_to_json(t)::text')).scalars().all()
+        # Byte-stable order across Linux libc and Windows/ICU collations.
+        rows = sorted(conn.execute(text(f'SELECT row_to_json(t)::text FROM public.{quoted} t')).scalars().all())
         result[table] = {"rows": len(rows), "sha256": hashlib.sha256("\n".join(rows).encode()).hexdigest(),
             "columns": [(c["name"], str(c["type"]), c["nullable"]) for c in inspector.get_columns(table, schema="public")]}
     return result

@@ -5,7 +5,7 @@ supplier variable. No supplier mail is sent by the customer integration.
 
 | Boundary | CUSTOMER | SUPPLIER |
 | --- | --- | --- |
-| Purpose | Wholesale intake, quantity parsing, draft/order | Procurement replies attached to Buying purchases |
+| Purpose | Wholesale intake, quantity parsing, draft/order | Supplier XLSX/CSV prices, confirmed purchase sends, purchase replies |
 | Exact scopes | `gmail.readonly` | `gmail.readonly`, `gmail.send` |
 | Module | `app.workers.customer_email_runtime` | `app.workers.supplier_email_runtime` |
 | State | Existing customer cursor/idempotency | Account-bound purchase thread IDs, reply dedupe |

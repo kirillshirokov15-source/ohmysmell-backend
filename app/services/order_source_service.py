@@ -60,7 +60,7 @@ async def lock_source_stock(session, keys):
 
 
 async def claimed_stock(session, product_id, warehouse_id, *, managed_only=False):
-    query = (select(func.coalesce(func.sum(WarehouseAllocation.qty), 0))
+    query = (select(WarehouseAllocation)
         .join(Shipment).join(Order, Order.id == Shipment.order_id)
         .join(OrderItem, OrderItem.id == WarehouseAllocation.order_item_id)
         .where(OrderItem.product_id == product_id, Shipment.warehouse_id == warehouse_id,
@@ -68,7 +68,24 @@ async def claimed_stock(session, product_id, warehouse_id, *, managed_only=False
             WarehouseAllocation.supply_status != "cancelled", WarehouseAllocation.source_type == "own"))
     if managed_only:
         query = query.where(WarehouseAllocation.managed_source.is_(True))
-    return await session.scalar(query)
+    allocations=list((await session.scalars(query)).all())
+    # Provider stock reports already subtract real reservations and shipments.
+    # Keep uncertain and simulated operations as local claims; never subtract twice.
+    from app.models.fulfillment import ExternalOperation
+    from app.services.warehouse_documents import plan_key
+    plans={}
+    claimed=0
+    for allocation in allocations:
+        identifier=allocation.shipment_id
+        if identifier not in plans:
+            plan=await session.scalar(select(Shipment).where(Shipment.id==identifier)
+                .options(selectinload(Shipment.allocations)))
+            reserved=await session.get(ExternalOperation,plan_key(plan,'reserve',False))
+            released=await session.get(ExternalOperation,plan_key(plan,'release',False))
+            plans[identifier]=bool(reserved and reserved.status=='succeeded' and not released)
+        if not plans[identifier]:
+            claimed+=allocation.qty
+    return claimed
 
 
 class OrderSourceService:
@@ -104,7 +121,7 @@ class OrderSourceService:
                 if confirmed:
                     ready[a.order_item_id] += a.qty
                 purchase = a.buying_purchase
-                allocations.append(dict(id=a.id, item_id=a.order_item_id, qty=a.qty,
+                allocations.append(dict(id=a.id, plan_id=plan.id, item_id=a.order_item_id, qty=a.qty,
                     source_type=a.source_type, warehouse_id=plan.warehouse_id, plan_status=plan.status,
                     status=a.supply_status, supplier_id=a.supplier_id, ready=confirmed,
                     purchase_id=a.buying_purchase_id, purchase_status=purchase.status if purchase else None,
@@ -129,6 +146,10 @@ class OrderSourceService:
                 raise DeskError("Источники меняются до сборки, после завершения проверки заказа.")
             plans = await source_plans(session, order_id)
             before = self.view(order, plans)
+            if request.action in {'assign','cancel'}:
+                from app.services.warehouse_documents import frozen_plan
+                if any([await frozen_plan(session,p) for p in plans]):
+                    raise DeskError('Сначала сверить и снять внешний резерв.')
             if request.action == "assign":
                 await self._assign(session, order, plans, request.parts, actor)
             else:
@@ -139,13 +160,15 @@ class OrderSourceService:
                 if plan.status != "planned" or allocation.supply_status == "cancelled":
                     raise DeskError("Складской план или распределение недоступны.")
                 if request.action == "cancel":
+                    allocation.supply_status = "cancelled"
+                    await session.flush()
                     if allocation.buying_purchase_id:
                         await buying.cancel_unsubmitted_purchase(session, allocation.buying_purchase_id, f"telegram:{actor}")
-                    allocation.supply_status = "cancelled"
                     if all(a.supply_status == "cancelled" for a in plan.allocations):
                         plan.status = "cancelled"
                 else:
-                    if not simulation_allowed():
+                    if not simulation_allowed() and not (request.action == 'receive' and
+                            settings.environment == 'production' and settings.external_writes_enabled):
                         raise DeskError("Оприходование пока доступно только в симуляции без внешних записей.")
                     if allocation.source_type == "own":
                         raise DeskError("Собственный остаток уже проверен при назначении.")
@@ -162,7 +185,7 @@ class OrderSourceService:
                         if allocation.buying_purchase.status != "received":
                             raise DeskError("Сначала отметьте получение этой закупки в Buying.")
                     allocation.supply_status = "received" if request.action == "receive" else "confirmed"
-                    allocation.receipt_simulated = True
+                    allocation.receipt_simulated = simulation_allowed()
                     if request.action == "post_receipt":
                         allocation.receipt_reference = f"simulated-receipt:allocation:{allocation.id}"
             order.revision += 1
@@ -255,6 +278,27 @@ class OrderSourceService:
                 snapshot = dict(supplier_id=supplier.id, supplier_name=supplier.name, recipient=supplier.email,
                     items=[entry], currency=offer.currency_code, total_minor=offer.purchase_price_minor * part.qty,
                     approximate_rub_minor=None, approximate=True, email_body=f"{item.name} – {part.qty} шт.")
-                purchase = await buying.create_purchase(session, snapshot, f"telegram:{actor}")
+                if part.purchase_id:
+                    purchase = await buying.purchase_get(session, part.purchase_id)
+                    from app.models.fulfillment import ExternalOperation
+                    standalone_key=f'buying:purchase:{purchase.id}:receipt'
+                    if (purchase.external_ids.get('warehouse_receipt') or
+                        await session.get(ExternalOperation,standalone_key) or
+                        await session.get(ExternalOperation,'simulation:'+standalone_key)):
+                        raise DeskError('Закупка уже оприходована или сверяется: используйте собственный склад после проверки остатка.')
+                    if purchase.supplier_id != supplier.id or purchase.status not in {'draft','sent','confirmed','received'}:
+                        raise DeskError('Закупка недоступна для распределения.')
+                    purchased = sum(row['quantity'] for row in purchase.snapshot['items']
+                                    if row['product_id'] == item.product_id and row['offer_id'] == offer.id)
+                    # Include completed shipments: delivered goods cannot supply a second order.
+                    claimed = await session.scalar(select(func.coalesce(func.sum(WarehouseAllocation.qty),0))
+                        .join(OrderItem,OrderItem.id==WarehouseAllocation.order_item_id).join(Shipment)
+                        .where(WarehouseAllocation.buying_purchase_id==purchase.id,
+                               OrderItem.product_id==item.product_id,
+                               WarehouseAllocation.supply_status!='cancelled',Shipment.status!='cancelled'))
+                    if part.qty > purchased - claimed:
+                        raise DeskError('Количество закупки уже распределено или товар не совпадает.')
+                else:
+                    purchase = await buying.create_purchase(session, snapshot, f"telegram:{actor}")
                 allocation.buying_purchase_id, allocation.supplier_id = purchase.id, supplier.id
             await session.flush()

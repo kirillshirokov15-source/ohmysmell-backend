@@ -39,7 +39,7 @@ class WarehouseAllocation(Base):
     source_type: Mapped[str] = mapped_column(String(20), default="own", server_default="own")
     supply_status: Mapped[str] = mapped_column(String(20), default="confirmed", server_default="confirmed")
     supplier_id: Mapped[int | None] = mapped_column(ForeignKey("suppliers.id"))
-    buying_purchase_id: Mapped[int | None] = mapped_column(ForeignKey("buying_purchases.id"), unique=True)
+    buying_purchase_id: Mapped[int | None] = mapped_column(ForeignKey("buying_purchases.id"), index=True)
     receipt_simulated: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     receipt_reference: Mapped[str | None] = mapped_column(String(255))
     buying_purchase: Mapped["BuyingPurchase"] = relationship()

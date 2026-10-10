@@ -122,3 +122,49 @@ class ColumnPriceListParser:
                 return result
         except (BadZipFile, KeyError, IndexError, ET.ParseError, TypeError, AttributeError) as error:
             raise ValueError("Invalid or unsupported XLSX structure") from error
+
+
+def parse_price_list(data, filename, config):
+    if filename.lower().endswith('.xlsx'):
+        return ColumnPriceListParser(config).parse(data)
+    if not filename.lower().endswith('.csv') or len(data) > MAX_UPLOAD:
+        raise ValueError('Expected bounded XLSX or UTF-8 CSV')
+    import csv
+    from io import StringIO
+    def index(column):
+        value = 0
+        for letter in column:
+            value = value * 26 + ord(letter) - 64
+        return value - 1
+    ColumnPriceListParser(config)  # same layout/version validation
+    try:
+        content = data.decode('utf-8-sig')
+        delimiter = ';' if content.splitlines()[0].count(';') > content.splitlines()[0].count(',') else ','
+        reader = csv.reader(StringIO(content), delimiter=delimiter, strict=True)
+        result, seen = [], set()
+        for number, cells in enumerate(reader, 1):
+            if number > MAX_ROWS + 100:
+                raise ValueError('CSV row limit exceeded')
+            if number < config.first_row or not any(cells):
+                continue
+            value = lambda col: cells[index(col)].strip() if col and index(col) < len(cells) else ''
+            name, sku = value(config.name_column), value(config.sku_column)
+            entry = dict(row=number, name=name[:500], sku=sku or None, error=None)
+            try:
+                price = Decimal(value(config.price_column).replace(' ', '').replace('\u00a0', '').replace(',', '.')) * 100
+                key = 'sku:' + sku if sku else 'name:' + normalize(name)
+                if (not name or len(name)>495 or len(sku)>255 or any(ord(c)<32 for c in name+sku)
+                        or any(c.lstrip().startswith(('=', '+', '@')) for c in cells)
+                        or not price.is_finite() or not 0<=price<=10**12 or price!=price.to_integral_value()
+                        or key in seen):
+                    raise ValueError()
+                seen.add(key)
+                entry.update(price_minor=int(price), mapping_key=key)
+            except (ValueError, InvalidOperation):
+                entry['error']='Invalid name/price, formula, or duplicate mapping'
+            result.append(entry)
+        if not result:
+            raise ValueError('No price rows')
+        return result
+    except (UnicodeError, csv.Error, IndexError) as error:
+        raise ValueError('Invalid UTF-8 CSV') from error

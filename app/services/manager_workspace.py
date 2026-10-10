@@ -27,6 +27,9 @@ def order_card(order, shipments=()):
         f"Источник: {SOURCE_LABELS.get(order.source, order.source)}",
         f"Сборка: {FULFILLMENT_LABELS[order.fulfillment_status]}", f"Оплата: {PAYMENT_LABELS[order.payment_status]}",
         f"Доставка: {DELIVERY_LABELS[order.delivery_method]} · {DELIVERY_STATUS[order.delivery_status]}"]
+    if (order.fulfillment_status == 'shipped' and order.payment_status == 'paid'
+            and order.delivery_status == 'delivered' and not order.needs_review):
+        lines.append('Заказ завершён: отгружен, доставлен и оплачен.')
     if not getattr(order, "manual_fulfillment", False):
         lines.append(f"Контрагент: {order.counterparty_name or order.counterparty_id or 'не выбран'}")
     if order.delivery_reference:

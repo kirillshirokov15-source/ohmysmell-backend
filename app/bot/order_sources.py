@@ -8,10 +8,11 @@ from app.schemas.order_sources import SourceAction
 HELP = ("/sources ЗАКАЗ — позиции, назначения и ревизия\n"
         "/sourceadd ЗАКАЗ РЕВИЗИЯ ПОЗИЦИЯ КОЛИЧЕСТВО own СКЛАД\n"
         "/sourceadd ЗАКАЗ РЕВИЗИЯ ПОЗИЦИЯ КОЛИЧЕСТВО partner_x СКЛАД ПОСТАВЩИК БАЗА_КОП\n"
-        "/sourceadd ЗАКАЗ РЕВИЗИЯ ПОЗИЦИЯ КОЛИЧЕСТВО external СКЛАД OFFER_ID\n"
+        "/sourceadd ЗАКАЗ РЕВИЗИЯ ПОЗИЦИЯ КОЛИЧЕСТВО external СКЛАД OFFER_ID [BUYING_ID]\n"
         "/sourceaction ЗАКАЗ РЕВИЗИЯ НАЗНАЧЕНИЕ receive|post_receipt|cancel\n"
         "Внешнюю закупку отправляйте и отмечайте полученной в Buying. "
-        "Затем receive и post_receipt подтверждают получение и оприходование назначения. "
+        "После receive: /warehousedoc ЗАКАЗ РЕВИЗИЯ receipt НАЗНАЧЕНИЕ. "
+        "Для плана: /warehousedoc ЗАКАЗ РЕВИЗИЯ reserve|ship|release ПЛАН. "
         "Оприходование X/внешних товаров пока только в симуляции.")
 
 
@@ -25,7 +26,7 @@ def source_lines(view):
               "confirmed": "источник подтверждён", "cancelled": "отменено"}
     for a in view["allocations"]:
         lines.append(f"Назначение #{a['id']} · позиция #{a['item_id']} · {LABELS[a['source_type']]} · "
-            f"{a['qty']} шт. · склад {a['warehouse_id']} · {states[a['status']]} · план {a['plan_status']} · "
+            f"{a['qty']} шт. · склад {a['warehouse_id']} · {states[a['status']]} · план #{a.get('plan_id', '?')} {a['plan_status']} · "
             f"{'доступно' if a['ready'] else 'отгрузка заблокирована'}")
         if a["purchase_id"]:
             lines.append(f"Buying B-{a['purchase_id']:06d}: {a['purchase_status']}" +
@@ -38,6 +39,25 @@ def source_lines(view):
 
 
 def register(dp, check_access):
+    @dp.message(Command('warehousedoc'))
+    async def warehouse_document(message):
+        if not await check_access(message):
+            return
+        from app.services.warehouse_documents import WarehouseDocumentService
+        from app.integrations.moysklad.documents import FakeDocumentAdapter
+        from app.services.external_operation_service import ExternalOperationConflict
+        from app.config.settings import settings
+        try:
+            parts=message.text.split()
+            if len(parts)!=5:
+                raise ValueError('Формат: /warehousedoc ЗАКАЗ РЕВИЗИЯ receipt|reserve|ship|release ID_НАЗНАЧЕНИЯ_ИЛИ_ПЛАНА')
+            # Telegram uses simulation until an explicitly authorized live rollout.
+            result=await WarehouseDocumentService(adapter=FakeDocumentAdapter()).act(
+                int(parts[1]),message.from_user.id,message.chat.id,int(parts[2]),parts[3],int(parts[4]))
+            await message.answer(f"Симуляция {result['action']}: {result['id']} · ревизия {result['revision']}",parse_mode=None)
+        except (ValueError,DeskError,ExternalOperationConflict) as error:
+            await message.answer(str(error),parse_mode=None)
+
     @dp.message(Command("sources", "sourceadd", "sourceaction"))
     async def sources(message):
         if not await check_access(message):
@@ -57,7 +77,11 @@ def register(dp, check_access):
                         row.update(supplier_id=int(parts[7]), base_cost_minor=int(parts[8]))
                     elif source == "external":
                         row["offer_id"] = int(parts[7])
+                        if len(parts)==9:
+                            row['purchase_id']=int(parts[8])
                     expected = {"own": 7, "partner_x": 9, "external": 8}.get(source)
+                    if source=='external' and 'purchase_id' in row:
+                        expected=9
                     if len(parts) != expected:
                         raise ValueError()
                     payload = dict(action="assign", parts=[row])

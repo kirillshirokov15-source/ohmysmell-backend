@@ -140,6 +140,16 @@ class OrderOperations:
                 for plan in plans:
                     if plan.status not in {"planned", "exported"}:
                         continue
+                    from app.config.settings import settings
+                    if settings.external_writes_enabled:
+                        from app.services.warehouse_documents import plan_key
+                        from app.models.fulfillment import ExternalOperation
+                        reserve = await session.get(ExternalOperation, plan_key(plan,'reserve',False))
+                        release = await session.get(ExternalOperation, plan_key(plan,'release',False))
+                        if not reserve or reserve.status!='succeeded' or release:
+                            raise OperationError('Подтверждённый внешний резерв отсутствует.')
+                        if request.action=='shipped' and (plan.status!='exported' or not plan.external_id):
+                            raise OperationError('Документ отгрузки не подтверждён.')
                     for allocation in plan.allocations:
                         if allocation.supply_status == "cancelled" or not allocation_ready(allocation, manual=order.manual_fulfillment):
                             continue
@@ -152,6 +162,11 @@ class OrderOperations:
                     raise OperationError(str(error)) from error
                 if quantities != {item.id: item.qty for item in order.items}:
                     raise OperationError("Сначала распределите все товары по складам.")
+            if request.action == 'cancel':
+                from app.services.warehouse_documents import frozen_plan
+                from app.services.order_source_service import source_plans
+                if any([await frozen_plan(session,p) for p in await source_plans(session,order_id)]):
+                    raise OperationError('Сначала сверить и снять внешний резерв.')
             apply_action(order, request, manager.id, datetime.now(timezone.utc))
             if request.action == "cancel":
                 if order.manual_fulfillment:
@@ -160,6 +175,8 @@ class OrderOperations:
                     for plan in await source_plans(session, order.id):
                         for allocation in plan.allocations:
                             if allocation.managed_source:
+                                allocation.supply_status = "cancelled"
+                                await session.flush()
                                 if allocation.buying_purchase_id:
                                     await cancel_unsubmitted_purchase(session, allocation.buying_purchase_id, f"telegram:{telegram_id}")
                                 allocation.supply_status = "cancelled"

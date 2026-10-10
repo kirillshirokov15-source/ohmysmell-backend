@@ -9,7 +9,7 @@ from typing import Literal
 from pathlib import PurePath
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 from sqlalchemy import select, delete, func, case, or_
 from starlette.concurrency import run_in_threadpool
 from app.config.settings import settings
@@ -168,15 +168,16 @@ async def supplier_detail(supplier_id: int) -> dict:
     "required": True, "content": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
         "schema": {"type": "string", "format": "binary", "maxLength": MAX_UPLOAD}}}}})
 async def import_preview(supplier_id: int, request: Request, filename: str = Query(min_length=6, max_length=255)) -> dict:
-    if "/" in filename or "\\" in filename or not filename.lower().endswith(".xlsx") or any(ord(c) < 32 for c in filename):
-        raise HTTPException(422, "A plain .xlsx filename is required")
+    if "/" in filename or "\\" in filename or not filename.lower().endswith((".xlsx", ".csv")) or any(ord(c) < 32 for c in filename):
+        raise HTTPException(422, "A plain .xlsx or .csv filename is required")
     data = await request.body()
     if len(data) > MAX_UPLOAD:
         raise HTTPException(413, "Upload exceeds 2 MiB")
     async with async_session() as session, session.begin():
         _, config = await service.supplier_get(session, supplier_id)
         try:
-            rows = await run_in_threadpool(ColumnPriceListParser(ParserConfig(**config.parser)).parse, data)
+            from app.services.buying_excel import parse_price_list
+            rows = await run_in_threadpool(parse_price_list, data, filename, ParserConfig(**config.parser))
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
         record = await service.preview_import(session, supplier_id, filename, rows)
@@ -431,6 +432,59 @@ async def received(purchase_id: int, actor: dict = Depends(session_access)) -> d
         return service.purchase_view(p)
 
 
+@router.post('/purchases/{purchase_id}/confirmed', response_model=PurchaseRead)
+async def supplier_confirmed(purchase_id: int, actor: str = Depends(audit_actor)):
+    async with async_session() as session, session.begin():
+        p = await service.confirm_supplier(session, purchase_id, actor)
+        await session.flush()
+        await session.refresh(p)
+        return service.purchase_view(p)
+
+
+@router.post('/purchases/{purchase_id}/send', response_model=PurchaseRead)
+async def send_purchase_email(purchase_id: int, actor: str = Depends(audit_actor)):
+    from app.services.buying_email import BuyingEmailService
+    from app.integrations.write_guard import ExternalWritesDisabled
+    try:
+        return await BuyingEmailService(sessions=async_session).act(purchase_id, actor)
+    except ExternalWritesDisabled as error:
+        raise HTTPException(409, 'Supplier email sending is disabled') from error
+
+
+class PurchaseWarehouseReceipt(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    warehouse_id: str = Field(min_length=1,max_length=128)
+    simulate: bool = True
+    reconcile: bool = False
+    costs: dict[str, StrictInt] | None = None
+
+
+@router.post('/purchases/{purchase_id}/warehouse-receipt')
+async def post_purchase_receipt(purchase_id: int, payload: PurchaseWarehouseReceipt,
+                                actor: str = Depends(audit_actor)):
+    from app.services.warehouse_documents import WarehouseDocumentService
+    from app.integrations.moysklad.documents import FakeDocumentAdapter
+    from app.services.order_desk import DeskError
+    from app.services.external_operation_service import ExternalOperationConflict
+    from app.integrations.write_guard import ExternalWritesDisabled
+    service=WarehouseDocumentService(adapter=FakeDocumentAdapter() if payload.simulate else None,sessions=async_session)
+    try:
+        return await service.receive_purchase(purchase_id,actor,payload.warehouse_id,
+            reconcile=payload.reconcile,costs=payload.costs)
+    except (DeskError,ExternalOperationConflict,ExternalWritesDisabled,ValueError) as error:
+        raise HTTPException(409,str(error)) from error
+
+
+@router.post('/purchases/{purchase_id}/reconcile-email', response_model=PurchaseRead)
+async def reconcile_purchase_email(purchase_id: int, actor: str = Depends(audit_actor)):
+    from app.services.buying_email import BuyingEmailService
+    from app.integrations.write_guard import ExternalWritesDisabled
+    try:
+        return await BuyingEmailService(sessions=async_session).act(purchase_id, actor, reconcile=True)
+    except ExternalWritesDisabled as error:
+        raise HTTPException(409, 'Supplier email integration is disabled') from error
+
+
 class PickupContact(Body):
     pickup_address: str | None = Field(default=None, max_length=1000)
     phone: str | None = Field(default=None, max_length=80)
@@ -464,7 +518,7 @@ def pickup_view(purchase, config):
 
 async def pickup_page(status, offset, limit):
     async with async_session() as session:
-        query = select(BuyingPurchase, BuyingSupplier).join(BuyingSupplier, BuyingSupplier.supplier_id == BuyingPurchase.supplier_id).where(BuyingPurchase.status == status)
+        query = select(BuyingPurchase, BuyingSupplier).join(BuyingSupplier, BuyingSupplier.supplier_id == BuyingPurchase.supplier_id).where(BuyingPurchase.status.in_(['sent','confirmed'] if status=='sent' else [status]))
         total = await session.scalar(select(func.count()).select_from(query.subquery()))
         rows = (await session.execute(query.order_by(BuyingPurchase.id.desc()).offset(offset).limit(limit))).all()
         return dict(pickups=[pickup_view(p, c) for p, c in rows], total=total, offset=offset, limit=limit)
@@ -482,7 +536,7 @@ async def pickup_history(offset: int = Query(0, ge=0), limit: int = Query(50, ge
 
 async def pickup_get(session, purchase_id):
     p = await service.purchase_get(session, purchase_id)
-    if p.status not in ('sent', 'received'):
+    if p.status not in ('sent', 'confirmed', 'received'):
         service.fail('Pickup not found', 404)
     return p, await session.get(BuyingSupplier, p.supplier_id)
 

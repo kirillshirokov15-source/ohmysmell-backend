@@ -23,6 +23,31 @@ from app.services import buying
 CHAT = -100123456
 
 
+def test_one_purchase_supplies_multiple_orders(source_db):
+    async def run():
+        first,service,parts=await seed_sources(source_db)
+        second,_,_=await seed_sources(source_db)
+        item=(parts[-1])
+        async with source_db() as s,s.begin():
+            offer=await s.get(SupplierOffer,item['offer_id'])
+            purchase=await buying.create_purchase(s,dict(supplier_id=offer.supplier_id,supplier_name='Synthetic',
+                recipient='supplier@example.invalid',currency='RUB',total_minor=540000,approximate=False,
+                approximate_rub_minor=540000,email_body='Item 6',items=[dict(offer_id=offer.id,product_id='ms-dsd',
+                name='Item',quantity=6,unit_price_minor=90000)]),'test')
+        views=[]
+        for order in (first,second):
+            part={**item,'item_id':order.items[0].id,'purchase_id':purchase.id}
+            views.append(await service.act(order.id,111,CHAT,SourceAction(action='assign',parts=[part],
+                expected_revision=0,idempotency_key=uuid4().hex)))
+        for index,order in enumerate((first,second)):
+            allocation=views[index]['allocations'][0]
+            await service.act(order.id,111,CHAT,SourceAction(action='cancel',allocation_id=allocation['id'],
+                expected_revision=1,idempotency_key=uuid4().hex))
+            async with source_db() as s:
+                assert (await s.get(BuyingPurchase,purchase.id)).status==('draft' if index==0 else 'cancelled')
+    asyncio.run(run())
+
+
 @pytest.fixture
 def source_db(database, monkeypatch):
     for module in ("app.services.order_source_service", "app.services.order_operations", "app.services.manager_workspace"):
@@ -257,7 +282,7 @@ def test_telegram_assignment_is_versioned_and_idempotent(monkeypatch):
     register(SimpleNamespace(message=Observer()), AsyncMock(return_value=True))
     message = SimpleNamespace(text="/sourceadd 10 4 20 2 own wh1", from_user=SimpleNamespace(id=111),
         chat=SimpleNamespace(id=CHAT), message_id=70, answer=AsyncMock())
-    asyncio.run(handlers[0](message))
+    asyncio.run(next(h for h in handlers if h.__name__ == 'sources')(message))
     args = service.act.await_args.args
     assert args[:3] == (10, 111, CHAT)
     assert args[3].expected_revision == 4 and args[3].parts[0].qty == 2

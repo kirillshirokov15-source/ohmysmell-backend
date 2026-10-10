@@ -11,6 +11,11 @@ class ExternalOperationConflict(RuntimeError):
 
 
 class ExternalOperationStore:
+    async def get(self, key):
+        async with async_session() as session:
+            row = await session.get(ExternalOperation, key)
+            return dict(payload=row.payload, status=row.status, result=row.result) if row else None
+
     async def claim(self, key, payload):
         async with async_session() as session, session.begin():
             await transaction_lock(session, "external:" + key)
@@ -28,6 +33,10 @@ class ExternalOperationStore:
         async with async_session() as session, session.begin():
             operation = (await session.execute(select(ExternalOperation).where(
                 ExternalOperation.key == key).with_for_update())).scalar_one()
+            if operation.status == 'succeeded':
+                if result is not None and operation.result != result:
+                    raise ExternalOperationConflict('Conflicting external receipt')
+                return
             operation.status = "succeeded" if result is not None else "uncertain"
             operation.result = result
 
@@ -38,6 +47,16 @@ class ExternalOperationService:
 
     async def execute(self, key, payload, send):
         require_external_writes()
+        return await self._execute(key, payload, send)
+
+    async def simulate_document(self, key, payload, adapter):
+        from app.integrations.moysklad.documents import FakeDocumentAdapter
+        from app.config.settings import settings
+        if type(adapter) is not FakeDocumentAdapter or settings.environment == 'production':
+            raise ExternalOperationConflict('Simulation requires the local fake adapter')
+        return await self._execute('simulation:' + key, payload, adapter.create)
+
+    async def _execute(self, key, payload, send):
         result = await self.store.claim(key, payload)
         if result is not None:
             return result
@@ -50,3 +69,17 @@ class ExternalOperationService:
             raise
         await self.store.finish(key, result)
         return result
+
+    async def reconcile_document(self, key, adapter):
+        """Read only provider lookup; never retries a missing/ambiguous create."""
+        from app.integrations.moysklad.documents import verified_document
+        operation = await self.store.get(key)
+        if not operation:
+            raise ExternalOperationConflict('Operation not found')
+        if operation['status'] == 'succeeded':
+            return operation['result']
+        candidates = await adapter.find(operation['payload'])
+        if len(candidates) != 1 or not verified_document(operation['payload'], candidates[0]):
+            raise ExternalOperationConflict('Document absent, ambiguous or inconsistent; manual review required')
+        await self.store.finish(key, candidates[0])
+        return candidates[0]
