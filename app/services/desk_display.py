@@ -21,6 +21,7 @@ async def desk_card(draft_id):
         stocks = await availability(draft.items)
         manager = await session.get(Manager, desk.manager_id) if desk.manager_id else None
         order = await session.get(Order, desk.order_id) if desk.order_id else None
+        review_approved = bool(draft.contact_details.get("tilda_review_approved") and desk.order_id)
         stage = stage_label(desk, draft, order)
         lines = [f"Заказ с сайта · заявка №{draft.id}", f"Клиент: {draft.customer_name}",
             f"Телефон: {draft.contact_details.get('phone') or 'не указан'}", f"Email: {draft.sender_email or 'не указан'}",
@@ -39,12 +40,14 @@ async def desk_card(draft_id):
             lines.append("Розничная сумма для согласования: " + telegram_rubles(sum(i.price * i.qty for i in draft.items)))
         reported = draft.contact_details.get("reported_total_minor")
         lines.append("Заявлено сайтом: " + (telegram_rubles(reported) if reported is not None else "некорректно/не указано"))
-        lines.append("Проверка суммы: " + ("арифметика согласована; требуется одобрение менеджера"
+        lines.append("Проверка суммы: " + ("арифметика согласована; одобрено менеджером"
+            if review_approved else "арифметика согласована; требуется одобрение менеджера"
             if draft.total is not None and draft.contact_details.get("tilda_price_source") == "webhook"
             else "требует проверки"))
         if not desk.order_id:
             lines.append("Проверка: " + (draft.review_notes or "Требуется согласование"))
-        lines.append("Цена Tilda заявлена сайтом; одобрение менеджера обязательно.")
+        lines.append("Цена Tilda заявлена сайтом; одобрена менеджером" if review_approved
+            else "Цена Tilda заявлена сайтом; одобрение менеджера обязательно.")
         lines.append("Источник товара подтвердить до отгрузки. Остаток не является резервом.")
         lines.append(f"Все позиции с ценами: /siteitems {draft_id}")
         lines += [f"{index}. {i.raw_product_text[:60]} × {i.qty}\n"
