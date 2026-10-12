@@ -13,6 +13,8 @@ from tests.telegram_transport import TelegramSession
 def dispatch(monkeypatch):
     from app.bot import telegram_bot, procurement, order_sources
     from app.bot.manager_dialog import pending
+    from app.bot.manager_menu import group_menus
+    group_menus.clear()
     pending.clear()
     monkeypatch.delenv("MANAGER_TELEGRAM_CHAT_ID", raising=False)
     monkeypatch.delenv("MANAGER_TELEGRAM_USER_IDS", raising=False)
@@ -58,9 +60,8 @@ def test_menu_target_and_hide(dispatch, monkeypatch, group, text, hidden):
     assert isinstance(calls[0].reply_markup, ReplyKeyboardRemove if hidden or group else ReplyKeyboardMarkup)
     assert calls[0].reply_markup.selective is group
     if group and not hidden:
-        from aiogram.methods import EditMessageReplyMarkup
-        assert isinstance(calls[1], EditMessageReplyMarkup)
-        assert calls[1].message_id == 1
+        from aiogram.methods import SendMessage
+        assert isinstance(calls[1], SendMessage)
         assert isinstance(calls[1].reply_markup, InlineKeyboardMarkup)
     if group:
         assert calls[0].reply_parameters.message_id == 42
@@ -118,3 +119,29 @@ def test_group_guards_and_normal_conversation(dispatch, monkeypatch):
 def test_ordinary_private_message_unchanged(dispatch):
     assert dispatch("Обсуждаем заказ с коллегой") == []
     dispatch.access.assert_not_awaited()
+
+
+def test_repeated_start_and_menu_dispatch_reuses_group_menu(dispatch, monkeypatch):
+    from aiogram.methods import SendMessage, EditMessageText
+    monkeypatch.setenv("MANAGER_TELEGRAM_CHAT_ID", "-100123")
+    monkeypatch.setenv("MANAGER_TELEGRAM_USER_IDS", "11,12")
+    first = dispatch("/start", group=True)
+    assert len(first) == 2 and all(isinstance(c, SendMessage) for c in first)
+    assert isinstance(first[0].reply_markup, ReplyKeyboardRemove)
+    assert isinstance(first[1].reply_markup, InlineKeyboardMarkup)
+    for command in ("/menu", "/start", "/menu"):
+        calls = dispatch(command, group=True)
+        assert len(calls) == 1 and isinstance(calls[0], EditMessageText)
+        assert calls[0].message_id == 2
+    # A second authorized actor gets their own targeted removal and inline menu.
+    other = dispatch("/menu", group=True, actor=12)
+    assert len(other) == 2
+    assert all(b.callback_data.startswith("menu:12:") for row in other[1].reply_markup.inline_keyboard for b in row)
+
+
+def test_repeated_private_start_and_menu_keep_only_three_actions(dispatch):
+    for command in ("/start", "/menu", "/start"):
+        calls = dispatch(command)
+        assert len(calls) == 1 and isinstance(calls[0].reply_markup, ReplyKeyboardMarkup)
+        assert sum(map(len, calls[0].reply_markup.keyboard)) == 3
+        assert calls[0].reply_markup.is_persistent

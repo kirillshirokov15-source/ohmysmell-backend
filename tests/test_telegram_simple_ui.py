@@ -28,7 +28,7 @@ def test_three_manager_buttons_and_single_group_menu(dispatch, monkeypatch):
     monkeypatch.setenv("MANAGER_TELEGRAM_USER_IDS", "11")
     menu = dispatch("/menu", group=True)
     from aiogram.methods import SendMessage
-    assert len([call for call in menu if isinstance(call, SendMessage)]) == 1
+    assert len([call for call in menu if isinstance(call, SendMessage)]) == 2
     assert all(b.callback_data.startswith("menu:11:") for row in menu[-1].reply_markup.inline_keyboard for b in row)
     assert dispatch("Обычная переписка", group=True) == []
     assert dispatch("☰ Ещё", group=True, actor=12) == []

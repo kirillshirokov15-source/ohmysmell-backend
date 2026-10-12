@@ -479,7 +479,10 @@ class ManagerRecoveryMiddleware(BaseMiddleware):
                     return
             return await handler(event, data)
         except Exception as error:
-            log_event(logger, "manager_handler_failed", level=logging.ERROR, result=type(error).__name__)
+            from app.bot.manager_menu import bad_request_reason
+            log_event(logger, "manager_handler_failed", level=logging.ERROR, result=type(error).__name__,
+                telegram_reason=bad_request_reason(error) if isinstance(error, TelegramBadRequest) else None,
+                telegram_method=type(error.method).__name__ if isinstance(error, TelegramBadRequest) else None)
             message = event.message if isinstance(event, CallbackQuery) else event
             if message and hasattr(message, "answer"):
                 try:
