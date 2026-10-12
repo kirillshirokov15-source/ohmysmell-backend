@@ -26,19 +26,21 @@ def waiting(message):
     return True
 
 
-def fallback(actor):
+def fallback(actor, *, more=False):
+    rows = ((('Закупки', 'procurements'), ('Отгрузки', 'shipped')),
+            (('Заявки', 'drafts'), ('Справка', 'help')),
+            (('Назад', 'home'),)) if more else (
+            (('📦 Заказы', 'orders'), ('🔎 Найти заказ', 'order')), (('☰ Ещё', 'more'),))
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=label, callback_data=f"menu:{actor}:{action}") for label, action in row]
-        for row in ((('Заказы', 'orders'), ('Найти заказ', 'order')),
-                    (('Источники', 'sources'), ('Отгрузки', 'shipped')),
-                    (('Закупки', 'procurements'), ('Обновить', 'orders')))])
+        for row in rows])
 
 
 async def prompt(message, action):
     # Mention targets ForceReply even when navigation originated in a callback.
     result = await message.answer(
         f'<a href="tg://user?id={message.from_user.id}">Менеджер</a>, введите номер заказа (только число). '
-        'Ответьте на это сообщение. Отмена: /cancel. Ожидание — 3 минуты.',
+        'Ответьте на это сообщение.',
         parse_mode="HTML", reply_markup=ForceReply(selective=True),
         reply_parameters=ReplyParameters(message_id=message.message_id, allow_sending_without_reply=False))
     pending[key(message)] = (action, result.message_id, time.monotonic() + TTL)

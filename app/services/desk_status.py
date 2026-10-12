@@ -28,9 +28,22 @@ def public_summary(desk, draft, order=None):
     label = stage_label(desk, draft, order)
     if order is None:
         return f"Заявка №{desk.draft_id}: {label}"
+    if getattr(order, "needs_review", False):
+        label = "Менеджер уточняет условия заказа"
+    label = {"В сборке": "Собираем ваш заказ", "Собран": "Готов к отправке", "Отгружен": "Передан в доставку"}.get(label, label)
     payment = PAYMENT_LABELS[order.payment_status]
     suffix = f". {payment}" if payment != label else ""
-    return f"Заявка №{desk.draft_id}, заказ №{order.id}: {label}{suffix}."
+    from app.services.telegram_display import telegram_rubles
+    from app.services.manager_workspace import DELIVERY_LABELS
+    lines = [f"Заявка №{desk.draft_id}, заказ №{order.id}: {label}{suffix}."]
+    if getattr(order, "total", None) is not None:
+        lines.append(f"Сумма: {telegram_rubles(order.total)}")
+    method = getattr(order, "delivery_method", "unselected")
+    if method != "unselected":
+        lines.append("Доставка: " + DELIVERY_LABELS[method])
+    if getattr(order, "delivery_reference", None):
+        lines.append("Номер доставки: " + order.delivery_reference)
+    return "\n".join(lines)
 
 
 def order_details(order):

@@ -54,9 +54,10 @@ def test_menu_target_and_hide(dispatch, monkeypatch, group, text, hidden):
         monkeypatch.setenv("MANAGER_TELEGRAM_CHAT_ID", "-100123")
         monkeypatch.setenv("MANAGER_TELEGRAM_USER_IDS", "11")
     calls = dispatch(text, group=group)
-    assert len(calls) == (2 if group and not hidden else 1)
-    assert isinstance(calls[0].reply_markup, ReplyKeyboardRemove if hidden else ReplyKeyboardMarkup)
-    assert calls[0].reply_markup.selective is group
+    assert len(calls) == 1
+    assert isinstance(calls[0].reply_markup, ReplyKeyboardRemove if hidden else InlineKeyboardMarkup if group else ReplyKeyboardMarkup)
+    if hidden or not group:
+        assert calls[0].reply_markup.selective is group
     if group:
         assert calls[0].reply_parameters.message_id == 42
         assert calls[0].reply_parameters.allow_sending_without_reply is False

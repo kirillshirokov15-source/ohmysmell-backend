@@ -105,8 +105,14 @@ def register(dp, check_access, safe_callback_answer):
             service = DeskService()
             if action == "claim":
                 await service.claim(draft_id, callback.from_user.id, callback.message.chat.id)
+            elif action == "items":
+                message = callback.message.model_copy(update={"from_user": callback.from_user, "text": f"/siteitems {draft_id}"}).as_(callback.bot)
+                await desk_command(message)
+                return
             elif action == "reply":
-                await callback.message.answer(f"Ответ только через явную команду: /reply {draft_id} текст\nПроверьте номер заявки перед отправкой.")
+                from app.bot.manager_inputs import prompt_input
+                message = callback.message.model_copy(update={"from_user": callback.from_user}).as_(callback.bot)
+                await prompt_input(message, "reply", {"draft_id": draft_id}, f"Ответьте на это сообщение — текст получит клиент по заявке №{draft_id}.")
                 return
             elif action == "history":
                 from app.services.desk_display import desk_history
@@ -128,9 +134,9 @@ def register(dp, check_access, safe_callback_answer):
                 return
             elif action == "cancelled":
                 await service.cancel(draft_id, callback.from_user.id, callback.message.chat.id)
-            elif action != "refresh":
+            elif action not in {"refresh", "details", "actions"}:
                 return
-            text, keyboard = await desk_card(draft_id)
+            text, keyboard = await desk_card(draft_id, view=action if action in {"details", "actions"} else "compact")
             from aiogram.exceptions import TelegramBadRequest
             try:
                 await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=None)

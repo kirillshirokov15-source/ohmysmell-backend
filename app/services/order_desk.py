@@ -137,8 +137,6 @@ class DeskService:
             desk.manager_id, desk.actor_telegram_id, desk.assigned_at = manager.id, actor, now()
             desk.stage = "working"
             audit(session, desk, "manager_claim_succeeded", actor)
-            enqueue(session, draft_id=draft_id, key=f"claim:{draft_id}", direction="to_manager", destination=chat_id,
-                body=f"Заявку с сайта №{draft_id} взял менеджер {manager.name or manager.id}.")
             return desk
 
     async def issue_link(self, draft_id):
@@ -178,7 +176,7 @@ class DeskService:
         link.consumed_by, link.consumed_at = actor, now()
         audit(session, desk, "telegram_customer_linked", actor)
         enqueue(session, draft_id=desk.draft_id, key=f"linked:{desk.draft_id}", direction="to_manager",
-            destination=manager_chat(), body=f"К заявке №{desk.draft_id} подключён клиент Telegram. /site {desk.draft_id}")
+            destination=manager_chat(), body=f"К заявке №{desk.draft_id} подключён клиент Telegram.")
         return desk
 
     async def client(self, actor, message_id, text):
@@ -196,48 +194,70 @@ class DeskService:
             except DeskError as error:
                 response = str(error)
             session.add(ClientUpdate(key=key, response=response))
-            enqueue(session, draft_id=draft_id, key=key + ":ack", direction="to_customer", destination=actor, body=response)
+            enqueue(session, draft_id=draft_id, key=key + ":ack", direction="to_customer", destination=actor, body=response, kind="client_menu")
 
     async def _client(self, session, actor, message_id, text, key):
+        from app.models.operations import ClientConversation
+        conversation = await session.get(ClientConversation, actor)
+        if not conversation:
+            conversation = ClientConversation(telegram_id=actor, state="idle", data={})
+            session.add(conversation)
         if text is None:
-            return "Поддерживаются только текстовые сообщения. Вложения передайте менеджеру другим согласованным способом.", None
+            return "Отправьте текст сообщения. Вложения передайте менеджеру напрямую.", None
         text = text.strip()
-        if not text:
-            return "Сообщение пустое. /help — доступные команды.", None
+        if text.startswith("/"):
+            conversation.state, conversation.data = "idle", {}
         if text.startswith("/start "):
             desk = await self.consume(session, text.split(maxsplit=1)[1], actor)
-            return (f"Спасибо за заказ (заявка №{desk.draft_id})! Telegram подключён.\n"
-                + await public_status(session, desk) + "\n"
-                "Менеджер поможет с наличием, оплатой и доставкой.\n"
-                f"/status {desk.draft_id} — статус; /message {desk.draft_id} текст — написать менеджеру; /orders — мои заказы.", desk.draft_id)
-        help_text = ("Здесь можно проверить заказ и написать менеджеру.\n"
-            "/orders — ваши заявки\n/status НОМЕР — актуальный статус\n"
-            "/message НОМЕР текст — сообщение по выбранной заявке\n"
-            "Откройте персональную ссылку после оформления заказа и нажмите Start. "
-            "Если ссылки нет или она истекла, запросите новую у менеджера. "
-            "Оплата согласуется с менеджером; бот не принимает платежи.")
-        if text in {"/start", "/help"}:
-            return help_text, None
-        if text in {"/orders", "Мой заказ"}:
+            conversation.state, conversation.data = "idle", {}
+            return "Спасибо за заказ!\n" + await public_status(session, desk), desk.draft_id
+        if text in {"/start", "/help", "/cancel"}:
+            conversation.state, conversation.data = "idle", {}
+            return "Здесь можно посмотреть свои заказы и написать менеджеру. Выберите действие в меню.", None
+        if text in {"/orders", "Мой заказ", "📦 Мои заказы", "🔎 Статус заказа", "💬 Написать менеджеру", "/status", "/manager"}:
+            conversation.state = "choose_message" if text in {"💬 Написать менеджеру", "/manager"} else "choose_status"
+            conversation.data = {}
             desks = (await session.scalars(select(OrderDesk).where(OrderDesk.customer_telegram_id == actor)
                 .order_by(OrderDesk.draft_id.desc()).limit(10))).all()
-            return ("Ваши заявки (до 10 последних):\n" + "\n".join([
-                f"{await public_status(session, d)}\n/status {d.draft_id} · /message {d.draft_id} текст" for d in desks])
-                if desks else "Откройте персональную ссылку после оформления заказа. Если ссылки нет, свяжитесь с менеджером.", None)
+            return ("Выберите заказ:\n" + "\n".join([await public_status(session, d) for d in desks])
+                if desks else "Заказов пока нет. Откройте персональную ссылку, полученную после оформления заказа.", None)
+        if text.startswith(("Заказ №", "Заявка №")):
+            number = text.split("№", 1)[1]
+            if not number.isascii() or not number.isdigit() or len(number) > 10 or not 0 < int(number) <= 2147483647:
+                raise DeskError("Выберите заказ кнопкой под сообщением.")
+            identifier = int(number)
+            if text.startswith("Заказ №"):
+                desk = await session.scalar(select(OrderDesk).where(OrderDesk.order_id == identifier,
+                    OrderDesk.customer_telegram_id == actor))
+            else:
+                desk = await session.get(OrderDesk, identifier)
+            if not desk or desk.customer_telegram_id != actor:
+                raise DeskError("Заказ не найден среди ваших заказов.")
+            identifier = desk.draft_id
+            if conversation.state == "choose_message":
+                conversation.state, conversation.data = "desk_message", {"draft_id": identifier}
+                return f"Напишите сообщение менеджеру по заявке №{identifier}.", identifier
+            conversation.state, conversation.data = "idle", {}
+            return await public_status(session, desk), identifier
+        if conversation.state == "desk_message" and not text.startswith("/"):
+            text = f"/message {conversation.data['draft_id']} {text}"
+        if not text:
+            return "Выберите действие в меню.", None
         parts = text.split(maxsplit=2)
         if parts[0] not in {"/status", "/message", "/manager"} or len(parts) < 2 or not parts[1].isascii() or not parts[1].isdigit() or len(parts[1]) > 9:
-            return "Укажите заявку явно: /orders, /status НОМЕР или /message НОМЕР текст. Обычный текст не пересылается.", None
+            return "Выберите заказ через меню, чтобы посмотреть статус или написать менеджеру.", None
         desk = await session.get(OrderDesk, int(parts[1]))
         if not desk or desk.customer_telegram_id != actor:
             raise DeskError("Заявка не найдена среди ваших заказов.")
         if parts[0] == "/status":
             return await public_status(session, desk), desk.draft_id
         if len(parts) != 3 or not parts[2].strip() or len(parts[2].encode("utf-16-le")) // 2 > 3000:
-            raise DeskError("Формат: /message НОМЕР текст (до 3000 символов Telegram).")
+            raise DeskError("Введите сообщение длиной до 3000 символов.")
         enqueue(session, draft_id=desk.draft_id, key=key, direction="to_manager", destination=manager_chat(),
-            body=f"Сообщение от клиента по заявке №{desk.draft_id}:\n{parts[2]}\n\n/reply {desk.draft_id} текст",
+            body=f"Сообщение от клиента по заявке №{desk.draft_id}:\n{parts[2]}",
             sender_type="customer", actor=actor, source_message_id=message_id)
         audit(session, desk, "customer_message_received", actor)
+        conversation.state, conversation.data = "idle", {}
         return "Сообщение передано менеджеру.", desk.draft_id
 
     async def reply(self, draft_id, actor, chat_id, message_id, text):
@@ -395,5 +415,16 @@ async def status_notification(session, order, actor):
         audit(session, desk, "order_status_changed", actor, order_id=order.id, revision=order.revision,
             payment=order.payment_status, fulfillment=order.fulfillment_status, delivery=order.delivery_status)
     if desk and desk.customer_telegram_id:
+        body = await public_status(session, desk)
+        previous = await session.scalar(select(DeskMessage).where(DeskMessage.draft_id == desk.draft_id,
+            DeskMessage.destination == desk.customer_telegram_id, DeskMessage.kind == "client_card")
+            .order_by(DeskMessage.id.desc()).limit(1))
+        # Preserve separate important events; intermediate assembly updates only edit the card.
+        important = (previous is None or order.needs_review or
+            order.fulfillment_status in {"shipped", "cancelled"} or order.delivery_status == "delivered"
+            or (previous.body.splitlines()[1:] != body.splitlines()[1:]))
+        if important and previous is not None and previous.body != body:
+            enqueue(session, draft_id=desk.draft_id, key=f"status:{order.id}:{order.revision}:notice",
+                direction="to_customer", destination=desk.customer_telegram_id, body=body)
         enqueue(session, draft_id=desk.draft_id, key=f"status:{order.id}:{order.revision}", direction="to_customer",
-            destination=desk.customer_telegram_id, body=await public_status(session, desk), actor=actor)
+            destination=desk.customer_telegram_id, body=await public_status(session, desk), actor=actor, kind="client_card")

@@ -24,7 +24,7 @@ def test_order_is_authoritative_for_every_old_desk_stage(old_stage,payment,fulfi
     order=SimpleNamespace(id=205,status='new',payment_status=payment,fulfillment_status=fulfillment,delivery_status=delivery)
     assert stage_label(desk,draft,order)==label
     summary=public_summary(desk,draft,order)
-    assert label in summary
+    assert {"В сборке": "Собираем ваш заказ", "Собран": "Готов к отправке", "Отгружен": "Передан в доставку"}.get(label, label) in summary
     if payment=='paid': assert 'Ожидает оплаты' not in summary
 
 

@@ -136,7 +136,7 @@ async def full_scenario(factory, actor=111, *, pid="ms-dsd", concurrent=False):
         assert not next(a for a in view["allocations"] if a["id"] == allocation["id"])["ready"]
         await source_action("post_receipt", allocation)
     assert view["items"][0]["ready"] == 8
-    from app.services.manager_workspace import order_card, shipments_for
+    from app.services.manager_workspace import order_details_card as order_card, shipments_for
     plans = await shipments_for(order.id)
     text = order_card(order, plans)
     assert all(label in text for label in ("Наш склад", "X-склад", "Внешние поставщики", "Buying", "симуляция"))

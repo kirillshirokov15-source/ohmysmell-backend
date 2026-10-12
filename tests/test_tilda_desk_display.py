@@ -34,7 +34,7 @@ def test_card_review_requires_approval_and_linked_order(
     monkeypatch.setattr(desk_display, "async_session", lambda: session)
     monkeypatch.setattr(desk_display, "availability", AsyncMock(return_value={}))
 
-    text, _ = asyncio.run(desk_display.desk_card(38))
+    text, _ = asyncio.run(desk_display.desk_card(38, view="details"))
 
     if approved and order_id:
         assert "Проверка суммы: арифметика согласована; одобрено менеджером" in text

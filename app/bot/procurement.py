@@ -14,7 +14,7 @@ STATUS = {"needed": "Нужна закупка", "requested": "Запрос от
     "received": "Получена", "unavailable": "Недоступно", "cancelled": "Отменена"}
 
 
-async def supply_order_card(order, shipments=()):
+async def supply_order_card(order, shipments=(), *, details=False):
     from app.services.manager_workspace import order_card
     async with async_session() as session:
         rows = list((await session.execute(select(OrderItemSupply, XSettlement, ProcurementRequest, SupplierOffer, Supplier)
@@ -31,7 +31,29 @@ async def supply_order_card(order, shipments=()):
     order.supply_has_external = bool(requests)
     order.supply_received = bool(requests) and all(r.status == "received" for r in requests.values())
     order.supply_financial_review = any(s.status == "requires_financial_review" for s in settlements.values())
-    lines = [order_card(order, shipments)]
+    from app.services.warehouse_documents import frozen_plan
+    async with async_session() as session:
+        order.ui_cancellable = not any([await frozen_plan(session, plan) for plan in shipments])
+    from app.services.order_source_service import allocation_ready
+    quantities = {}
+    for plan in shipments:
+        if plan.status not in {"planned", "exported"}:
+            continue
+        for allocation in plan.allocations:
+            if allocation.supply_status != "cancelled" and allocation_ready(allocation, manual=order.manual_fulfillment):
+                quantities[allocation.order_item_id] = quantities.get(allocation.order_item_id, 0) + allocation.qty
+    if not order.manual_fulfillment:
+        from app.services.supply_service import ready_supply_quantities, SupplyError
+        async with async_session() as session:
+            try:
+                quantities.update(await ready_supply_quantities(session, order.id))
+            except SupplyError:
+                quantities = {}
+    order.ui_supply_ready = bool(order.items) and quantities == {i.id: i.qty for i in order.items}
+    if not details:
+        return order_card(order, shipments)
+    from app.services.manager_workspace import order_details_card
+    lines = [order_details_card(order, shipments)]
     for s in snapshots:
         lines.append(f"Позиция #{s.order_item_id}: {LABELS[s.source_type]}")
         if s.supplier_name:

@@ -121,7 +121,7 @@ def test_telegram_normalization(value):
 
 
 def test_card_displays_two_warehouses_and_context_actions():
-    from app.services.manager_workspace import order_card, order_keyboard
+    from app.services.manager_workspace import order_details_card as order_card, available_order_keyboard as order_keyboard
     item = SimpleNamespace(id=1, name="Свеча", qty=4, price=2500, item_total=10000)
     plans = [SimpleNamespace(warehouse_id=w, status="planned", allocations=[SimpleNamespace(order_item_id=1, qty=2)]) for w in ("w1", "w2")]
     o = order(items=[item])
@@ -305,10 +305,10 @@ def test_manager_menu_exposes_all_daily_sections_in_russian():
     from app.bot.manager_menu import menu_options
     menu = menu_options(SimpleNamespace(chat=SimpleNamespace(type="private")))["reply_markup"]
     labels = {button.text for row in menu.keyboard for button in row}
-    assert labels == {"Заказы", "Найти заказ", "Источники", "Отгрузки", "Закупки", "Обновить", "Скрыть меню"}
+    assert labels == {"📦 Заказы", "🔎 Найти заказ", "☰ Ещё"}
     assert menu.resize_keyboard
 
 
 def test_order_card_contains_email():
-    from app.services.manager_workspace import order_card
+    from app.services.manager_workspace import order_details_card as order_card
     assert "Email: existing@example.invalid" in order_card(order(customer_email="existing@example.invalid"))

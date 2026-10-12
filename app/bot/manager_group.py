@@ -43,8 +43,9 @@ def allowed_event(event, callback=False):
         return False
     from app.bot.manager_menu import MENU_TEXTS
     from app.bot.manager_dialog import BUTTONS, waiting
+    from app.bot.manager_inputs import waiting as input_waiting
     text = getattr(message, "text", "")
-    return callback or bool(text and (text.startswith("/") or text in MENU_TEXTS or text in BUTTONS or waiting(message)))
+    return callback or bool(text and (text.startswith("/") or text in MENU_TEXTS or text in BUTTONS or waiting(message) or input_waiting(message)))
 
 
 def notification_chats(managers):

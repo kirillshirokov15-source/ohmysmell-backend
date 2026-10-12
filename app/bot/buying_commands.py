@@ -11,7 +11,7 @@ def register(dp, check_access, show_order_list):
             from app.bot.procurement import show_procurements
             await show_procurements(message)
 
-    @dp.message(or_f(Command("orders"), F.text.in_({"Заказы", "Обновить"})))
+    @dp.message(or_f(Command("orders"), F.text.in_({"Заказы", "📦 Заказы", "Обновить"})))
     async def orders(message):
         if await check_access(message):
             await show_order_list(message, "all", 0)

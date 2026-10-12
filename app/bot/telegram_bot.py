@@ -18,8 +18,8 @@ from app.models.sales import CustomerType
 from app.repositories.draft_order_repository import DraftOrderRepository
 from app.services.draft_order_service import DraftOrderError, DraftOrderService
 from app.services.draft_telegram_service import (
-    build_draft_card,
-    build_draft_keyboard,
+    compact_draft_card as build_draft_card,
+    compact_draft_keyboard as build_draft_keyboard,
 )
 from app.services.telegram_display import customer_type_label
 from app.logging_utils import log_event
@@ -123,17 +123,8 @@ async def chat_id_handler(message: Message):
     )
 
 
-MANAGER_HELP = (
-    "Кабинет менеджера OhMySmell\n"
-    "/menu — нижнее меню; /hide_menu — скрыть меню\n"
-    "/site НОМЕР — заявка сайта, ответственный и история\n"
-    "/reply НОМЕР текст — ответ клиенту по номеру заявки, не заказа\n"
-    "/orders — список заказов; /order НОМЕР — карточка заказа\n"
-    "/drafts — заявки на проверку; /procurements — закупки\n\n"
-    "В карточке сайта нажмите «Взять заказ», затем согласуйте товары и сумму. "
-    "Оплату и выполнение отмечайте в карточке подтверждённого заказа. "
-    "Обычные сообщения в группе клиентам не пересылаются."
-)
+MANAGER_HELP = ("Выберите заказ, чтобы увидеть следующий шаг. Закупки и отгрузки — в меню «Ещё». "
+                "Обычные сообщения в группе остаются перепиской сотрудников.")
 
 
 @dp.message(Command("help"))
@@ -150,24 +141,29 @@ async def start_handler(message: Message):
     if not await check_access(message):
         return
 
-    await message.answer(
-        "Меню менеджера. Выберите раздел.\n"
-        "Обновить — список заказов. Скрыть: /hide_menu; вернуть: /menu.\n"
-        "Найти заказ / Источники — ввод номера. Отмена: /cancel.\n"
-        "Все команды: /help.",
-        parse_mode=None, **menu_options(message),
-    )
     if message.chat.type in {"group", "supergroup"}:
         from app.bot.manager_dialog import fallback
-        await message.answer("Если нижние кнопки не отвечают, используйте это меню:",
-                             reply_markup=fallback(message.from_user.id))
+        from aiogram.types import ReplyParameters
+        await message.answer("Меню менеджера", reply_markup=fallback(message.from_user.id),
+            reply_parameters=ReplyParameters(message_id=message.message_id, allow_sending_without_reply=False))
+    else:
+        await message.answer("Выберите действие", **menu_options(message))
+
+
+@dp.message(F.text == "☰ Ещё")
+async def more_handler(message):
+    if not await check_access(message):
+        return
+    from app.bot.manager_dialog import fallback
+    await message.answer("Ещё", reply_markup=fallback(message.from_user.id, more=True))
+
 
 
 @dp.message(or_f(Command("hide_menu"), F.text == "Скрыть меню"))
 async def hide_menu_handler(message: Message):
     if not await check_access(message):
         return
-    await message.answer("Меню скрыто. Вернуть: /menu", **menu_options(message, hide=True))
+    await message.answer("Меню скрыто.", **menu_options(message, hide=True))
 
 
 @dp.message(F.text == "🆔 Мой ID")
@@ -308,13 +304,13 @@ async def draft_callback_handler(callback: CallbackQuery):
             action=action,
             draft_id=draft_id,
         )
-        if action not in {"refresh", "ambiguous"} and not (parts[-1].startswith("v") and parts[-1][1:].isdigit()):
+        if action not in {"refresh", "ambiguous", "details", "actions"} and not (parts[-1].startswith("v") and parts[-1][1:].isdigit()):
             raise DraftOrderError("Карточка устарела; обновите черновик")
         service = DraftOrderService()
         if hasattr(service, "repository") and parts[-1].startswith("v") and parts[-1][1:].isdigit():
             service.repository.expected_revision = int(parts[-1][1:])
         draft = None
-        if action == "refresh":
+        if action in {"refresh", "details", "actions"}:
             draft = await DraftOrderRepository().get(draft_id)
         elif action == "type":
             customer_type = CustomerType(parts[2])
@@ -420,17 +416,17 @@ async def draft_callback_handler(callback: CallbackQuery):
         if draft is not None and callback.message:
             await safe_edit_message(
                 callback.message,
-                build_draft_card(draft),
+                build_draft_card(draft, expanded=action == "details"),
                 draft_id=draft_id,
                 reply_markup=InlineKeyboardMarkup.model_validate(
-                    build_draft_keyboard(draft)
+                    build_draft_keyboard(draft, expanded=action in {"details", "actions", "ambiguous", "counterparty_select"})
                 ),
             )
         outcome = "success"
     except (ValueError, IndexError, DraftOrderError, InvalidOrderTransitionError) as error:
         logger.warning("Telegram callback rejected error_type=%s", type(error).__name__)
         if callback.message:
-            await callback.message.answer("Действие не выполнено: нажмите «Обновить» или откройте заявку через /draft НОМЕР. Проверьте тип клиента, товары и цены.")
+            await callback.message.answer("Не удалось выполнить действие. Обновите карточку и проверьте товары и цены.")
         outcome = "rejected"
     except TelegramBadRequest:
         raise
@@ -480,6 +476,9 @@ class ManagerRecoveryMiddleware(BaseMiddleware):
             return
         try:
             if isinstance(event, Message):
+                from app.bot.manager_inputs import route as input_route
+                if await input_route(event, check_access):
+                    return
                 from app.bot.manager_dialog import route
                 if await route(event, check_access, {"order": find_order, "sources": sources_handler}):
                     return
@@ -600,13 +599,21 @@ async def order_callback(callback):
                 {"text": "Да, отменить", "callback_data": f"order:cancel:{order_id}:{revision}"},
                 {"text": "Оставить", "callback_data": f"order:refresh:{order_id}:{revision}"}]]))
             return
+        if action == "sources":
+            from app.bot.source_navigation import show_sources
+            await show_sources(callback.message, callback.from_user.id, order_id, edit=True)
+            return
+        if action == "items":
+            message = callback.message.model_copy(update={"from_user": callback.from_user, "text": f"/items {order_id}"}).as_(callback.bot)
+            await all_order_items(message)
+            return
         if action == "allocate":
             from app.services.fulfillment_service import FulfillmentService
             await FulfillmentService().plan(order_id, expected_revision=revision)
         elif action == "procurement":
             await show_procurements(callback.message, order_id)
             return
-        elif action != "refresh":
+        elif action not in {"refresh", "details", "actions", "sources"}:
             extra = {}
             if action.startswith("delivery_"):
                 extra["delivery_method"] = action.removeprefix("delivery_")
@@ -618,8 +625,8 @@ async def order_callback(callback):
                 idempotency_key=f"tg:{callback.from_user.id}:{callback.data}", **extra)
             order = await OrderOperations().act(order_id, callback.from_user.id, request)
         plans = await shipments_for(order_id)
-        text = await supply_order_card(order, plans)
-        keyboard = InlineKeyboardMarkup.model_validate(order_keyboard(order, plans))
+        text = await supply_order_card(order, plans, details=action == "details")
+        keyboard = InlineKeyboardMarkup.model_validate(order_keyboard(order, plans, expanded=action in {"details", "actions"}))
         try:
             await safe_edit_message(callback.message, text, draft_id=0, reply_markup=keyboard)
         except TelegramBadRequest:
@@ -691,6 +698,8 @@ from app.bot.order_desk import register as register_order_desk
 register_order_desk(dp, check_access, safe_callback_answer)
 from app.bot.order_sources import register as register_order_sources
 sources_handler = register_order_sources(dp, check_access)
+from app.bot.source_navigation import register as register_source_navigation
+register_source_navigation(dp, check_access, safe_callback_answer)
 
 
 @dp.callback_query(F.data.startswith("menu:"))
@@ -712,3 +721,12 @@ async def menu_callback(callback):
         await show_order_list(message, "all" if action == "orders" else "shipped", 0)
     elif action == "procurements":
         await show_procurements(message)
+
+    elif action in {"more", "home"}:
+        from app.bot.manager_dialog import fallback
+        await callback.message.edit_text("Ещё" if action == "more" else "Меню менеджера",
+            reply_markup=fallback(callback.from_user.id, more=action == "more"))
+    elif action == "help":
+        await help_handler(message)
+    elif action == "drafts":
+        await show_draft_list(message, "needs_review", 0)

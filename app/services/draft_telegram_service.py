@@ -169,6 +169,33 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
     return {"inline_keyboard": rows}
 
 
+def compact_draft_keyboard(draft, *, expanded=False):
+    full = build_draft_keyboard(draft)
+    if expanded:
+        return full
+    buttons = [button for row in full["inline_keyboard"] for button in row]
+    primary = next((b for b in buttons if ":finalize:" in b["callback_data"]), None)
+    if (getattr(draft, "contact_details", None) or {}).get("tilda"):
+        primary = buttons[0] if buttons else None
+    elif not primary and str(draft.status) not in {"new", "rejected"}:
+        primary = {"text": "Проверить заявку", "callback_data": f"draft:actions:{draft.id}"}
+    rows = [[primary]] if primary else []
+    rows += [[{"text": label, "callback_data": f"draft:{action}:{draft.id}"}]
+             for label, action in (("Подробнее", "details"), ("⋯ Действия", "actions"))]
+    return {"inline_keyboard": rows}
+
+
+def compact_draft_card(draft, *, expanded=False):
+    if expanded:
+        return build_draft_card(draft)
+    rows = compact_draft_keyboard(draft)["inline_keyboard"]
+    next_step = rows[0][0]["text"] if len(rows) > 2 else "Действий не требуется"
+    return "\n".join([f"Заявка №{draft.id}", f"Статус: {draft_status_label(draft.status)}",
+        f"Товаров: {sum(max(i.qty, 0) for i in draft.items)} шт.",
+        "Сумма: " + (telegram_rubles(draft.total) if draft.total is not None else "требует проверки"),
+        "Оплата: после подтверждения заказа", "Наличие: требует согласования", f"Сейчас: {next_step}"])
+
+
 async def notify_managers_about_draft(draft: DraftOrder) -> int:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -183,7 +210,7 @@ async def notify_managers_about_draft(draft: DraftOrder) -> int:
         raise RuntimeError("No active Telegram managers")
     from app.bot.manager_group import notification_chats
     chat_ids = notification_chats(managers)
-    keyboard, card = build_draft_keyboard(draft), build_draft_card(draft)
+    keyboard, card = compact_draft_keyboard(draft), compact_draft_card(draft)
     def send():
         with verified_session() as http_session:
             for chat_id in chat_ids:
