@@ -70,7 +70,7 @@ def test_privacy_fallback_is_actor_bound(dispatch, monkeypatch):
     monkeypatch.setenv('MANAGER_TELEGRAM_CHAT_ID', '-100123')
     monkeypatch.setenv('MANAGER_TELEGRAM_USER_IDS', '11,12')
     from app.bot.manager_dialog import pending
-    menu = dispatch('/menu', group=True)[0].reply_markup
+    menu = dispatch('/menu', group=True)[-1].reply_markup
     assert isinstance(menu, InlineKeyboardMarkup)
     payload = menu.inline_keyboard[0][1].callback_data
     dispatch('', group=True, callback=payload, actor=12)

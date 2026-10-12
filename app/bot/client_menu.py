@@ -18,13 +18,11 @@ def client_keyboard(order_ids=(), *, intake=False):
 
 
 async def delivery_keyboard(session, actor):
-    from sqlalchemy import select
     from app.models.operations import ClientConversation
-    from app.models.order_desk import OrderDesk
     conversation = await session.get(ClientConversation, actor)
     identifiers = []
     if conversation and conversation.state in {"choose_status", "choose_message"}:
-        desks = (await session.scalars(select(OrderDesk).where(
-            OrderDesk.customer_telegram_id == actor).order_by(OrderDesk.draft_id.desc()).limit(10))).all()
+        from app.services.order_desk import client_navigation_desks
+        desks = await client_navigation_desks(session, actor)
         identifiers = [f"Заказ №{d.order_id}" if d.order_id else f"Заявка №{d.draft_id}" for d in desks]
     return client_keyboard(identifiers)

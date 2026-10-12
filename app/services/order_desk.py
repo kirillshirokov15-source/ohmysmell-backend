@@ -70,6 +70,21 @@ def audit(session, desk, action, actor=None, **details):
     log_event(logger, action, draft_id=desk.draft_id, actor_telegram_id=actor, result="pending_commit")
 
 
+async def client_navigation_desks(session, actor):
+    """Navigation has a real owned order context; never bypass outbox scope.
+
+With a staging draft scope, neither the list nor its keyboard may borrow an
+approved draft's envelope to show orders outside that scope. Message-ID-only
+approval still requires explicit approval of the individual outbox row.
+"""
+    from app.services.desk_delivery_policy import DeskDeliveryPolicy
+    policy = DeskDeliveryPolicy.load("client")
+    query = select(OrderDesk).where(OrderDesk.customer_telegram_id == actor)
+    if policy.restricted and policy.draft_ids:
+        query = query.where(OrderDesk.draft_id.in_(policy.draft_ids))
+    return (await session.scalars(query.order_by(OrderDesk.draft_id.desc()).limit(10))).all()
+
+
 class TildaIntake:
     async def submit(self, payload):
         fingerprint = digest(payload)
@@ -194,7 +209,13 @@ class DeskService:
             except DeskError as error:
                 response = str(error)
             session.add(ClientUpdate(key=key, response=response))
-            enqueue(session, draft_id=draft_id, key=key + ":ack", direction="to_customer", destination=actor, body=response, kind="client_menu")
+            reply = enqueue(session, draft_id=draft_id, key=key + ":ack", direction="to_customer",
+                destination=actor, body=response, kind="client_menu", source_message_id=message_id)
+            await session.flush()
+            from app.services.desk_delivery_policy import DeskDeliveryPolicy
+            delivery = ("sending_disabled" if os.getenv("ORDER_DESK_SEND_ENABLED", "false").lower() != "true"
+                        else "scope_allowed" if DeskDeliveryPolicy.load("client").permits(reply) else "scope_blocked")
+            log_event(logger, "client_reply_queued", message_id=reply.id, draft_id=draft_id, result=delivery)
 
     async def _client(self, session, actor, message_id, text, key):
         from app.models.operations import ClientConversation
@@ -213,14 +234,16 @@ class DeskService:
             return "Спасибо за заказ!\n" + await public_status(session, desk), desk.draft_id
         if text in {"/start", "/help", "/cancel"}:
             conversation.state, conversation.data = "idle", {}
-            return "Здесь можно посмотреть свои заказы и написать менеджеру. Выберите действие в меню.", None
+            desks = await client_navigation_desks(session, actor)
+            return ("Здесь можно посмотреть свои заказы и написать менеджеру. Выберите действие в меню.",
+                    desks[0].draft_id if desks else None)
         if text in {"/orders", "Мой заказ", "📦 Мои заказы", "🔎 Статус заказа", "💬 Написать менеджеру", "/status", "/manager"}:
             conversation.state = "choose_message" if text in {"💬 Написать менеджеру", "/manager"} else "choose_status"
             conversation.data = {}
-            desks = (await session.scalars(select(OrderDesk).where(OrderDesk.customer_telegram_id == actor)
-                .order_by(OrderDesk.draft_id.desc()).limit(10))).all()
+            desks = await client_navigation_desks(session, actor)
             return ("Выберите заказ:\n" + "\n".join([await public_status(session, d) for d in desks])
-                if desks else "Заказов пока нет. Откройте персональную ссылку, полученную после оформления заказа.", None)
+                if desks else "Заказов пока нет. Откройте персональную ссылку, полученную после оформления заказа.",
+                desks[0].draft_id if desks else None)
         if text.startswith(("Заказ №", "Заявка №")):
             number = text.split("№", 1)[1]
             if not number.isascii() or not number.isdigit() or len(number) > 10 or not 0 < int(number) <= 2147483647:

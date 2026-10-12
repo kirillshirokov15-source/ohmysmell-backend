@@ -141,13 +141,8 @@ async def start_handler(message: Message):
     if not await check_access(message):
         return
 
-    if message.chat.type in {"group", "supergroup"}:
-        from app.bot.manager_dialog import fallback
-        from aiogram.types import ReplyParameters
-        await message.answer("Меню менеджера", reply_markup=fallback(message.from_user.id),
-            reply_parameters=ReplyParameters(message_id=message.message_id, allow_sending_without_reply=False))
-    else:
-        await message.answer("Выберите действие", **menu_options(message))
+    from app.bot.manager_menu import show_menu
+    await show_menu(message)
 
 
 @dp.message(F.text == "☰ Ещё")
