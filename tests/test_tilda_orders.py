@@ -146,3 +146,37 @@ def test_client_poll_does_not_acknowledge_uncommitted_update(monkeypatch):
         with pytest.raises(Finished): await durable_client_poll(dp,bot)
         assert handled==[27,27] and offsets==[None,28]
     asyncio.run(run())
+
+def test_real_cart_nested_order_identifier_and_items(monkeypatch):
+    from app.integrations.tilda import normalize
+    monkeypatch.setenv("TILDA_FIELD_MAP_JSON", "{}")
+    monkeypatch.setenv("TILDA_ITEM_FIELD_MAP_JSON", "{}")
+    sample = {"payment": {"orderid": "order-42", "amount": "560", "products": [
+        {"externalid": "MARV001", "name": "Marvis", "quantity": "1", "price": "560"}]},
+        "Name": "SYNTHETIC", "Email": "test@example.invalid", "Phone": "+70000000000"}
+    parsed = normalize(sample)
+    assert parsed["external_id"] == "source:payment.orderid:order-42"
+    assert parsed["items"][0]["externalid"] == "MARV001"
+    assert parsed["reported_total"] == 56000
+    assert parsed["problems"] == []
+
+
+def test_multiple_distinct_cart_ids_do_not_collide(monkeypatch):
+    from app.integrations.tilda import normalize
+    monkeypatch.setenv("TILDA_FIELD_MAP_JSON", "{}")
+    sample = payload()
+    sample.pop("tranid")
+    sample["orderid"] = "1"
+    one = normalize(sample)
+    sample["orderid"] = "2"
+    two = normalize(sample)
+    assert one["external_id"] != two["external_id"]
+
+
+def test_missing_real_tilda_id_still_rejected(monkeypatch):
+    from app.integrations.tilda import normalize, TildaInvalid
+    monkeypatch.setenv("TILDA_FIELD_MAP_JSON", "{}")
+    sample = payload()
+    sample.pop("tranid")
+    with pytest.raises(TildaInvalid, match="stable_external_id_required"):
+        normalize(sample)
