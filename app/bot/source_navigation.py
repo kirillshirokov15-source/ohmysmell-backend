@@ -528,6 +528,35 @@ def register(dp, check_access, safe_callback_answer):
                     args["x_unit_cost_minor"] = state["x_unit_cost_minor"]
                 await service.act(state["order_id"], state["actor"], state["chat"], SourceAction(
                     action=action, expected_revision=state["revision"], idempotency_key=callback.data, **args))
+                if action == "assign" and state.get("source_type") == "partner_x":
+                    # Automatic X documents are strictly opt-in, disabled by
+                    # default and also excluded for the known test order #5.
+                    from app.config.settings import settings
+                    if settings.x_auto_fulfill_enabled:
+                        from app.services.x_warehouse_auto import XWarehouseAutoService
+                        try:
+                            outcome = await XWarehouseAutoService().run(
+                                state["order_id"], state["actor"], state["chat"])
+                        except Exception:
+                            # A provider may have accepted the stock document
+                            # before returning a timeout: NEVER auto retry here.
+                            import logging
+                            logging.getLogger(__name__).exception(
+                                "x_auto_documents_uncertain order_id=%s", state["order_id"])
+                            await replace_screen(callback.message,
+                                "Назначение склада Х сохранено. Результат документов МойСклад "
+                                "НЕИЗВЕСТЕН. Не повторяйте назначение или оприходование. "
+                                "Проверьте журнал внешних операций и МойСклад.",
+                                [[{"text": "К заказу", "callback_data":
+                                    f"order:refresh:{state['order_id']}:0"}]])
+                            return
+                        if outcome["status"] != "completed":
+                            await replace_screen(callback.message,
+                                "Склад Х назначен, автоматические документы не созданы.\n"
+                                + outcome.get("reason", "Проверьте настройки склада Х."),
+                                [[{"text": "К обеспечению", "callback_data":
+                                    f"order:sources:{state['order_id']}:0"}]])
+                            return
                 await show_sources(callback.message, state["actor"], state["order_id"], edit=True)
                 return
             if not rows:
