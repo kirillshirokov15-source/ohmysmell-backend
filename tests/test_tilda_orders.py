@@ -180,3 +180,31 @@ def test_missing_real_tilda_id_still_rejected(monkeypatch):
     sample.pop("tranid")
     with pytest.raises(TildaInvalid, match="stable_external_id_required"):
         normalize(sample)
+
+
+def test_manager_card_review_blockers_are_actionable():
+    from types import SimpleNamespace
+    from app.services.desk_display import review_blockers, REVIEW_PROBLEM_LABELS
+    item = SimpleNamespace(product_id="prod-1", match_status="matched", price=56000, qty=1)
+    draft = SimpleNamespace(total=None, items=[item],
+        contact_details={"tilda_review_problems": ["invalid_total"]})
+    problems = review_blockers(draft)
+    assert problems == ["invalid_total"]
+    assert "Tilda" in REVIEW_PROBLEM_LABELS[problems[0]]
+    draft.total = 56000
+    draft.contact_details["tilda_review_problems"] = []
+    assert review_blockers(draft) == []
+    item.product_id = None
+    assert review_blockers(draft) == ["sku_unmatched"]
+
+
+def test_new_and_claimed_site_drafts_are_pending_confirmation():
+    from types import SimpleNamespace
+    from app.services.desk_status import stage_label
+    draft = SimpleNamespace(status="needs_review")
+    desk = SimpleNamespace(order_id=None, stage="new")
+    assert stage_label(desk, draft) == "Ожидает подтверждения"
+    desk.stage = "working"
+    assert stage_label(desk, draft) == "Ожидает подтверждения"
+    desk.stage = "awaiting_confirmation"
+    assert stage_label(desk, draft) == "Ожидает подтверждения"
