@@ -94,7 +94,9 @@ def register(dp, check_access, safe_callback_answer):
             return
         entry = navigation.get(callback.data.split(":", 1)[1])
         if not entry or entry[0] < time.monotonic():
-            await callback.message.answer("Откройте источники заказа заново.")
+            await replace_screen(callback.message,
+                "Экран устарел. Откройте заказ снова из списка заказов.",
+                [[{"text": "Открыть заказы", "callback_data": "orders:all:0"}]])
             return
         state = entry[1]
         if (state["actor"], state["chat"]) != (callback.from_user.id, message.chat.id):
@@ -103,13 +105,15 @@ def register(dp, check_access, safe_callback_answer):
             service = OrderSourceService()
             view = await service.read(state["order_id"], state["actor"], state["chat"])
             if view["revision"] != state["revision"]:
-                raise DeskError("Заказ изменился. Откройте источники заново.")
+                # Never replay an obsolete operation; refresh existing card.
+                await show_sources(callback.message, state["actor"], state["order_id"], edit=True)
+                return
             rows, text = [], "Выберите источник"
             empty_reason = None
             step = state["step"]
             if step == "type":
-                for value, label in (("own", "Свой склад"), ("partner_x", "X"), ("external", "Внешний поставщик")):
-                    rows.append(button(label, dict(state, step="warehouse", source_type=value)))
+                for value, label in (("own", "Свой склад"), ("partner_x", "Склад Х"), ("external", "Внешний поставщик")):
+                    rows.append(button(label, dict(state, step="x_warehouse" if value == "partner_x" else "warehouse", source_type=value)))
                 rows.append(button(f"Количество: {state['qty']} шт. · изменить", dict(state,
                     step="quantity", quantity_next="type")))
             elif step == "warehouse":
@@ -124,7 +128,7 @@ def register(dp, check_access, safe_callback_answer):
                     if settings.warehouse_ids and stock["id"] not in settings.warehouse_ids:
                         continue
                     rows.append(button(stock.get("name") or stock["id"], dict(state,
-                        step="supplier" if state["source_type"] != "own" else "confirm",
+                        step="supplier" if state["source_type"] == "external" else ("cost" if state["source_type"] == "partner_x" else "confirm"),
                         warehouse_id=stock["id"])))
                 if not rows:
                     empty_reason = ("Не найден разрешённый склад для этой позиции. "
