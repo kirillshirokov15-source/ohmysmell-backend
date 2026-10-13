@@ -54,3 +54,28 @@ def supply(organization_id, supplier_id, warehouse_id, items, operation_key, pur
     if purchase_order_id:
         payload['purchaseOrder'] = reference('purchaseorder', purchase_order_id)
     return payload
+
+
+def enter(organization_id, warehouse_id, items, operation_key):
+    """Own physical warehouse X → stock in MoySklad, no supplier or agent.
+
+    Retail unit price is NOT inventory acquisition cost. We deliberately do
+    not invent an accounting valuation; provider defaults must be confirmed
+    before enabling production writes.
+    """
+    if not items:
+        raise ValueError("Оприходование без товаров запрещено")
+    rows = []
+    for item in items:
+        if not isinstance(item.get("id"), str) or type(item.get("qty")) is not int or item["qty"] <= 0:
+            raise ValueError("Позиция оприходования не содержит подтверждённый товар и количество")
+        rows.append({"quantity": item["qty"],
+                     "assortment": reference("product", item["id"])})
+    payload = {"organization": reference("organization", organization_id),
+               "store": reference("store", warehouse_id),
+               "positions": rows,
+               "applicable": True,
+               "description": "Оприходование собственного склада Х; цена продажи не является себестоимостью",
+               "externalCode": operation_key,
+               "syncId": str(uuid5(NAMESPACE_URL, "ohmysmell:" + operation_key))}
+    return payload
