@@ -43,6 +43,52 @@ async def replace_screen(message, text, rows):
 
 
 
+def x_cost_input(raw):
+    """Parse rubles from an inline keypad without floating point or guessing."""
+    from decimal import Decimal
+    import re
+    if not isinstance(raw, str) or not re.fullmatch(r"[0-9]{1,10}(?:,[0-9]{1,2})?", raw):
+        return None
+    minor = Decimal(raw.replace(",", ".")) * 100
+    if minor > 100_000_000_000:
+        return None
+    return int(minor)
+
+
+def update_x_cost_digits(before, symbol):
+    import re
+    current = before if isinstance(before, str) else ""
+    if symbol == "clear":
+        return ""
+    if symbol == "⌫":
+        return current[:-1]
+    if symbol == ",":
+        return (current + ",") if current and "," not in current else ("0," if not current else current)
+    if symbol not in "0123456789" or len(symbol) != 1:
+        return current
+    candidate = current + symbol
+    return candidate if re.fullmatch(r"[0-9]{1,10}(?:,[0-9]{0,2})?", candidate) else current
+
+
+def x_cost_keypad(state):
+    """All price entry remains in one existing editable Telegram card."""
+    entered = state.get("cost_digits", "")
+    title = (f"Заказ №{state['order_id']} · себестоимость склада Х\n"
+        "Розничная цена клиента из Tilda сохранена и не меняется.\n"
+        "Укажите именно закупочную цену Х, только если она согласована.\n\n"
+        f"Себестоимость за штуку: {entered or '—'} ₽")
+    rows = []
+    for digits in (("1", "2", "3"), ("4", "5", "6"), ("7", "8", "9"),
+                   (",", "0", "⌫")):
+        rows.append(sum((button(k, dict(state, step="cost_key", cost_key=k)) for k in digits), []))
+    rows.append(button("Очистить", dict(state, step="cost_key", cost_key="clear")))
+    if x_cost_input(entered) is not None:
+        rows.append(button("Далее · проверить цену Х", dict(state, step="cost_review")))
+    rows.append([{"text": "← К обеспечению", "callback_data":
+        f"order:sources:{state['order_id']}:{state['revision']}"}])
+    return title, rows
+
+
 def button(label, state):
     now = time.monotonic()
     for token in list(navigation):
@@ -245,22 +291,30 @@ def register(dp, check_access, safe_callback_answer):
                                 + " Настройка предложения в CRM/Buying обязательна, "
                                   "но заказ клиента можно оставить в ожидании закупки.")
             elif step == "cost":
-                # A price is a deliberate manager input, never inferred from retail price.
-                from app.bot.manager_inputs import prompt_input
+                # The optional X cost does not require ForceReply or new chat messages.
                 if "allocation_id" not in state:
-                    # Legacy navigation tokens are not valid financial actions.
                     await show_sources(callback.message, state["actor"], state["order_id"], edit=True)
                     return
-                state = dict(state, origin_message_id=callback.message.message_id)
-                await replace_screen(callback.message,
-                    "Заказ №" + str(state["order_id"])
-                    + " · закупочная себестоимость Х\n"
-                    "Введите закупочную цену Х за штуку. Розничная цена с Tilda не изменится.",
-                    [[{"text": "← К обеспечению", "callback_data":
-                        f"order:sources:{state['order_id']}:{state['revision']}"}]])
-                await prompt_input(message, "source_cost", state,
-                    "Введите закупочную себестоимость Х за штуку в рублях (не цену для покупателя).")
-                return
+                state = dict(state, cost_digits="")
+                text, rows = x_cost_keypad(state)
+            elif step == "cost_key":
+                state = dict(state, cost_digits=update_x_cost_digits(
+                    state.get("cost_digits", ""), state.get("cost_key", "")))
+                state.pop("cost_key", None)
+                text, rows = x_cost_keypad(state)
+            elif step == "cost_review":
+                minor = x_cost_input(state.get("cost_digits"))
+                if minor is None or "allocation_id" not in state:
+                    raise DeskError("Укажите корректную себестоимость.")
+                from app.services.telegram_display import telegram_rubles
+                text = (f"Заказ №{state['order_id']} · себестоимость Х\n"
+                    f"Закупочная цена: {telegram_rubles(minor)} за штуку.\n"
+                    "Розничная цена клиента из Tilda остаётся неизменной.\n"
+                    "Подтвердите только реальную согласованную цену склада Х.")
+                rows.append(button("✅ Подтвердить себестоимость",
+                    dict(state, x_unit_cost_minor=minor, step="apply", action="set_x_cost")))
+                rows.append(button("← Исправить цену",
+                    dict(state, step="cost_key", cost_key="⌫")))
             elif step in {"confirm", "confirm_cancel"}:
                 text = "Убрать это назначение источника?" if step == "confirm_cancel" else f"Назначить источник на {state['qty']} шт.?"
                 rows.append(button("Подтвердить", dict(state, step="apply", action="cancel" if step == "confirm_cancel" else "assign")))
