@@ -54,3 +54,47 @@ def supply(organization_id, supplier_id, warehouse_id, items, operation_key, pur
     if purchase_order_id:
         payload['purchaseOrder'] = reference('purchaseorder', purchase_order_id)
     return payload
+
+
+def stock_enter(organization_id, warehouse_id, items, operation_key):
+    """Inventory adjustment into OUR X warehouse, NOT supplier receipt.
+
+    Source of truth for quantities and merchandise identity is the verified
+    MoySklad product ID. Commercial site retail price belongs ONLY to demand.
+    An inventory valuation must not be fabricated from customer retail price.
+    MoySklad may apply its default valuation when the price is omitted;
+    until verified against that account, production auto-posting stays gated.
+    """
+    positions = []
+    for item in items:
+        if not isinstance(item, dict) or type(item.get("qty")) is not int or item["qty"] <= 0:
+            raise ValueError("Оприходование: количество должно быть положительным целым")
+        if not item.get("id"):
+            raise ValueError("Оприходование: требуется сопоставленный товар МойСклад")
+        position = {
+            "quantity": item["qty"],
+            "assortment": reference("product", item["id"]),
+        }
+        positions.append(position)
+    if not positions:
+        raise ValueError("Оприходование: нет товаров")
+    return {
+        "organization": reference("organization", organization_id),
+        "store": reference("store", warehouse_id),
+        "positions": positions,
+        "applicable": True,
+        "description": "OhMySmell: внутренний склад Х. Не закупка у контрагента.",
+        "externalCode": operation_key,
+        "syncId": str(uuid5(NAMESPACE_URL, "ohmysmell:" + operation_key)),
+    }
+
+
+def direct_demand(organization_id, buyer_id, warehouse_id, items, operation_key):
+    """Direct goods shipment from X; no supplier counterparty or purchase order.
+
+    Unlike a reservation flow, a demand needs a real buyer counterparty ID.
+    """
+    payload = customerorder(organization_id, buyer_id, items, operation_key=operation_key)
+    payload["store"] = reference("store", warehouse_id)
+    payload["applicable"] = True
+    return payload
