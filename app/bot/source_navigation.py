@@ -332,10 +332,42 @@ def register(dp, check_access, safe_callback_answer):
                 outcome = await x_receipt_preflight(state["order_id"], state["allocation_id"],
                     state["actor"], state["chat"])
                 text = outcome["text"]
+                if not outcome["physically_received"] and not outcome["already_posted"]:
+                    rows.append(button("1. Подтвердить физическое получение",
+                        dict(state, step="confirm_receive")))
+                if outcome["cost_minor"] is None and not outcome["already_posted"]:
+                    rows.append(button("2. Указать реальную себестоимость Х",
+                        dict(state, step="cost", qty=outcome["quantity"])))
+                if not outcome["partner_uuid_ready"]:
+                    rows.append(button("3. Найти контрагента «Склад Х» в МойСклад",
+                        dict(state, step="x_receipt_find_partner")))
                 if outcome["ready"]:
                     rows.append(button("⚠️ Реальное оприходование в МойСклад",
                         dict(state, step="x_receipt_confirm")))
                 rows.append(button("← К обеспечению", dict(state, step="source_home")))
+            elif step == "x_receipt_find_partner":
+                from app.services.x_warehouse_preview import lookup_x_counterparty
+                partner = await lookup_x_counterparty()
+                state = dict(state, partner_uuid=partner["id"])
+                text = (f"Контрагент «Склад Х» найден в МойСклад.\n"
+                    f"Название: {partner['name']}\n"
+                    f"UUID: {partner['id']}\n\n"
+                    "Это существующий контрагент. После подтверждения он будет "
+                    "привязан к единственной локальной карточке Х в CRM. "
+                    "Новая карточка МойСклад НЕ создаётся.")
+                rows.append(button("✅ Привязать контрагента Х",
+                    dict(state, step="x_receipt_bind_partner")))
+                rows.append(button("Отмена", dict(state, step="x_receipt_preview")))
+            elif step == "x_receipt_bind_partner":
+                from app.services.x_warehouse_preview import bind_x_counterparty
+                result = await bind_x_counterparty(state["order_id"],
+                    state["allocation_id"], state["actor"], state["chat"],
+                    state["partner_uuid"])
+                text = ("Контрагент «Склад Х» успешно привязан к МойСклад."
+                    if result == "linked" else
+                    "Контрагент Х уже был корректно привязан.")
+                rows.append(button("← Проверка оприходования Х",
+                    dict(state, step="x_receipt_preview")))
             elif step == "x_receipt_confirm":
                 from app.services.x_warehouse_preview import x_receipt_preflight
                 outcome = await x_receipt_preflight(state["order_id"], state["allocation_id"],
