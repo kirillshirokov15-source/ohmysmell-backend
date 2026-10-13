@@ -97,14 +97,20 @@ def register(dp, check_access, safe_callback_answer):
                     step="quantity", quantity_next="type")))
             elif step == "warehouse":
                 from app.services.product_service import ProductService
+                from app.integrations.moysklad.async_gateway import AsyncMoySkladGateway
+                from app.integrations.moysklad.client import MoySkladClient
                 from app.config.settings import settings
                 async with async_session() as session:
                     item = await session.get(OrderItem, state["item_id"])
                 catalog = await ProductService().get_catalog_async(include_supply=False)
                 product = next((p for p in catalog if p["id"] == item.product_id), {})
-                text = "Выберите склад"
-                for stock in product.get("stocks", []):
-                    if settings.warehouse_ids and stock["id"] not in settings.warehouse_ids:
+                text = "Выберите склад назначения"
+                if state["source_type"] == "own":
+                    warehouses = product.get("stocks", [])
+                else:
+                    warehouses = await AsyncMoySkladGateway(MoySkladClient()).get_stores()
+                for stock in warehouses:
+                    if stock.get("archived") or (settings.warehouse_ids and stock["id"] not in settings.warehouse_ids):
                         continue
                     rows.append(button(stock.get("name") or stock["id"], dict(state,
                         step="supplier" if state["source_type"] != "own" else "confirm",
@@ -154,7 +160,15 @@ def register(dp, check_access, safe_callback_answer):
                 await show_sources(callback.message, state["actor"], state["order_id"], edit=True)
                 return
             if not rows:
-                text = "Нет доступных вариантов. Проверьте склад или поставщика."
+                if step == "supplier" and state.get("source_type") == "external":
+                    text = ("Для этого товара нет активного предложения внешнего поставщика. "
+                            "Добавьте товар и закупочную цену в прайс поставщика через Buying, "
+                            "затем снова выберите источник. Наличие на собственном складе не требуется.")
+                elif step == "supplier" and state.get("source_type") == "partner_x":
+                    text = ("Не найден активный партнёр X. Сначала добавьте партнёра "
+                            "и привяжите его как поставщика.")
+                else:
+                    text = "Нет доступных складов или вариантов. Проверьте настройки МойСклад."
             rows.append([{"text": "Назад к заказу", "callback_data": f"order:refresh:{state['order_id']}:{state['revision']}"}])
             await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode=None)
         except (DeskError, ValueError) as error:
