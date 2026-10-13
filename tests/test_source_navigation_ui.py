@@ -56,3 +56,25 @@ def test_if_user_reply_cannot_be_deleted_keep_bot_prompt_alive():
     assert bot.delete_message.await_args.kwargs["message_id"] == 120
     assert bot.edit_message_text.await_count == 2  # original card + completed prompt
     message.answer.assert_not_awaited()
+
+
+def test_optional_x_cost_keypad_is_in_card_and_not_a_chat_prompt():
+    from app.bot.source_navigation import x_cost_input, x_cost_keypad, update_x_cost_digits
+    base = dict(order_id=5, allocation_id=10, revision=2,
+                actor=111, chat=-1001, step="cost", cost_digits="")
+    assert x_cost_input("") is None
+    assert x_cost_input("2000") == 200000
+    assert x_cost_input("2000,50") == 200050
+    assert x_cost_input("2000,501") is None
+    assert x_cost_input("1000000001") is None
+    assert update_x_cost_digits("2000", ",") == "2000,"
+    assert update_x_cost_digits("2000,5", "0") == "2000,50"
+    assert update_x_cost_digits("2000,50", "1") == "2000,50"
+    assert update_x_cost_digits("2000,50", "⌫") == "2000,5"
+    assert update_x_cost_digits("2000", "clear") == ""
+    title, buttons = x_cost_keypad({**base, "cost_digits": "2000"})
+    assert "2000 ₽" in title
+    assert "Tilda" in title
+    assert any(b["text"].startswith("Далее") for row in buttons for b in row)
+    title, buttons = x_cost_keypad(base)
+    assert not any(b["text"].startswith("Далее") for row in buttons for b in row)
