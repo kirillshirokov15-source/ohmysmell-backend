@@ -17,7 +17,44 @@ async def desk_access(actor, chat_id):
     return True
 
 
+def product_search_keyboard(draft_id, position, results):
+    buttons = []
+    for p in results["products"]:
+        data = f"desk:bind:{draft_id}:{position}:{results['revision']}:{p['id']}"
+        if len(data.encode("utf-8")) > 64:
+            continue
+        label = (p["name"] or p["article"] or p["id"])[:52]
+        if p["article"]:
+            label += " · " + p["article"][:20]
+        buttons.append([{"text": label[:64], "callback_data": data}])
+    return InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
+
+
 def register(dp, check_access, safe_callback_answer):
+    @dp.message(Command("sitematch"))
+    async def site_match_command(message):
+        if not await check_access(message) or not await desk_access(message.from_user.id, message.chat.id):
+            return
+        try:
+            parts = (message.text or "").split(maxsplit=3)
+            if len(parts) != 4:
+                raise DeskError("Формат: /sitematch ЗАЯВКА НОМЕР_ПОЗИЦИИ название или артикул")
+            _, draft_id, position, query = parts
+            draft_id, position = int(draft_id), int(position)
+            results = await DeskService().search_site_products(draft_id, message.from_user.id, message.chat.id, query)
+            keyboard = product_search_keyboard(draft_id, position, results)
+            if not keyboard:
+                await message.answer(
+                    "Товар не найден по запросу или его ID слишком длинный. "
+                    "Попробуйте другое название / артикул: /sitematch " + str(draft_id)
+                    + " " + str(position) + " СЛОВО", parse_mode=None)
+                return
+            await message.answer("Выберите соответствующий товар из МойСклад. "
+                "Остаток не влияет на сопоставление. Проверьте полное название и артикул:",
+                reply_markup=keyboard, parse_mode=None)
+        except (DeskError, ValueError) as error:
+            await message.answer(str(error) if isinstance(error, DeskError)
+                else "Формат: /sitematch ЗАЯВКА НОМЕР_ПОЗИЦИИ название", parse_mode=None)
     @dp.message(Command("site", "siteitems", "sitereprice", "reply", "outbox_retry", "outbox_sent"))
     async def desk_command(message):
         if not await check_access(message):
@@ -105,6 +142,44 @@ def register(dp, check_access, safe_callback_answer):
             service = DeskService()
             if action == "claim":
                 await service.claim(draft_id, callback.from_user.id, callback.message.chat.id)
+            elif action == "find":
+                from app.models.draft_order import DraftOrder
+                from app.database.session import async_session
+                from sqlalchemy import select
+                from sqlalchemy.orm import selectinload
+                async with async_session() as session:
+                    draft = await session.scalar(select(DraftOrder).where(DraftOrder.id == draft_id)
+                        .options(selectinload(DraftOrder.items)))
+                    unresolved = ([(pos, item) for pos, item in enumerate(
+                        sorted(draft.items, key=lambda i: i.id), 1)
+                        if item.match_status != "matched"] if draft else [])
+                if not unresolved:
+                    raise DeskError("Все позиции уже сопоставлены. Обновите карточку.")
+                position, item = unresolved[0]
+                query = (item.raw_product_text or "").split("/")[0].strip().split()
+                query = " ".join(query[:2])[:120]
+                results = await service.search_site_products(draft_id, callback.from_user.id, callback.message.chat.id, query)
+                keyboard = product_search_keyboard(draft_id, position, results)
+                if keyboard:
+                    await callback.message.answer(
+                        f"Заявка №{draft_id}, позиция {position}. Выберите правильный товар из МойСклад "
+                        f"(это не резервирование):", reply_markup=keyboard, parse_mode=None)
+                else:
+                    await callback.message.answer(
+                        f"Не нашёл совпадений по первым словам названия. Поиск вручную: "
+                        f"/sitematch {draft_id} {position} Boadicea", parse_mode=None)
+                return
+            elif action == "bind":
+                if len(parts) != 6:
+                    raise DeskError("Некорректные данные выбора товара.")
+                result = await service.bind_site_product(draft_id, callback.from_user.id,
+                    callback.message.chat.id, int(parts[3]), int(parts[4]), parts[5])
+                await callback.message.answer(
+                    "Товар сопоставлен с МойСклад. " +
+                    ("Остались проверки: " + ", ".join(result["remaining_problems"])
+                     if result["remaining_problems"]
+                     else "Теперь можно подтвердить заказ после проверки цены."),
+                    parse_mode=None)
             elif action == "items":
                 message = callback.message.model_copy(update={"from_user": callback.from_user, "text": f"/siteitems {draft_id}"}).as_(callback.bot)
                 await desk_command(message)
