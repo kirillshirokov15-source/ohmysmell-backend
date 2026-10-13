@@ -208,3 +208,44 @@ def test_new_and_claimed_site_drafts_are_pending_confirmation():
     assert stage_label(desk, draft) == "Ожидает подтверждения"
     desk.stage = "awaiting_confirmation"
     assert stage_label(desk, draft) == "Ожидает подтверждения"
+
+
+def test_verified_manager_total_requires_missing_site_total_and_same_payload():
+    from app.services.tilda_review import verified_amounts
+    from app.integrations.tilda import digest
+    source = normalize({
+        "tranid": "missing-total-001", "Name": "Synthetic",
+        "products": [{"externalid": "missing-code", "name": "Synthetic product",
+                      "quantity": "1", "price": "5500"}]})
+    raw_problems, initial_total = verified_amounts(source)
+    assert initial_total is None
+    assert set(raw_problems) == {"invalid_total", "total_mismatch"}
+    approved = {"digest": digest(source), "amount_minor": 550000}
+    assert verified_amounts(source, approved) == ([], 550000)
+    changed = {**source, "items": [{**source["items"][0], "price_minor": 660000}]}
+    assert verified_amounts(changed, approved)[1] is None
+    assert verified_amounts(source, {"digest": digest(source), "amount_minor": 1})[1] is None
+    with_discount = {**source, "discount": 1000}
+    assert verified_amounts(with_discount, approved)[1] is None
+    with_reported = {**source, "reported_total": 550000}
+    assert verified_amounts(with_reported, approved)[1] is None
+
+
+def test_manual_catalog_product_mapping_follows_immutable_tilda_sku():
+    from app.services.tilda_review import choose_product
+    products = [
+        {"id": "ms-1", "name": "Boadicea The Victorious Ardent Set", "article": "SKU-MS-1", "code": "CODE-1"},
+        {"id": "ms-2", "name": "Different item", "article": "SKU-MS-2"}]
+    source = {"externalid": "TILDA-UNKNOWN", "name": "Boadicea The Victorious Ardent Set", "qty": 1}
+    matched, found = choose_product(products, source, 0)
+    assert matched == "matched" and found["id"] == "ms-1"  # unique exact name
+    matches = {"0": {"sku": "TILDA-UNKNOWN", "product_id": "ms-2"}}
+    matched, found = choose_product(products, source, 0, matches)
+    assert matched == "matched" and found["id"] == "ms-2"  # explicit manager choice
+    source["externalid"] = "OTHER-SKU"
+    matched, found = choose_product(products, source, 0, matches)
+    assert matched != "matched" and found is None
+    matches["0"]["sku"] = "OTHER-SKU"
+    matches["0"]["product_id"] = "deleted"
+    matched, found = choose_product(products, source, 0, matches)
+    assert matched != "matched" and found is None
