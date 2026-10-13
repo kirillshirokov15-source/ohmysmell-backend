@@ -25,6 +25,75 @@ def real_moysklad_id(value):
         return False
 
 
+def x_counterparty_matches(rows):
+    """Only one exactly named real X counterparty may be auto-linked."""
+    def key(name):
+        return "".join((name or "").casefold().replace("x", "х").split())
+    selected = {row["id"]: row for row in rows
+                if not row.get("archived") and
+                key(row.get("name")) in {"складх", "хсклад"} and
+                real_moysklad_id(row.get("id"))}
+    return list(selected.values())
+
+
+async def lookup_x_counterparty():
+    """A read-only API lookup; never guess partner UUIDs."""
+    import asyncio
+    from app.integrations.moysklad.client import MoySkladClient
+    client = MoySkladClient()
+    try:
+        rows = await asyncio.to_thread(client.search_counterparties, "Склад")
+        candidates = x_counterparty_matches(rows)
+        if not candidates:
+            rows += await asyncio.to_thread(client.search_counterparties, "Х")
+            candidates = x_counterparty_matches(rows)
+    except Exception as error:
+        raise DeskError("Контрагенты МойСклад временно недоступны. Повторите проверку.") from error
+    if len(candidates) != 1:
+        if not candidates:
+            raise DeskError("Контрагент «Склад Х» в МойСклад не найден. "
+                "Создайте или переименуйте нужного контрагента ровно «Склад Х», затем повторите.")
+        raise DeskError("Несколько контрагентов имеют название «Склад Х». "
+                        "Нужна уникальная карточка; автоматическая привязка заблокирована.")
+    return {"id": candidates[0]["id"], "name": candidates[0]["name"]}
+
+
+async def bind_x_counterparty(order_id, allocation_id, actor, chat_id, expected_id):
+    """Local-only X counterparty mapping after unique lookup and manager confirmation."""
+    from app.services.checkout_service import transaction_lock
+    from app.services.order_source_service import source_plans
+    if not real_moysklad_id(expected_id):
+        raise DeskError("Некорректный UUID контрагента МойСклад.")
+    matched = await lookup_x_counterparty()
+    if matched["id"] != expected_id:
+        raise DeskError("Контрагент МойСклад изменился. Проверьте привязку снова.")
+    async with async_session() as session, session.begin():
+        await authorized_manager(session, actor, chat_id)
+        desk = await session.scalar(select(OrderDesk).where(OrderDesk.order_id == order_id))
+        if not desk:
+            raise DeskError("Подтверждённая заявка сайта не найдена.")
+        require_owner(desk, actor)
+        await transaction_lock(session, "oms:partner-x:singleton")
+        plans = await source_plans(session, order_id)
+        allocations = [a for p in plans for a in p.allocations
+                       if a.id == allocation_id and a.source_type == "partner_x"
+                       and a.supply_status != "cancelled"]
+        if len(allocations) != 1 or not allocations[0].supplier_id:
+            raise DeskError("Назначение склада Х не найдено.")
+        supplier = await session.scalar(select(Supplier).where(
+            Supplier.id == allocations[0].supplier_id).with_for_update())
+        if not supplier or supplier.supplier_type != "partner_x" or supplier.status != "active":
+            raise DeskError("Контрагент Х в CRM неактивен.")
+        if real_moysklad_id(supplier.external_reference):
+            if supplier.external_reference != expected_id:
+                raise DeskError("Контрагент Х уже связан с другим UUID; автоматическая замена запрещена.")
+            return "already"
+        if supplier.external_reference not in {None, "oms:partner-x:singleton"}:
+            raise DeskError("У Х нестандартная прежняя привязка; менять её автоматически нельзя.")
+        supplier.external_reference = expected_id
+        return "linked"
+
+
 async def x_receipt_preflight(order_id, allocation_id, actor, chat_id):
     """Check exact Tilda->catalog binding and receipt prerequisites without writes."""
     async with async_session() as session, session.begin():
