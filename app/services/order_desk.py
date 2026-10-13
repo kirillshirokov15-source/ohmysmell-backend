@@ -113,10 +113,7 @@ class TildaIntake:
                 received_at=now(), processing_status="processed", customer_id=customer.id)
             session.add(inbound)
             await session.flush()
-            details = draft.contact_details or {}
-            rows, total, problems = await review(payload,
-                manual_matches=details.get("tilda_manual_matches"),
-                manual_total=details.get("tilda_manual_total"))
+            rows, total, problems = await review(payload)
             draft = DraftOrder(inbound_message_id=inbound.id, customer_id=customer.id, source="website",
                 customer_type="retail", customer_name=payload["name"] or "Клиент сайта", sender_email=email,
                 subject="Заказ Tilda", status="needs_review", counterparty_candidates=[],
@@ -481,7 +478,10 @@ class DeskService:
                 payload, items, bindings = source_rows(draft, desk, inbound)
             except (ValueError, KeyError, TypeError) as error:
                 raise DeskError("Нельзя безопасно восстановить исходные позиции.") from error
-            rows, total, problems = await review(payload)
+            details = draft.contact_details or {}
+            rows, total, problems = await review(payload,
+                manual_matches=details.get("tilda_manual_matches"),
+                manual_total=details.get("tilda_manual_total"))
             from app.services.tilda_review import REVIEW_NOTE
             changed = (any(any(getattr(i, key) != row[key] for key in ITEM_FIELDS)
                            for i, row in zip(items, rows, strict=True))
