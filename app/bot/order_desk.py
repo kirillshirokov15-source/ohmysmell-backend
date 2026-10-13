@@ -189,6 +189,23 @@ def register(dp, check_access, safe_callback_answer):
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                         {"text": "← К заявке", "callback_data": f"desk:refresh:{draft_id}"}]]))
                 return
+            elif action == "link":
+                # The deep link is an order-scoped bearer capability valid for
+                # 30 minutes (by default). Show it ONLY inside the authorized
+                # manager group; never in customer-facing public pages.
+                result = await service.issue_link(draft_id,
+                    actor=callback.from_user.id, chat_id=callback.message.chat.id)
+                from aiogram.types import InlineKeyboardMarkup
+                await callback.message.edit_text(
+                    f"Заказ / заявка №{draft_id} · подключение клиента Telegram\n\n"
+                    "Перешлите покупателю эту персональную ссылку напрямую:\n"
+                    + result["deep_link"] + "\n\n"
+                    f"Ссылка действительна {result['expires_in_seconds'] // 60} минут, "
+                    "однократная и открывает только его заказ. Не размещайте её публично.",
+                    parse_mode=None, disable_web_page_preview=True,
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                        {"text": "← К заявке", "callback_data": f"desk:refresh:{draft_id}"}]]))
+                return
             elif action == "reply":
                 from app.bot.manager_inputs import prompt_input
                 message = callback.message.model_copy(update={"from_user": callback.from_user}).as_(callback.bot)
