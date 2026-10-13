@@ -208,3 +208,30 @@ def test_new_and_claimed_site_drafts_are_pending_confirmation():
     assert stage_label(desk, draft) == "Ожидает подтверждения"
     desk.stage = "awaiting_confirmation"
     assert stage_label(desk, draft) == "Ожидает подтверждения"
+
+
+def test_manual_tilda_product_binding_keeps_exact_site_price_and_source_total(tilda_config):
+    from app.services.tilda_review import review
+    data = payload("site-manual-binding-01")
+    data["products"][0]["externalid"] = "SITE-NOT-A-MOYSKLAD-ARTICLE"
+    unresolved, total, problems = asyncio.run(review(data))
+    assert total is None and "sku_not_found" in problems
+    rows, total, problems = asyncio.run(review(data, manual_matches={"0": "sku-a"}))
+    assert problems == [] and total == 3030
+    assert rows[0]["product_id"] == "sku-a"
+    assert rows[0]["match_status"] == "matched"
+    assert rows[0]["price"] == 1010 and rows[0]["qty"] == 2
+    assert rows[0]["item_total"] == 2020
+    data["amount"] = "30.31"
+    normalized = normalize(data)
+    _, total, problems = asyncio.run(review(normalized, manual_matches={"0": "sku-a"}))
+    assert total is None and "total_mismatch" in problems
+
+
+def test_manual_binding_to_missing_or_archived_item_fails_review(tilda_config):
+    from app.services.tilda_review import review
+    data = payload("site-manual-binding-02")
+    data["products"][0]["externalid"] = "NOT-IN-MOYSKLAD"
+    rows, total, problems = asyncio.run(review(data, manual_matches={"0": "nonexistent-id"}))
+    assert "sku_manual_invalid" in problems and total is None
+    assert rows[0]["match_status"] == "not_found"
