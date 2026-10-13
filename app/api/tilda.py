@@ -4,7 +4,9 @@ import os
 import re
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, FileResponse
-from pathlib import Path\nfrom pydantic import BaseModel, Field\nfrom app.services.tilda_checkout_link import issue_checkout_link
+from pathlib import Path
+from pydantic import BaseModel, Field
+from app.services.tilda_checkout_link import issue_checkout_link
 from app.api.auth import require_internal_api_token
 from app.integrations.tilda import (
     TildaInvalid, TildaConfigurationError, normalize, parse_body,
