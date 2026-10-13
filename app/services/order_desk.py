@@ -128,7 +128,8 @@ class TildaIntake:
             await session.flush()
             draft.contact_details = {**draft.contact_details,
                 "tilda_item_sources": {str(item.id): n for n, item in enumerate(draft.items)}}
-            desk = OrderDesk(draft_id=draft.id, external_id=payload["external_id"], payload_hash=fingerprint)
+            desk = OrderDesk(draft_id=draft.id, external_id=payload["external_id"], payload_hash=fingerprint,
+                             stage="awaiting_confirmation")
             session.add(desk)
             await session.flush()
             enqueue(session, draft_id=draft.id, key=f"tilda:new:{draft.id}", direction="to_manager", destination=chat, kind="card")
@@ -150,7 +151,7 @@ class DeskService:
             if not draft or draft.status == "rejected" or desk.order_id:
                 raise DeskError("Заявка закрыта для назначения.")
             desk.manager_id, desk.actor_telegram_id, desk.assigned_at = manager.id, actor, now()
-            desk.stage = "working"
+            desk.stage = "awaiting_confirmation"
             audit(session, desk, "manager_claim_succeeded", actor)
             return desk
 
