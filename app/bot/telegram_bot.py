@@ -591,25 +591,43 @@ async def order_callback(callback):
         if not order:
             raise OperationError("Заказ не найден.")
         if action != "refresh" and order.revision != revision:
-            raise OperationError("Карточка устарела. Нажмите «Обновить».")
+            # Do not execute old callbacks; replace the old screen with
+            # the latest controls, without adding "stale card" chat messages.
+            plans = await shipments_for(order_id)
+            text = "Карточка обновлена: состояние заказа изменилось.\n" + await supply_order_card(order, plans)
+            keyboard = InlineKeyboardMarkup.model_validate(order_keyboard(order, plans))
+            await safe_edit_message(callback.message, text, draft_id=0, reply_markup=keyboard)
+            return
         if action == "cancel_confirm":
-            await callback.message.answer("Отменить этот неоплаченный заказ?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                {"text": "Да, отменить", "callback_data": f"order:cancel:{order_id}:{revision}"},
-                {"text": "Оставить", "callback_data": f"order:refresh:{order_id}:{revision}"}]]))
+            await safe_edit_message(callback.message, "Отменить этот неоплаченный заказ?",
+                draft_id=0, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    {"text": "Да, отменить", "callback_data": f"order:cancel:{order_id}:{revision}"},
+                    {"text": "Оставить", "callback_data": f"order:refresh:{order_id}:0"}]]))
             return
         if action == "sources":
             from app.bot.source_navigation import show_sources
             await show_sources(callback.message, callback.from_user.id, order_id, edit=True)
             return
         if action == "items":
-            message = callback.message.model_copy(update={"from_user": callback.from_user, "text": f"/items {order_id}"}).as_(callback.bot)
-            await all_order_items(message)
+            from app.services.telegram_display import telegram_rubles
+            lines = [f"Заказ №{order_id} · товары:"]
+            for item in order.items:
+                lines.append(f"{item.name} · {item.qty} × {telegram_rubles(item.price)} = {telegram_rubles(item.item_total)}")
+            plans = await shipments_for(order_id)
+            for index, plan in enumerate(plans, 1):
+                lines.append(f"План №{index}: склад {plan.warehouse_id}")
+            text = "\n".join(lines)
+            if len(text.encode("utf-16-le")) // 2 > 3500:
+                text = text[:3400] + "\n… Остальные позиции: /items " + str(order_id)
+            await safe_edit_message(callback.message, text, draft_id=0,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    {"text": "← Назад к заказу", "callback_data": f"order:refresh:{order_id}:0"}]]))
             return
         if action == "allocate":
             from app.services.fulfillment_service import FulfillmentService
             await FulfillmentService().plan(order_id, expected_revision=revision)
         elif action == "procurement":
-            await show_procurements(callback.message, order_id)
+            await show_procurements(callback.message, order_id, edit=True)
             return
         elif action not in {"refresh", "details", "actions", "sources"}:
             extra = {}
