@@ -16,6 +16,11 @@ STATUS = {"needed": "Нужна закупка", "requested": "Запрос от
 
 async def supply_order_card(order, shipments=(), *, details=False):
     from app.services.manager_workspace import order_card
+    # Use ONE read-only session for supply snapshots, warehouse-operation
+    # flags and the original Tilda titles. Previously a single refresh made
+    # one DB round trip PER warehouse allocation plus several new sessions.
+    from app.services.warehouse_documents import frozen_plans
+    from app.services.manager_workspace import site_titles_for
     async with async_session() as session:
         rows = list((await session.execute(select(OrderItemSupply, XSettlement, ProcurementRequest, SupplierOffer, Supplier)
             .outerjoin(XSettlement, XSettlement.order_item_id == OrderItemSupply.order_item_id)
@@ -27,13 +32,20 @@ async def supply_order_card(order, shipments=(), *, details=False):
         settlements = {row[1].order_item_id: row[1] for row in rows if row[1]}
         requests = {row[2].order_item_id: row[2] for row in rows if row[2]}
         selected = {row[0].order_item_id: (row[3], row[4]) for row in rows if row[3]}
-    order.supply_external_only = bool(snapshots) and all(s.source_type == "external" for s in snapshots)
+        frozen_flags = await frozen_plans(session, shipments)
+        titles = await site_titles_for(order, session=session) if order.manual_fulfillment and not details else {}
+        supply_ready = None
+        if not order.manual_fulfillment:
+            from app.services.supply_service import ready_supply_quantities, SupplyError
+            try:
+                supply_ready = await ready_supply_quantities(session, order.id)
+            except SupplyError:
+                supply_ready = {}
+    order.supply_external_only = bool(snapshots) and all(row.source_type == "external" for row in snapshots)
     order.supply_has_external = bool(requests)
-    order.supply_received = bool(requests) and all(r.status == "received" for r in requests.values())
-    order.supply_financial_review = any(s.status == "requires_financial_review" for s in settlements.values())
-    from app.services.warehouse_documents import frozen_plan
-    async with async_session() as session:
-        order.ui_cancellable = not any([await frozen_plan(session, plan) for plan in shipments])
+    order.supply_received = bool(requests) and all(row.status == "received" for row in requests.values())
+    order.supply_financial_review = any(row.status == "requires_financial_review" for row in settlements.values())
+    order.ui_cancellable = not any(frozen_flags.values())
     from app.services.order_source_service import allocation_ready
     quantities = {}
     for plan in shipments:
@@ -43,16 +55,9 @@ async def supply_order_card(order, shipments=(), *, details=False):
             if allocation.supply_status != "cancelled" and allocation_ready(allocation, manual=order.manual_fulfillment):
                 quantities[allocation.order_item_id] = quantities.get(allocation.order_item_id, 0) + allocation.qty
     if not order.manual_fulfillment:
-        from app.services.supply_service import ready_supply_quantities, SupplyError
-        async with async_session() as session:
-            try:
-                quantities.update(await ready_supply_quantities(session, order.id))
-            except SupplyError:
-                quantities = {}
+        quantities.update(supply_ready or {})
     order.ui_supply_ready = bool(order.items) and quantities == {i.id: i.qty for i in order.items}
     if not details:
-        from app.services.manager_workspace import site_titles_for
-        titles = await site_titles_for(order) if order.manual_fulfillment else {}
         return order_card(order, shipments, site_titles=titles)
     from app.services.manager_workspace import order_details_card
     lines = [order_details_card(order, shipments)]
