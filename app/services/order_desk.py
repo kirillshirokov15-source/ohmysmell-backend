@@ -120,7 +120,9 @@ class TildaIntake:
                 contact_details={"phone": payload["phone"], "comment": payload["comment"],
                     "tilda": True, "reported_total_minor": payload["reported_total"],
                     "discount_minor": payload["discount"], "currency": payload["currency"],
-                    "external_products": [i["externalid"] for i in payload["items"]]})
+                    "external_products": [i["externalid"] for i in payload["items"]],
+                    **({"tilda_checkout_nonce_hash": payload["checkout_nonce_hash"]}
+                       if payload.get("checkout_nonce_hash") else {})})
             for row in payload["items"]:
                 draft.items.append(DraftOrderItem(raw_product_text=row["name"], qty=row["qty"]))
             apply_review(draft, rows, total, problems)
