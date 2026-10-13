@@ -236,7 +236,7 @@ class DeskService:
     async def issue_link(self, draft_id, *, actor=None, chat_id=None):
         # Never issue a customer-authentication capability unless the dedicated
         # customer bot and durable reply delivery have been explicitly enabled.
-        if os.getenv("CLIENT_LINKS_ENABLED", "false").lower() != "true":
+        if actor is not None and os.getenv("CLIENT_LINKS_ENABLED", "false").lower() != "true":
             raise DeskError(
                 "Клиентский Telegram-бот ещё не подключён. "
                 "Нужны отдельный бот и включённая доставка сообщений клиентам.")
