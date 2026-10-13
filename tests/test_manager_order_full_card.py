@@ -16,7 +16,7 @@ def test_order_card_shows_buyer_contact_original_site_item_and_x_readiness():
     order = Obj(id=5, customer_name="QA Manager", phone="+381640000000",
                 source="website", items=[item], total=550000,
                 payment_status="unpaid", fulfillment_status="new",
-                delivery_status="pending", needs_review=False,
+                delivery_status="pending", delivery_method="unselected", needs_review=False,
                 status="new", manual_fulfillment=True, revision=3)
     text = order_card(order, [shipment],
         site_titles={101: "Boadicea The Victorious Ardent Set · soap + shampoo"})
