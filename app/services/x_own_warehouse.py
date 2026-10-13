@@ -59,6 +59,48 @@ def test_order(order):
     return any(token in text for token in ("test oms", "synthetic", "тестовый заказ"))
 
 
+def digits_only(value):
+    return "".join(c for c in (value or "") if c.isdecimal())
+
+
+def unique_exact_customer(rows, phone, name):
+    """No fuzzy identity selection or ambiguous provider counterparties."""
+    match_phone = digits_only(phone)
+    options = {row["id"]: row for row in rows if uuid_id(row.get("id"))
+               and not row.get("archived") and match_phone
+               and digits_only(row.get("phone")) == match_phone}
+    if len(options) == 1:
+        return next(iter(options.values()))["id"]
+    if len(options) > 1:
+        return None
+    if not match_phone:
+        return None
+    # No match is not permission to select another similar customer.
+    return None
+
+
+async def resolve_retail_buyer(phone):
+    """Existing account customer only. Never create or conflate individuals.
+
+    Fallback to a single explicitly named retail walk-in counterparty, which
+    is appropriate for B2C invoices if configured in this MoySklad account.
+    """
+    from app.integrations.moysklad.client import MoySkladClient
+    client = MoySkladClient()
+    if phone:
+        candidates = await asyncio.to_thread(client.search_counterparties, phone)
+        match = unique_exact_customer(candidates, phone, None)
+        if match:
+            return match
+    generic = await asyncio.to_thread(client.search_counterparties, "Розничный покупатель")
+    matches = {row["id"]: row for row in generic if uuid_id(row.get("id"))
+               and not row.get("archived")
+               and (row.get("name") or "").strip().casefold() == "розничный покупатель"}
+    if len(matches) == 1:
+        return next(iter(matches))
+    return None
+
+
 async def snapshot(order_id, *, require_buyer=True):
     """Read-only immutable preflight snapshot; NO provider writes."""
     from app.services.product_service import ProductService
@@ -74,8 +116,8 @@ async def snapshot(order_id, *, require_buyer=True):
             raise DeskError("Автоотгрузка Х недоступна после ручного начала сборки.")
         if not uuid_id(settings.moysklad_organization_id):
             raise DeskError("Организация МойСклад не настроена.")
-        if require_buyer and not uuid_id(order.counterparty_id):
-            raise DeskError("Для автоматической отгрузки нужен контрагент покупателя МойСклад (UUID).")
+        buyer_id = order.counterparty_id if uuid_id(order.counterparty_id) else None
+        buyer_phone = order.phone if not buyer_id else None
         plans = await source_plans(session, order_id)
         rows = []
         by_id = {i.id: i for i in order.items}
@@ -104,8 +146,16 @@ async def snapshot(order_id, *, require_buyer=True):
         if not rows:
             return dict(order_id=order.id, plan_rows=[], order_revision=order.revision)
         captured = dict(order_id=order.id, organization_id=settings.moysklad_organization_id,
-            counterparty_id=order.counterparty_id, order_revision=order.revision,
+            counterparty_id=buyer_id, customer_phone=buyer_phone, order_revision=order.revision,
             test_order=test_order(order), plan_rows=rows)
+    # Read-only exact buyer lookup; never attach X as a supplier.
+    if require_buyer and not captured["counterparty_id"]:
+        captured["counterparty_id"] = await resolve_retail_buyer(captured["customer_phone"])
+        if not uuid_id(captured["counterparty_id"]):
+            raise DeskError("Нет однозначного покупателя МойСклад. "
+                "Создайте/сопоставьте контрагента клиента либо одного "
+                "розничного контрагента «Розничный покупатель».")
+    captured.pop("customer_phone", None)
     # Live catalog check is outside DB session and before any external document.
     catalog = {p["id"]: p for p in await ProductService().get_catalog_async(include_supply=False)}
     for plan in captured["plan_rows"]:
