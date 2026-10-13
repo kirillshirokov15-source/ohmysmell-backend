@@ -13,8 +13,8 @@ HELP = ("/sources ЗАКАЗ — позиции, назначения и рев�
         "/sourceaction ЗАКАЗ РЕВИЗИЯ НАЗНАЧЕНИЕ receive|post_receipt|cancel\n"
         "Внешнюю закупку отправляйте и отмечайте полученной в Buying. "
         "После receive: /warehousedoc ЗАКАЗ РЕВИЗИЯ receipt НАЗНАЧЕНИЕ. "
-        "Для плана: /warehousedoc ЗАКАЗ РЕВИЗИЯ reserve|ship|release ПЛАН. "
-        "Оприходование X/внешних товаров пока только в симуляции.")
+        "Для реального МойСклад: /warehousedoc ЗАКАЗ РЕВИЗИЯ receipt|reserve|ship|release ID LIVE. "
+        "Операция LIVE создаёт/изменяет реальный документ; повторы не отправляйте без сверки.")
 
 
 def source_lines(view):
@@ -50,14 +50,33 @@ def register(dp, check_access):
         from app.config.settings import settings
         try:
             parts=message.text.split()
-            if len(parts)!=5:
-                raise ValueError('Формат: /warehousedoc ЗАКАЗ РЕВИЗИЯ receipt|reserve|ship|release ID_НАЗНАЧЕНИЯ_ИЛИ_ПЛАНА')
-            # Telegram uses simulation until an explicitly authorized live rollout.
-            result=await WarehouseDocumentService(adapter=FakeDocumentAdapter()).act(
-                int(parts[1]),message.from_user.id,message.chat.id,int(parts[2]),parts[3],int(parts[4]))
-            await message.answer(f"Симуляция {result['action']}: {result['id']} · ревизия {result['revision']}",parse_mode=None)
+            mode = settings.environment
+            if mode == 'production':
+                if len(parts) != 6 or parts[5] != 'LIVE':
+                    raise DeskError('Для РЕАЛЬНОГО документа МойСклад явно укажите LIVE: /warehousedoc ЗАКАЗ РЕВИЗИЯ receipt|reserve|ship|release ID LIVE. Без LIVE запись запрещена.')
+                if not settings.external_writes_enabled:
+                    raise DeskError('Реальные операции МойСклад отключены.')
+                service = WarehouseDocumentService()
+            elif mode == 'staging':
+                if len(parts) != 5:
+                    raise DeskError('В staging используется только симуляция: /warehousedoc ЗАКАЗ РЕВИЗИЯ receipt|reserve|ship|release ID')
+                service = WarehouseDocumentService(adapter=FakeDocumentAdapter())
+            else:
+                raise DeskError('Складские документы доступны только в настроенном окружении.')
+            if parts[3] not in {'receipt','reserve','ship','release'}:
+                raise DeskError('Неизвестный вид складского документа.')
+            result=await service.act(int(parts[1]),message.from_user.id,message.chat.id,
+                                     int(parts[2]),parts[3],int(parts[4]))
+            label='МойСклад' if mode == 'production' else 'Симуляция'
+            await message.answer(f"{label}: {result['action']} · документ {result['id']} · ревизия {result['revision']}",parse_mode=None)
         except (ValueError,DeskError,ExternalOperationConflict) as error:
             await message.answer(str(error),parse_mode=None)
+        except Exception:
+            # Unknown provider outcomes must be manually reconciled.
+            # Never log order content, credentials or customer identities.
+            import logging
+            logging.getLogger(__name__).exception('warehouse_document_outcome_uncertain')
+            await message.answer('МойСклад не подтвердил итог операции. НЕ повторяйте команду до проверки документа и журнала внешних операций.',parse_mode=None)
 
     @dp.message(or_f(Command("sources", "sourceadd", "sourceaction"), F.text == "Источники"))
     async def sources(message):
