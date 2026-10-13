@@ -24,6 +24,8 @@ REVIEW_PROBLEM_LABELS = {
     "sku_missing": "артикул сайта не найден в МойСклад",
     "sku_ambiguous": "артикул сопоставляется с несколькими товарами",
     "sku_unmatched": "артикул сайта не сопоставлен с МойСклад",
+    "sku_not_found": "SKU Tilda не найден по артикулу/коду — выберите товар вручную",
+    "manual_total_invalid": "ручное согласование суммы устарело — требуется повторная проверка",
     "catalog_unavailable": "не удалось обновить каталог МойСклад",
     "unsupported_currency": "валюта заказа не поддерживается",
 }
@@ -102,12 +104,21 @@ async def desk_card(draft_id, *, view="details"):
                 truncated_items = True
                 break
             lines.append(line)
+        missing_total_only = (active and draft.total is None
+            and draft.items and all(i.product_id and i.match_status == "matched"
+                and type(i.price) is int and i.price > 0 for i in draft.items)
+            and set(problems).issubset({"invalid_total", "total_mismatch"})
+            and problems)
         if active and problems:
             lines.append("⚠️ Нельзя подтвердить заказ:")
             for code in problems[:6]:
                 lines.append("• " + REVIEW_PROBLEM_LABELS.get(code, code.replace("_", " ")))
-            lines.append("Следующий шаг: проверить исходные данные Tilda и сопоставление товаров. "
-                         "Недостающую сумму нельзя подтвердить автоматически.")
+            if missing_total_only:
+                lines.append("Следующий шаг: согласовать сумму позиций с клиентом и "
+                             "подтвердить её вручную. Это не онлайн-оплата.")
+            else:
+                lines.append("Следующий шаг: выберите соответствующий товар МойСклад. "
+                             "Затем проверьте и согласуйте итог заказа.")
         elif active:
             lines.append("Следующий шаг: " + ("нажмите «Подтвердить заказ» и согласуйте сумму с клиентом"
                         if desk.manager_id else "нажмите «Взять заказ», затем «Подтвердить заказ»"))
@@ -121,8 +132,15 @@ async def desk_card(draft_id, *, view="details"):
             rows.append([{"text": "Взять заказ", "callback_data": f"desk:claim:{draft_id}"}])
         elif active and desk.manager_id:
             if problems:
-                rows.append([{"text": "🔎 Перепроверить товары и сумму",
-                              "callback_data": f"desk:recheck:{draft_id}"}])
+                for item in items[:6]:
+                    if not item.product_id or item.match_status != "matched":
+                        rows.append([{"text": "🔎 Найти товар МойСклад: " + (item.raw_product_text or "позиция")[:27],
+                            "callback_data": f"desk:find:{draft_id}:{item.id}"}])
+                if missing_total_only:
+                    rows.append([{"text": "💰 Согласовать сумму позиций",
+                        "callback_data": f"desk:total:{draft_id}:{draft.revision}"}])
+                rows.append([{"text": "Перепроверить данные Tilda",
+                    "callback_data": f"desk:recheck:{draft_id}"}])
             else:
                 rows.append([{"text": "✅ Подтвердить заказ",
                               "callback_data": f"desk:confirm:{draft_id}:{draft.revision}"}])
