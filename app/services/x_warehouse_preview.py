@@ -127,6 +127,7 @@ async def x_receipt_preflight(order_id, allocation_id, actor, chat_id):
                      physically_received=allocation.supply_status in {"received", "confirmed"},
                      already_posted=allocation.supply_status == "confirmed",
                      cost_minor=settlement.base_cost_minor if settlement else None,
+                     partner_uuid_ready=bool(partner and real_moysklad_id(partner.external_reference)),
                      source_name=partner.name if partner else "Склад Х")
         blockers = []
         if order.status == "rejected" or order.fulfillment_status != "new" or order.needs_review:
