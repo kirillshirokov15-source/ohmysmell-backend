@@ -8,11 +8,12 @@ from app.services.x_warehouse_preview import real_moysklad_id
 def test_order_card_shows_buyer_contact_original_site_item_and_x_readiness():
     item = Obj(id=101, name="MoySklad Boadicea Ardent", qty=1,
                price=550000, item_total=550000)
-    allocated = Obj(order_item_id=101, qty=1, managed_source=True,
+    allocated = Obj(id=91, order_item_id=101, qty=1, managed_source=True,
                     source_type="partner_x", supply_status="awaiting_receipt",
                     receipt_reference=None, receipt_simulated=False,
-                    buying_purchase=None)
-    shipment = Obj(status="planned", allocations=[allocated])
+                    buying_purchase=None, buying_purchase_id=None,
+                    supplier_id=1)
+    shipment = Obj(id=4, warehouse_id="x", status="planned", allocations=[allocated])
     order = Obj(id=5, customer_name="QA Manager", phone="+381640000000",
                 source="website", items=[item], total=550000,
                 payment_status="unpaid", fulfillment_status="new",
