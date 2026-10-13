@@ -18,8 +18,8 @@ class SourcePart(BaseModel):
         if self.purchase_id is not None and self.source_type != 'external':
             raise ValueError('purchase_id is only valid for external supply')
         if self.source_type == "partner_x":
-            if self.supplier_id is None or self.base_cost_minor is None or self.offer_id is not None:
-                raise ValueError("Для X нужны supplier_id и base_cost_minor, без offer_id")
+            if self.base_cost_minor is None or self.offer_id is not None:
+                raise ValueError("Для единого партнёра Х нужна закупочная цена, без offer_id")
         elif self.supplier_id is not None or self.base_cost_minor is not None:
             raise ValueError("supplier_id и base_cost_minor используются только для X")
         if (self.source_type == "external") != (self.offer_id is not None):
