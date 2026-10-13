@@ -188,7 +188,6 @@ class XOwnWarehouseAutomation:
                 intent = {"entity": "enter",
                     "document": stock_enter(data["organization_id"], plan["store_id"],
                         [{"id": row["product_id"], "qty": row["qty"]}], key)}
-                }
                 result = await self.operations.execute(key, intent, self.adapter.create)
                 await _record_enter(order_id, row["allocation_id"], result["id"])
             # Read the current allocation snapshot to verify that all enter
