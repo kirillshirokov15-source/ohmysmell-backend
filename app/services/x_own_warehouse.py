@@ -126,6 +126,9 @@ async def snapshot(order_id, *, require_buyer=True):
                 and a.managed_source and a.supply_status != "cancelled"]
             if not portions:
                 continue
+            if any(a.supply_status != "cancelled" and a.source_type != "partner_x"
+                   for a in plan.allocations):
+                raise DeskError("Смешанный план склада Х: автоматическая отгрузка разных источников запрещена.")
             if plan.status not in {"planned", "exported"}:
                 raise DeskError("План склада Х недоступен.")
             if settings.warehouse_ids and plan.warehouse_id not in settings.warehouse_ids:
@@ -235,6 +238,9 @@ class XOwnWarehouseAutomation:
                 continue
             for row in plan["parts"]:
                 key = x_enter_key(row["allocation_id"])
+                if row["receipt_id"] and not await self.operations.store.get(key):
+                    raise DeskError("По распределению Х уже есть прежнее поступление. "
+                        "Создавать второе оприходование нельзя; требуется сверка.")
                 intent = {"entity": "enter",
                     "document": stock_enter(data["organization_id"], plan["store_id"],
                         [{"id": row["product_id"], "qty": row["qty"]}], key)}
