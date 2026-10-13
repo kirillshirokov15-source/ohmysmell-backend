@@ -122,12 +122,19 @@ async def show_procurement(message, identifier):
     await message.answer("\n".join(lines)[:4000], reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
-async def show_procurements(message, order_id=None):
+async def show_procurements(message, order_id=None, *, edit=False):
     requests = await procurement_data(order_id)
     rows = [[{"text": f"Заказ №{r.order_id} · закупка #{r.id} · {STATUS[r.status]}",
         "callback_data": f"proc:view:{r.id}:{r.revision}:0"}] for r in requests]
-    await message.answer("Требуют закупки — выберите позицию:" if rows else "Закупок нет.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    if edit and order_id:
+        rows.append([{"text": "← Назад к заказу",
+                      "callback_data": f"order:refresh:{order_id}:0"}])
+    text = "Требуют закупки — выберите позицию:" if requests else "Закупок нет."
+    if edit:
+        from app.bot.source_navigation import replace_screen
+        await replace_screen(message, text, rows)
+    else:
+        await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 def register(dp, check_access, safe_callback_answer, manager_repository):
