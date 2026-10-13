@@ -150,17 +150,41 @@ def register(dp, check_access, safe_callback_answer):
                     item = await session.get(OrderItem, state["item_id"])
                 catalog = await ProductService().get_catalog_async(include_supply=False)
                 product = next((p for p in catalog if p["id"] == item.product_id), {})
-                text = "Выберите склад"
-                for stock in product.get("stocks", []):
-                    if settings.warehouse_ids and stock["id"] not in settings.warehouse_ids:
-                        continue
-                    rows.append(button(stock.get("name") or stock["id"], dict(state,
-                        step="supplier" if state["source_type"] == "external" else ("cost" if state["source_type"] == "partner_x" else "confirm"),
-                        warehouse_id=stock["id"])))
-                if not rows:
-                    empty_reason = ("Не найден разрешённый склад для этой позиции. "
-                                    "Проверьте привязку товара к каталогу МойСклад "
-                                    "и список разрешённых складов в CRM.")
+                # An X warehouse must never appear as an own-stock or external
+                # receiving choice. One eligible receiving warehouse is selected
+                # automatically: choosing a supply type must not ask for the same
+                # warehouse again.
+                warehouses = [stock for stock in product.get("stocks", [])
+                    if (not settings.warehouse_ids or stock["id"] in settings.warehouse_ids)
+                    and (stock.get("name") or "").replace(" ", "").casefold()
+                        not in {"складх", "складx"}]
+                if not warehouses:
+                    empty_reason = ("Для этого источника не найден основной склад. "
+                        "«Склад Х» не может быть выбран как собственный склад "
+                        "или склад поступления внешнего поставщика.")
+                elif len(warehouses) == 1:
+                    warehouse = warehouses[0]
+                    selected = dict(state, warehouse_id=warehouse["id"],
+                                    warehouse_label=warehouse.get("name") or "Основной склад")
+                    if state["source_type"] == "own":
+                        text = (f"Заказ №{state['order_id']} · свой склад\\n"
+                            f"{selected['warehouse_label']} · {state['qty']} шт.\\n"
+                            "Подтвердить распределение? Реальные документы МойСклад этим не создаются.")
+                        rows.append(button("✅ Подтвердить свой склад",
+                                           dict(selected, step="apply", action="assign")))
+                    else:
+                        text = ("Склад для поступления: " + selected["warehouse_label"]
+                            + ".\\nСледующий шаг — выбрать предложение поставщика.")
+                        rows.append(button("Выбрать поставщика",
+                                           dict(selected, step="supplier")))
+                    rows.append(button("← Другой источник", dict(state, step="type")))
+                else:
+                    text = "Выберите собственный склад / склад поступления"
+                    for warehouse in warehouses:
+                        rows.append(button(warehouse.get("name") or warehouse["id"], dict(state,
+                            step="supplier" if state["source_type"] == "external" else "confirm",
+                            warehouse_id=warehouse["id"],
+                            warehouse_label=warehouse.get("name") or "Основной склад")))
             elif step == "supplier":
                 text = "Выберите поставщика"
                 async with async_session() as session:
