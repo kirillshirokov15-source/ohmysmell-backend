@@ -89,6 +89,7 @@ async def desk_card(draft_id, *, view="details"):
         lines.append("Товары:")
         # Telegram text is limited to 4096 UTF-16 units. Keep a safe margin.
         items = sorted(draft.items, key=lambda item: item.id)
+        truncated_items = False
         for index, item in enumerate(items, 1):
             name = (item.raw_product_text or item.product_name or "Товар")[:85]
             price = telegram_rubles(item.price) if item.price is not None else "не указана"
@@ -98,6 +99,7 @@ async def desk_card(draft_id, *, view="details"):
                     f"   {stock_label(item, stocks)}")
             if len(("\n".join(lines + [line])).encode("utf-16-le")) // 2 > 3250:
                 lines.append(f"… Остальные позиции ({len(items) - index + 1} шт.) — по кнопке «Все товары»")
+                truncated_items = True
                 break
             lines.append(line)
         if active and problems:
@@ -133,7 +135,7 @@ async def desk_card(draft_id, *, view="details"):
                               "callback_data": f"desk:payment:{draft_id}"}])
         if desk.customer_telegram_id:
             rows.append([{"text": "Ответить клиенту", "callback_data": f"desk:reply:{draft_id}"}])
-        if len(items) > 1:
+        if truncated_items:
             rows.append([{"text": "Все товары", "callback_data": f"desk:items:{draft_id}"}])
         rows.append([{"text": "История действий", "callback_data": f"desk:history:{draft_id}"}])
         rows.append([{"text": "Обновить", "callback_data": f"desk:refresh:{draft_id}"}])
