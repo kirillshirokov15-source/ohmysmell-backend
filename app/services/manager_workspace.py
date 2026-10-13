@@ -79,7 +79,8 @@ def order_details_card(order, shipments=()):
                 from app.services.order_source_service import allocation_ready
                 from app.services.supply_service import LABELS
                 purchase = allocation.buying_purchase
-                status = {"awaiting_receipt": "ожидает получения", "received": "получено, требуется оприходование",
+                status = {"awaiting_receipt": "ожидает оприходования на склад",
+                    "received": "оприходование подготавливается",
                     "confirmed": "источник подтверждён", "cancelled": "назначение отменено"}[allocation.supply_status]
                 ready = shipment.status in {"planned", "exported"} and allocation_ready(allocation, manual=True)
                 lines.append(f"  Назначение #{allocation.id}: {LABELS[allocation.source_type]} · {status} · "
@@ -233,7 +234,7 @@ def order_card(order, shipments=(), *, site_titles=None):
     if order.needs_review:
         next_step = "устранить замечания к заказу."
     elif pending_x:
-        next_step = "склад Х → подтвердить физическое получение → оприходовать в МойСклад → резерв → сборка → отгрузка."
+        next_step = "склад Х — автоматическое оприходование в МойСклад → отгрузка покупателю; проверить состояние документов."
     elif ready_quantity < total_quantity:
         next_step = "назначить и подтвердить источники товаров."
     elif order.fulfillment_status == "new":
