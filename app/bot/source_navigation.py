@@ -76,8 +76,20 @@ async def show_sources(message, actor, order_id, *, edit=False):
             continue
         label = {"own": "Свой склад", "partner_x": "X", "external": "Поставщик"}[allocation["source_type"]]
         lines.append(f"{label}: {allocation['qty']} шт. · " + ("готово" if allocation["ready"] else "ожидаем поступления"))
+        if allocation["source_type"] == "partner_x":
+            if allocation.get("x_cost_pending"):
+                lines.append("  Себестоимость Х: ожидает отдельного подтверждения. Расчёт выплат и поступление заблокированы.")
+            else:
+                from app.services.telegram_display import telegram_rubles
+                cost_minor = allocation.get("x_total_cost_minor")
+                lines.append("  Себестоимость Х подтверждена: " +
+                    (telegram_rubles(cost_minor) if cost_minor is not None else "не определена"))
         if not editable or allocation["plan_status"] != "planned":
             continue
+        if (allocation["source_type"] == "partner_x" and allocation.get("x_cost_pending")
+                and allocation["status"] == "awaiting_receipt" and not frozen):
+            rows.append(button("Указать закупочную себестоимость Х",
+                dict(state, step="cost", allocation_id=allocation["id"], qty=allocation["qty"])))
         if simulation_allowed() and allocation["status"] == "awaiting_receipt" and (
                 allocation["source_type"] == "partner_x" or allocation["purchase_status"] == "received"):
             rows.append(button(f"Получено: {label} · {allocation['qty']} шт.", dict(state, step="apply",
@@ -142,16 +154,22 @@ def register(dp, check_access, safe_callback_answer):
                     empty_reason = ("Склад Х не найден однозначно среди разрешённых складов "
                                     "МойСклад. Проверьте его название и привязку товара.")
                 else:
-                    from app.bot.manager_inputs import prompt_input
-                    state = dict(state, warehouse_id=warehouses[0]["id"],
-                                 origin_message_id=callback.message.message_id)
-                    await replace_screen(callback.message,
-                        "Склад Х · заказ №" + str(state["order_id"])
-                        + "\nВведите закупочную стоимость за штуку ответом на сообщение.",
-                        [button("← Другой источник", dict(state, step="type"))])
-                    await prompt_input(message, "source_cost", state,
-                        "Введите закупочную цену склада Х за штуку в рублях.")
-                    return
+                    # The Tilda retail price is already frozen in the CRM order.
+                    # X procurement cost must NEVER be guessed from that price.
+                    item_view = next((row for row in view["items"]
+                        if row["id"] == state["item_id"]), None)
+                    if not item_view:
+                        raise DeskError("Позиция заказа не найдена.")
+                    state = dict(state, warehouse_id=warehouses[0]["id"])
+                    from app.services.telegram_display import telegram_rubles
+                    text = (f"Склад Х · заказ №{state['order_id']}\n"
+                        f"Количество: {state['qty']} шт.\n"
+                        f"Цена продажи по Tilda: {telegram_rubles(item_view['sale_unit_minor'])} за шт.\n"
+                        "Закупочная себестоимость Х: не указана (вносится отдельно).\n"
+                        "Назначить склад Х без закупки, резерва или финансового расчёта?")
+                    rows.append(button("✅ Назначить склад Х",
+                                       dict(state, step="apply", action="assign")))
+                    rows.append(button("← Другой источник", dict(state, step="type")))
             elif step == "warehouse":
                 from app.services.product_service import ProductService
                 from app.config.settings import settings
@@ -229,13 +247,19 @@ def register(dp, check_access, safe_callback_answer):
             elif step == "cost":
                 # A price is a deliberate manager input, never inferred from retail price.
                 from app.bot.manager_inputs import prompt_input
+                if "allocation_id" not in state:
+                    # Legacy navigation tokens are not valid financial actions.
+                    await show_sources(callback.message, state["actor"], state["order_id"], edit=True)
+                    return
                 state = dict(state, origin_message_id=callback.message.message_id)
                 await replace_screen(callback.message,
-                    "Склад Х · заказ №" + str(state["order_id"])
-                    + "\nВведите закупочную стоимость за штуку ответом на сообщение.",
-                    [button("← Другой источник", dict(state, step="type"))])
+                    "Заказ №" + str(state["order_id"])
+                    + " · закупочная себестоимость Х\n"
+                    "Введите закупочную цену Х за штуку. Розничная цена с Tilda не изменится.",
+                    [[{"text": "← К обеспечению", "callback_data":
+                        f"order:sources:{state['order_id']}:0"}]])
                 await prompt_input(message, "source_cost", state,
-                    "Введите закупочную цену склада Х за штуку в рублях.")
+                    "Введите закупочную себестоимость Х за штуку в рублях (не цену для покупателя).")
                 return
             elif step in {"confirm", "confirm_cancel"}:
                 text = "Убрать это назначение источника?" if step == "confirm_cancel" else f"Назначить источник на {state['qty']} шт.?"
@@ -257,6 +281,8 @@ def register(dp, check_access, safe_callback_answer):
                 args = {"allocation_id": state["allocation_id"]} if action != "assign" else {
                     "parts": [{key: state[key] for key in ("item_id", "qty", "source_type", "warehouse_id",
                         "supplier_id", "base_cost_minor", "offer_id") if key in state}]}
+                if action == "set_x_cost":
+                    args["x_unit_cost_minor"] = state["x_unit_cost_minor"]
                 await service.act(state["order_id"], state["actor"], state["chat"], SourceAction(
                     action=action, expected_revision=state["revision"], idempotency_key=callback.data, **args))
                 await show_sources(callback.message, state["actor"], state["order_id"], edit=True)
