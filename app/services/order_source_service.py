@@ -212,8 +212,8 @@ class OrderSourceService:
                 if plan.status != "planned" or allocation.supply_status == "cancelled":
                     raise DeskError("Складской план или распределение недоступны.")
                 if request.action == "set_x_cost":
-                    if allocation.source_type != "partner_x" or allocation.supply_status != "awaiting_receipt":
-                        raise DeskError("Закупочная цена меняется только для ожидающего поступления склада Х.")
+                    if allocation.source_type != "partner_x" or allocation.supply_status not in {"awaiting_receipt", "received"}:
+                        raise DeskError("Закупочная цена доступна для Х до оприходования, включая физически полученный товар.")
                     if allocation.receipt_reference:
                         raise DeskError("Товар уже оприходован; менять себестоимость нельзя.")
                     current = await session.scalar(select(XSettlement).where(XSettlement.allocation_id == allocation.id))
@@ -245,11 +245,11 @@ class OrderSourceService:
                     expected = "awaiting_receipt" if request.action == "receive" else "received"
                     if allocation.supply_status != expected:
                         raise DeskError("Сначала выполните предыдущий этап получения.")
-                    if allocation.source_type == "partner_x":
+                    if allocation.source_type == "partner_x" and request.action == "post_receipt":
                         verified_cost = await session.scalar(select(XSettlement.id).where(
                             XSettlement.allocation_id == allocation.id))
                         if not verified_cost:
-                            raise DeskError("Для получения склада Х сначала подтвердите реальную закупочную себестоимость.")
+                            raise DeskError("Для оприходования склада Х сначала подтвердите реальную закупочную себестоимость.")
                     if allocation.source_type == "external":
                         # Same workspace lock as Buying receive/cancel. A draft or
                         # merely sent purchase is never proof of physical receipt.
