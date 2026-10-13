@@ -39,7 +39,7 @@ def amounts(payload):
     return sorted(problems), total if not problems else None
 
 
-async def review(payload):
+async def review(payload, manual_matches=None):
     problems, total = amounts(payload)
     try:
         matcher = ProductMatchingService()
@@ -51,17 +51,34 @@ async def review(payload):
     except Exception:
         products = []
         problems.append("catalog_unavailable")
+    # Manual bindings refer to original source indices and are revalidated on
+    # every review/confirmation against the live MoySklad catalog.
+    bindings = manual_matches or {}
+    if not isinstance(bindings, dict):
+        raise ValueError("Invalid manual bindings")
+    known = {p["id"]: p for p in products if p.get("id") and not p.get("archived")}
+    if any(not isinstance(k, str) or not k.isdecimal() or int(k) >= len(payload["items"])
+           or not isinstance(v, str) for k, v in bindings.items()):
+        raise ValueError("Invalid manual bindings")
     rows = []
-    for row in payload["items"]:
+    for index, row in enumerate(payload["items"]):
         match = ProductMatchingService.match_sku(products, row["externalid"], row["qty"])
         product = match.product or {}
-        if match.status != "matched":
+        match_status = match.status
+        if str(index) in bindings:
+            product = known.get(bindings[str(index)]) or {}
+            if product:
+                match_status = "matched"
+            else:
+                match_status = "not_found"
+                problems.append("sku_manual_invalid")
+        elif match.status != "matched":
             problems.append("sku_" + match.status)
         price, qty = row.get("price_minor"), row["qty"]
         valid_price = type(price) is int and 0 < price <= 100_000_000_000
         valid_qty = type(qty) is int and 1 <= qty <= 10000
         rows.append(dict(product_id=product.get("id"), product_name=product.get("name") or row["name"],
-            article=product.get("article"), match_status=match.status,
+            article=product.get("article"), match_status=match_status,
             candidates=[asdict(c) for c in match.candidates], qty=qty,
             quantity_confidence="confirmed" if valid_qty else "uncertain",
             price=price if valid_price else None,
