@@ -88,6 +88,23 @@ async def claimed_stock(session, product_id, warehouse_id, *, managed_only=False
     return claimed
 
 
+async def attach_x_cost_status(session, view):
+    """Financial state is separate from retail sale and physical source."""
+    ids = [a["id"] for a in view["allocations"]
+           if a["source_type"] == "partner_x" and a["status"] != "cancelled"]
+    if not ids:
+        return view
+    settlements = (await session.scalars(
+        select(XSettlement).where(XSettlement.allocation_id.in_(ids)))).all()
+    known = {row.allocation_id: row for row in settlements}
+    for allocation in view["allocations"]:
+        if allocation["id"] in ids:
+            settlement = known.get(allocation["id"])
+            allocation["x_cost_pending"] = settlement is None
+            allocation["x_total_cost_minor"] = settlement.base_cost_minor if settlement else None
+    return view
+
+
 async def singleton_x_partner(session):
     """Only one operational X counterparty. Created locally on explicit assignment.
 
@@ -134,7 +151,8 @@ class OrderSourceService:
         async with async_session() as session, session.begin():
             order, _ = await self._order(session, order_id, actor, chat_id)
             plans = await source_plans(session, order_id)
-            return self.view(order, plans)
+            view = self.view(order, plans)
+            return await attach_x_cost_status(session, view)
 
     @staticmethod
     def view(order, plans):
@@ -174,7 +192,7 @@ class OrderSourceService:
                 raise DeskError("Источники меняются до сборки, после завершения проверки заказа.")
             plans = await source_plans(session, order_id)
             before = self.view(order, plans)
-            if request.action in {'assign','cancel'}:
+            if request.action in {'assign','cancel','set_x_cost'}:
                 from app.services.warehouse_documents import frozen_plan
                 if any([await frozen_plan(session,p) for p in plans]):
                     raise DeskError('Сначала сверить и снять внешний резерв.')
@@ -187,7 +205,25 @@ class OrderSourceService:
                 plan, allocation = pair
                 if plan.status != "planned" or allocation.supply_status == "cancelled":
                     raise DeskError("Складской план или распределение недоступны.")
-                if request.action == "cancel":
+                if request.action == "set_x_cost":
+                    if allocation.source_type != "partner_x" or allocation.supply_status != "awaiting_receipt":
+                        raise DeskError("Закупочная цена меняется только для ожидающего поступления склада Х.")
+                    if allocation.receipt_reference:
+                        raise DeskError("Товар уже оприходован; менять себестоимость нельзя.")
+                    current = await session.scalar(select(XSettlement).where(XSettlement.allocation_id == allocation.id))
+                    if current:
+                        raise DeskError("Цена склада Х уже подтверждена; корректировка требует отдельной финансовой процедуры.")
+                    item = next((i for i in order.items if i.id == allocation.order_item_id), None)
+                    if not item:
+                        raise DeskError("Позиция заказа не найдена.")
+                    values = x_calculation(request.x_unit_cost_minor * allocation.qty, item.price * allocation.qty)
+                    if values["status"] != "calculated":
+                        raise DeskError("Себестоимость Х выше розничной цены Tilda. Нужна отдельная финансовая проверка.")
+                    if not allocation.supplier_id:
+                        raise DeskError("У распределения склада Х отсутствует локальный контрагент.")
+                    session.add(XSettlement(order_id=order.id, order_item_id=item.id,
+                        allocation_id=allocation.id, supplier_id=allocation.supplier_id, **values))
+                elif request.action == "cancel":
                     allocation.supply_status = "cancelled"
                     await session.flush()
                     if allocation.buying_purchase_id:
@@ -203,6 +239,11 @@ class OrderSourceService:
                     expected = "awaiting_receipt" if request.action == "receive" else "received"
                     if allocation.supply_status != expected:
                         raise DeskError("Сначала выполните предыдущий этап получения.")
+                    if allocation.source_type == "partner_x":
+                        verified_cost = await session.scalar(select(XSettlement.id).where(
+                            XSettlement.allocation_id == allocation.id))
+                        if not verified_cost:
+                            raise DeskError("Для получения склада Х сначала подтвердите реальную закупочную себестоимость.")
                     if allocation.source_type == "external":
                         # Same workspace lock as Buying receive/cancel. A draft or
                         # merely sent purchase is never proof of physical receipt.
@@ -224,7 +265,7 @@ class OrderSourceService:
             # Reload newly created purchase relationships without implicit async IO.
             session.expire_all()
             order = await session.scalar(select(Order).where(Order.id == order_id).options(selectinload(Order.items)))
-            after = self.view(order, await source_plans(session, order_id))
+            after = await attach_x_cost_status(session, self.view(order, await source_plans(session, order_id)))
             session.add(OrderEvent(order_id=order_id, manager_id=manager_id, action="source_" + request.action,
                 idempotency_key=request.idempotency_key, request_hash=digest, before=before, after=after))
             return after
@@ -286,12 +327,16 @@ class OrderSourceService:
                 supplier = await singleton_x_partner(session)
                 if part.supplier_id is not None and part.supplier_id != supplier.id:
                     raise DeskError("Устаревшая карточка партнёра Х. Обновите выбор источника.")
-                values = x_calculation(part.base_cost_minor * part.qty, item.price * part.qty)
-                if values["status"] != "calculated":
-                    raise DeskError("Стоимость X превышает цену продажи; требуется финансовое решение.")
                 allocation.supplier_id = supplier.id
-                session.add(XSettlement(order_id=order.id, order_item_id=item.id, allocation_id=allocation.id,
-                    supplier_id=supplier.id, **values))
+                # Tilda retail price is authoritative and already stored on
+                # the customer order. Do not mistake it for X procurement cost.
+                # No financial settlement is created until X unit cost is known.
+                if part.base_cost_minor is not None:
+                    values = x_calculation(part.base_cost_minor * part.qty, item.price * part.qty)
+                    if values["status"] != "calculated":
+                        raise DeskError("Стоимость X превышает цену продажи; требуется финансовое решение.")
+                    session.add(XSettlement(order_id=order.id, order_item_id=item.id, allocation_id=allocation.id,
+                        supplier_id=supplier.id, **values))
             elif part.source_type == "external":
                 offer = await session.get(SupplierOffer, part.offer_id)
                 supplier = await session.get(Supplier, offer.supplier_id) if offer else None
