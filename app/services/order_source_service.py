@@ -178,7 +178,12 @@ class OrderSourceService:
                 assigned=assigned[i.id], ready=ready[i.id]) for i in order.items])
 
     async def act(self, order_id, actor, chat_id, request):
-        digest = hashlib.sha256(request.model_dump_json(exclude={"idempotency_key"}).encode()).hexdigest()
+        # Preserve historical request hashes for all pre-existing actions.
+        # The new optional X cost field must not change legacy idempotency checks.
+        excluded = {"idempotency_key"}
+        if request.action != "set_x_cost":
+            excluded.add("x_unit_cost_minor")
+        digest = hashlib.sha256(request.model_dump_json(exclude=excluded).encode()).hexdigest()
         async with async_session() as session, session.begin():
             order, manager = await self._order(session, order_id, actor, chat_id)
             previous = await session.scalar(select(OrderEvent).where(OrderEvent.order_id == order_id,
