@@ -27,7 +27,7 @@ def product_search_keyboard(draft_id, position, results):
         if p["article"]:
             label += " · " + p["article"][:20]
         buttons.append([{"text": label[:64], "callback_data": data}])
-    return InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
+    return InlineKeyboardMarkup(inline_keyboard=buttons + [[{"text": "← К заявке", "callback_data": f"desk:refresh:{draft_id}"}]]) if buttons else None
 
 
 def register(dp, check_access, safe_callback_answer):
@@ -161,25 +161,24 @@ def register(dp, check_access, safe_callback_answer):
                 results = await service.search_site_products(draft_id, callback.from_user.id, callback.message.chat.id, query)
                 keyboard = product_search_keyboard(draft_id, position, results)
                 if keyboard:
-                    await callback.message.answer(
-                        f"Заявка №{draft_id}, позиция {position}. Выберите правильный товар из МойСклад "
-                        f"(это не резервирование):", reply_markup=keyboard, parse_mode=None)
+                    await callback.message.edit_text(
+                        f"Заявка №{draft_id}, позиция {position}. Выберите правильный товар из МойСклад. "
+                        "Это не резервирование и не закупка.",
+                        reply_markup=keyboard, parse_mode=None)
                 else:
-                    await callback.message.answer(
-                        f"Не нашёл совпадений по первым словам названия. Поиск вручную: "
-                        f"/sitematch {draft_id} {position} НАЗВАНИЕ_ИЛИ_АРТИКУЛ", parse_mode=None)
+                    await callback.message.edit_text(
+                        f"Поиск по названию не дал результатов. Введите в группе: "
+                        f"/sitematch {draft_id} {position} НАЗВАНИЕ_ИЛИ_АРТИКУЛ",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                            {"text": "← К заявке", "callback_data": f"desk:refresh:{draft_id}"}]]),
+                        parse_mode=None)
                 return
             elif action == "bind":
                 if len(parts) != 6:
                     raise DeskError("Некорректные данные выбора товара.")
                 result = await service.bind_site_product(draft_id, callback.from_user.id,
                     callback.message.chat.id, int(parts[3]), int(parts[4]), parts[5])
-                await callback.message.answer(
-                    "Товар сопоставлен с МойСклад. " +
-                    ("Остались проверки: " + ", ".join(result["remaining_problems"])
-                     if result["remaining_problems"]
-                     else "Теперь можно подтвердить заказ после проверки цены."),
-                    parse_mode=None)
+                # Updated complete draft card below replaces the picker; no duplicate reply.
             elif action == "items":
                 message = callback.message.model_copy(update={"from_user": callback.from_user, "text": f"/siteitems {draft_id}"}).as_(callback.bot)
                 await desk_command(message)
@@ -191,7 +190,10 @@ def register(dp, check_access, safe_callback_answer):
                 return
             elif action == "history":
                 from app.services.desk_display import desk_history
-                await callback.message.answer(await desk_history(draft_id), parse_mode=None, protect_content=True)
+                details = await desk_history(draft_id)
+                await callback.message.edit_text(details[:3800],
+                    parse_mode=None, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                        {"text": "← К заявке", "callback_data": f"desk:refresh:{draft_id}"}]]))
                 return
             elif action == "recheck":
                 result = await service.reprice(draft_id, callback.from_user.id, callback.message.chat.id,
@@ -213,15 +215,21 @@ def register(dp, check_access, safe_callback_answer):
                 await service.stage(draft_id, callback.from_user.id, callback.message.chat.id,
                                     "awaiting_payment")
             elif action == "confirm":
-                await callback.message.answer("Подтвердите: товары, количество и розничная сумма согласованы с клиентом. Источник товара будет выбран отдельно после подтверждения. "
-                    "Заявленные сайтом скидки не применяются автоматически.", reply_markup=InlineKeyboardMarkup(
-                        inline_keyboard=[[{"text": "Да, согласовано", "callback_data": f"desk:accept:{draft_id}:{int(parts[3])}"}]]))
+                await callback.message.edit_text(
+                    "Подтвердите: товары, количество и розничная сумма согласованы с клиентом. "
+                    "Источник товара будет выбран после подтверждения. "
+                    "Заявленные сайтом скидки не применяются автоматически.",
+                    parse_mode=None, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [{"text": "Да, согласовано", "callback_data": f"desk:accept:{draft_id}:{int(parts[3])}"}],
+                        [{"text": "← К заявке", "callback_data": f"desk:refresh:{draft_id}"}]]))
                 return
             elif action == "accept":
                 await service.confirm(draft_id, callback.from_user.id, callback.message.chat.id, int(parts[3]))
             elif action == "cancel":
-                await callback.message.answer("Отменить заявку?", reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[[{"text": "Да, отменить", "callback_data": f"desk:cancelled:{draft_id}"}]]))
+                await callback.message.edit_text("Отменить заявку?",
+                    parse_mode=None, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [{"text": "Да, отменить", "callback_data": f"desk:cancelled:{draft_id}"}],
+                        [{"text": "← К заявке", "callback_data": f"desk:refresh:{draft_id}"}]]))
                 return
             elif action == "cancelled":
                 await service.cancel(draft_id, callback.from_user.id, callback.message.chat.id)
