@@ -156,6 +156,10 @@ async def show_sources(message, actor, order_id, *, edit=False):
         active_allocations = [a for a in plan.allocations if a.supply_status != "cancelled"]
         if not active_allocations:
             continue
+        # X is handled by the dedicated enter→demand automatic pipeline,
+        # never by supplier receipts / manual reserve.
+        if any(a.source_type == "partner_x" for a in active_allocations):
+            continue
         ready = all(allocation_ready(a, manual=order.manual_fulfillment)
                     for a in active_allocations)
         if (ready and plan.status == "planned" and not plan_docs[plan.id]["reserved"]
@@ -203,10 +207,32 @@ def register(dp, check_access, safe_callback_answer):
             empty_reason = None
             step = state["step"]
             if step == "type":
-                for value, label in (("own", "Свой склад"), ("partner_x", "Склад Х"), ("external", "Внешний поставщик")):
-                    rows.append(button(label, dict(state, step="x_warehouse" if value == "partner_x" else "warehouse", source_type=value)))
-                rows.append(button(f"Количество: {state['qty']} шт. · изменить", dict(state,
-                    step="quantity", quantity_next="type")))
+                from app.services.product_service import ProductService
+                from app.services.stock_allocation import available_units
+                from app.config.settings import settings
+                async with async_session() as session:
+                    item = await session.get(OrderItem, state["item_id"])
+                if not item:
+                    raise DeskError("Позиция заказа не найдена.")
+                catalog = await ProductService().get_catalog_async(include_supply=False)
+                product = next((p for p in catalog if p["id"] == item.product_id), None)
+                if not product:
+                    raise DeskError("Товар не сопоставлен с каталогом МойСклад.")
+                own_stores = source_warehouses(product, settings.warehouse_ids, "own")
+                available = sum(available_units(stock.get("stock"), stock.get("reserve"))
+                                for stock in own_stores)
+                if available > 0:
+                    rows.append(button("Свой склад · свободно " + str(available) + " шт.",
+                        dict(state, step="warehouse", source_type="own")))
+                else:
+                    text = ("На собственном складе нет свободного остатка.\n"
+                            "Выберите склад Х или внешнего поставщика.")
+                rows.append(button("Склад Х — наши товары",
+                    dict(state, step="x_warehouse", source_type="partner_x")))
+                rows.append(button("Внешний поставщик — Buying",
+                    dict(state, step="warehouse", source_type="external")))
+                rows.append(button(f"Количество: {state['qty']} шт. · изменить",
+                    dict(state, step="quantity", quantity_next="type")))
             elif step == "x_warehouse":
                 from app.services.product_service import ProductService
                 from app.config.settings import settings
@@ -415,31 +441,6 @@ def register(dp, check_access, safe_callback_answer):
             elif step == "source_home":
                 await show_sources(callback.message, state["actor"], state["order_id"], edit=True)
                 return
-            elif step == "cost":
-                # The optional X cost does not require ForceReply or new chat messages.
-                if "allocation_id" not in state:
-                    await show_sources(callback.message, state["actor"], state["order_id"], edit=True)
-                    return
-                state = dict(state, cost_digits="")
-                text, rows = x_cost_keypad(state)
-            elif step == "cost_key":
-                state = dict(state, cost_digits=update_x_cost_digits(
-                    state.get("cost_digits", ""), state.get("cost_key", "")))
-                state.pop("cost_key", None)
-                text, rows = x_cost_keypad(state)
-            elif step == "cost_review":
-                minor = x_cost_input(state.get("cost_digits"))
-                if minor is None or "allocation_id" not in state:
-                    raise DeskError("Укажите корректную себестоимость.")
-                from app.services.telegram_display import telegram_rubles
-                text = (f"Заказ №{state['order_id']} · себестоимость Х\n"
-                    f"Закупочная цена: {telegram_rubles(minor)} за штуку.\n"
-                    "Розничная цена клиента из Tilda остаётся неизменной.\n"
-                    "Подтвердите только реальную согласованную цену склада Х.")
-                rows.append(button("✅ Подтвердить себестоимость",
-                    dict(state, x_unit_cost_minor=minor, step="apply", action="set_x_cost")))
-                rows.append(button("← Исправить цену",
-                    dict(state, step="cost_key", cost_key="⌫")))
             elif step in {"confirm", "confirm_cancel"}:
                 text = "Убрать это назначение источника?" if step == "confirm_cancel" else f"Назначить источник на {state['qty']} шт.?"
                 rows.append(button("Подтвердить", dict(state, step="apply", action="cancel" if step == "confirm_cancel" else "assign")))
@@ -460,8 +461,7 @@ def register(dp, check_access, safe_callback_answer):
                 args = {"allocation_id": state["allocation_id"]} if action != "assign" else {
                     "parts": [{key: state[key] for key in ("item_id", "qty", "source_type", "warehouse_id",
                         "supplier_id", "base_cost_minor", "offer_id") if key in state}]}
-                if action == "set_x_cost":
-                    args["x_unit_cost_minor"] = state["x_unit_cost_minor"]
+
                 await service.act(state["order_id"], state["actor"], state["chat"], SourceAction(
                     action=action, expected_revision=state["revision"], idempotency_key=callback.data, **args))
                 await show_sources(callback.message, state["actor"], state["order_id"], edit=True)
