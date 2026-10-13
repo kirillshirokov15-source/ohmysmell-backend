@@ -113,7 +113,10 @@ class TildaIntake:
                 received_at=now(), processing_status="processed", customer_id=customer.id)
             session.add(inbound)
             await session.flush()
-            rows, total, problems = await review(payload)
+            details = draft.contact_details or {}
+            rows, total, problems = await review(payload,
+                manual_matches=details.get("tilda_manual_matches"),
+                manual_total=details.get("tilda_manual_total"))
             draft = DraftOrder(inbound_message_id=inbound.id, customer_id=customer.id, source="website",
                 customer_type="retail", customer_name=payload["name"] or "Клиент сайта", sender_email=email,
                 subject="Заказ Tilda", status="needs_review", counterparty_candidates=[],
@@ -378,7 +381,10 @@ class DeskService:
                     raise DeskError("Товары, цены, скидка или сумма требуют проверки. Выполните /sitereprice.")
                 # Revalidate identity against a fresh (TTL-bounded) catalog. Never
                 # silently replace a product or approve an expired match.
-                checked, _, problems = await review(payload)
+                details = draft.contact_details or {}
+                checked, _, problems = await review(payload,
+                    manual_matches=details.get("tilda_manual_matches"),
+                    manual_total=details.get("tilda_manual_total"))
                 if problems or any(i.product_id != r["product_id"] for i, r in zip(items, checked, strict=True)):
                     raise DeskError("Каталог недоступен или сопоставление изменилось. Выполните /sitereprice.")
                 draft.status = "ready"
@@ -386,6 +392,79 @@ class DeskService:
                 audit(session, desk, "tilda_review_approved", actor, total_minor=draft.total, revision=revision)
             from app.repositories.draft_order_repository import DraftOrderRepository
             return await DraftOrderRepository().finalize(draft_id, session=session)
+
+    async def set_manual_product(self, draft_id, item_id, product_id, actor, chat_id):
+        """Explicit owner choice, bound to immutable Webhook line and live catalog."""
+        from app.services.product_matching_service import ProductMatchingService
+        async with async_session() as session, session.begin():
+            await authorized_manager(session, actor, chat_id)
+            draft = await session.scalar(select(DraftOrder).where(DraftOrder.id == draft_id)
+                .options(selectinload(DraftOrder.items)).with_for_update())
+            desk = await session.get(OrderDesk, draft_id, with_for_update=True)
+            if not draft or not desk or desk.order_id or draft.status == "rejected":
+                raise DeskError("Заявка уже закрыта или подтверждена.")
+            require_owner(desk, actor)
+            inbound = await session.get(InboundMessage, draft.inbound_message_id)
+            payload, items, _ = source_rows(draft, desk, inbound)
+            position = next((n for n, item in enumerate(items) if item.id == item_id), None)
+            if position is None:
+                raise DeskError("Позиция не относится к этой заявке.")
+            products = await ProductMatchingService().products_async()
+            found = [p for p in products if p.get("id") == product_id and not p.get("archived")]
+            if len(found) != 1:
+                raise DeskError("Номенклатура не найдена в актуальном МойСклад.")
+            existing = (draft.contact_details or {}).get("tilda_manual_matches") or {}
+            override = {"sku": payload["items"][position]["externalid"], "product_id": product_id}
+            if existing.get(str(position)) == override:
+                return {"changed": False, "revision": draft.revision}
+            matches = {**existing, str(position): override}
+            rows, total, problems = await review(payload, manual_matches=matches,
+                manual_total=(draft.contact_details or {}).get("tilda_manual_total"))
+            if rows[position]["product_id"] != product_id or rows[position]["match_status"] != "matched":
+                raise DeskError("Не удалось подтвердить выбранный товар по свежему каталогу.")
+            apply_review(draft, rows, total, problems, items)
+            draft.contact_details = {**draft.contact_details, "tilda_manual_matches": matches}
+            draft.revision += 1
+            audit(session, desk, "tilda_manual_product_matched", actor,
+                item_id=item_id, product_id=product_id, source_sku=payload["items"][position]["externalid"])
+            return {"changed": True, "revision": draft.revision}
+
+    async def approve_missing_total(self, draft_id, revision, actor, chat_id):
+        """Manager-approved sum only for missing overall site total, never mismatches."""
+        from app.services.tilda_review import amounts, digest
+        async with async_session() as session, session.begin():
+            await authorized_manager(session, actor, chat_id)
+            draft = await session.scalar(select(DraftOrder).where(DraftOrder.id == draft_id)
+                .options(selectinload(DraftOrder.items)).with_for_update())
+            desk = await session.get(OrderDesk, draft_id, with_for_update=True)
+            if not draft or not desk or desk.order_id or draft.status == "rejected":
+                raise DeskError("Заявка закрыта для согласования.")
+            require_owner(desk, actor)
+            if draft.revision != revision:
+                raise DeskError("Карточка изменилась. Обновите заявку.")
+            inbound = await session.get(InboundMessage, draft.inbound_message_id)
+            payload, items, _ = source_rows(draft, desk, inbound)
+            raw_problems, _ = amounts(payload)
+            if (payload.get("reported_total") is not None or payload.get("discount") != 0
+                    or set(raw_problems) != {"invalid_total", "total_mismatch"}):
+                raise DeskError("Ручное согласование разрешено только когда Tilda вообще не передала итог, "
+                                "а цены позиций и скидка корректны.")
+            subtotal = sum(row["price_minor"] * row["qty"] for row in payload["items"])
+            if not 0 < subtotal <= 100_000_000_000:
+                raise DeskError("Сумма позиций недоступна.")
+            attestation = {"digest": digest(payload), "amount_minor": subtotal}
+            details = draft.contact_details or {}
+            rows, total, problems = await review(payload,
+                manual_matches=details.get("tilda_manual_matches"), manual_total=attestation)
+            if problems or total != subtotal or any(row["match_status"] != "matched" for row in rows):
+                raise DeskError("Сначала сопоставьте все товары с МойСклад и устраните остальные ошибки.")
+            apply_review(draft, rows, total, problems, items)
+            draft.contact_details = {**draft.contact_details,
+                "tilda_manual_total": attestation,
+                "tilda_manual_total_approved_by": actor}
+            draft.revision += 1
+            audit(session, desk, "tilda_manual_total_approved", actor, total_minor=subtotal)
+            return {"total_minor": subtotal, "revision": draft.revision}
 
     async def reprice(self, draft_id, actor, chat_id, *, dry_run=False):
         async with async_session() as session, session.begin():
