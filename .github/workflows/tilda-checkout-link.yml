@@ -15,7 +15,7 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
-      - run: python -m pip install -r requirements.txt
+      - run: python -m pip install -r requirements.txt pytest
       - name: Verify Python imports and JavaScript syntax
         run: |
           python -m compileall -q app tests
@@ -25,4 +25,4 @@ jobs:
           EXTERNAL_WRITES_ENABLED: 'false'
           OMS_STAGING_TESTS: '0'
         run: |
-          pytest -q -m "not staging" tests/test_tilda_orders.py tests/test_tilda_checkout_link.py
+          python -m pytest -q -m "not staging" tests/test_tilda_orders.py tests/test_tilda_checkout_link.py
