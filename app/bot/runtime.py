@@ -175,6 +175,10 @@ async def run_worker(role="manager", *, drop_pending_updates=False):
             if role == "manager":
                 from app.workers.notifications import main as notifications
                 tasks.append(asyncio.create_task(notifications()))
+                # Feature flag remains off by default. The durable job is
+                # independent from chat navigation and resumes after restarts.
+                from app.services.x_own_warehouse import x_auto_loop
+                tasks.append(asyncio.create_task(x_auto_loop()))
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
