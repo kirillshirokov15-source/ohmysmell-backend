@@ -89,6 +89,7 @@ def register(dp, check_access, safe_callback_answer):
             if view["revision"] != state["revision"]:
                 raise DeskError("Заказ изменился. Откройте источники заново.")
             rows, text = [], "Выберите источник"
+            empty_reason = None
             step = state["step"]
             if step == "type":
                 for value, label in (("own", "Свой склад"), ("partner_x", "X"), ("external", "Внешний поставщик")):
@@ -109,6 +110,10 @@ def register(dp, check_access, safe_callback_answer):
                     rows.append(button(stock.get("name") or stock["id"], dict(state,
                         step="supplier" if state["source_type"] != "own" else "confirm",
                         warehouse_id=stock["id"])))
+                if not rows:
+                    empty_reason = ("Не найден разрешённый склад для этой позиции. "
+                                    "Проверьте привязку товара к каталогу МойСклад "
+                                    "и список разрешённых складов в CRM.")
             elif step == "supplier":
                 text = "Выберите поставщика"
                 async with async_session() as session:
@@ -117,19 +122,39 @@ def register(dp, check_access, safe_callback_answer):
                             Supplier.supplier_type == "partner_x", Supplier.status == "active"))).all()
                         for supplier in suppliers:
                             rows.append(button(supplier.name, dict(state, step="cost", supplier_id=supplier.id)))
+                        if not rows:
+                            empty_reason = ("Для склада Х ещё не настроен активный партнёр типа «X» в CRM. "
+                                            "Само наличие склада «Склад Х» в МойСклад не создаёт партнёра. "
+                                            "Нужно добавить карточку партнёра Х; реальных закупок пока нет.")
                     else:
                         item = await session.get(OrderItem, state["item_id"])
                         offers = (await session.execute(select(SupplierOffer, Supplier).join(Supplier).where(
                             SupplierOffer.product_id == item.product_id, SupplierOffer.active.is_(True),
                             SupplierOffer.availability != "unavailable", Supplier.status == "active",
                             Supplier.supplier_type == "external_wholesaler"))).all()
+                        configuration_issues = set()
                         for offer, supplier in offers:
                             from app.models.buying import BuyingSupplier
                             buying_supplier = await session.get(BuyingSupplier, supplier.id)
+                            if not buying_supplier:
+                                configuration_issues.add("поставщик не зарегистрирован в Buying")
+                            elif buying_supplier.currency != offer.currency_code:
+                                configuration_issues.add("валюта в Buying не совпадает с предложением")
+                            if not supplier.email:
+                                configuration_issues.add("у поставщика не указан email")
+                            if offer.availability_qty is not None and offer.availability_qty < state["qty"]:
+                                configuration_issues.add("доступное количество меньше требуемого")
                             if (buying_supplier and buying_supplier.currency == offer.currency_code and supplier.email
                                     and (offer.availability_qty is None or offer.availability_qty >= state["qty"])):
                                 rows.append(button(f"{supplier.name} · {offer.purchase_price_minor / 100:.2f} {offer.currency_code}",
                                     dict(state, step="confirm", offer_id=offer.id)))
+                        if not rows:
+                            empty_reason = (
+                                "Для выбранного товара нет пригодного предложения внешнего поставщика. "
+                                + ("Пока нет активных предложений, связанных с этим товаром."
+                                   if not offers else "Что требуется проверить: " + "; ".join(sorted(configuration_issues)) + ".")
+                                + " Настройка предложения в CRM/Buying обязательна, "
+                                  "но заказ клиента можно оставить в ожидании закупки.")
             elif step == "cost":
                 # A price is a deliberate manager input, never inferred from retail price.
                 from app.bot.manager_inputs import prompt_input
@@ -154,7 +179,9 @@ def register(dp, check_access, safe_callback_answer):
                 await show_sources(callback.message, state["actor"], state["order_id"], edit=True)
                 return
             if not rows:
-                text = "Нет доступных вариантов. Проверьте склад или поставщика."
+                text = empty_reason or "На этом шаге нет доступных вариантов. Проверьте настройки источника."
+                if step in {"warehouse", "supplier"}:
+                    rows.append(button("← Другой источник", dict(state, step="type")))
             rows.append([{"text": "Назад к заказу", "callback_data": f"order:refresh:{state['order_id']}:{state['revision']}"}])
             await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode=None)
         except (DeskError, ValueError) as error:
