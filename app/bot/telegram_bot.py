@@ -650,14 +650,23 @@ async def order_callback(callback):
         log_event(logger, "manager_order_callback", order_id=order_id, manager_id=callback.from_user.id,
             action=action, result="success", duration_ms=_duration_ms(started))
     except (ValueError, OperationError) as error:
-        await callback.message.answer(str(error) if isinstance(error, OperationError) else "Действие недоступно. Обновите карточку.")
+        notice = str(error) if isinstance(error, OperationError) else "Действие недоступно. Обновите карточку."
+        target = locals().get("order_id")
+        rows = [[{"text": "Вернуться к заказу", "callback_data": f"order:refresh:{target}:0"}]] if target else [
+            [{"text": "Заказы", "callback_data": "orders:all:0"}]]
+        await safe_edit_message(callback.message, "⚠️ " + notice, draft_id=0,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
     except Exception as error:
         from app.services.stock_allocation import StockAllocationError
-        if isinstance(error, StockAllocationError):
-            await callback.message.answer("Не удалось распределить заказ: проверьте товары и доступные остатки.")
-        else:
-            log_event(logger, "manager_order_callback", result=type(error).__name__, duration_ms=_duration_ms(started))
-            await callback.message.answer("Сервис временно недоступен. Обновите карточку; сохранённые действия не дублируются.")
+        notice = ("Недостаточно остатков или ошибка распределения."
+                  if isinstance(error, StockAllocationError)
+                  else "Сервис временно недоступен; выполненное действие не повторяйте без проверки.")
+        log_event(logger, "manager_order_callback", result=type(error).__name__, duration_ms=_duration_ms(started))
+        target = locals().get("order_id")
+        rows = [[{"text": "Вернуться к заказу", "callback_data": f"order:refresh:{target}:0"}]] if target else [
+            [{"text": "Заказы", "callback_data": "orders:all:0"}]]
+        await safe_edit_message(callback.message, "⚠️ " + notice, draft_id=0,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 @dp.message(Command("payment", "tracking"))
 async def operational_note(message):
