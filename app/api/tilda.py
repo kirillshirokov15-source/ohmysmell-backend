@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from app.api.auth import require_internal_api_token
 from app.integrations.tilda import (
     TildaInvalid, TildaConfigurationError, normalize, parse_body,
-    DEFAULT_FIELDS, field_map, path_value,
+    DEFAULT_FIELDS, field_map, path_value, intake_shape_flags,
 )
 from app.services.order_desk import TildaIntake, DeskService, DeskError
 from app.logging_utils import log_event
@@ -65,6 +65,8 @@ async def receive_order(request: Request):
         log_event(logger, "tilda_webhook_rejected", reason="configuration")
         raise HTTPException(503, "tilda_configuration_invalid") from None
     except TildaInvalid as error:
+        if str(error) == "stable_external_id_required":
+            log_event(logger, "tilda_payload_shape", **intake_shape_flags(data, request.headers.get("Idempotency-Key")))
         log_event(logger, "tilda_webhook_rejected", reason="validation", validation_code=str(error))
         raise HTTPException(422, str(error)) from None
     except DeskError as error:
