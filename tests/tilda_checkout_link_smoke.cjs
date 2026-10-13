@@ -49,7 +49,9 @@ const {webcrypto} = require("node:crypto");
 
   availableForms = [form];
   mutationCallback();
-  await new Promise(resolve => setImmediate(resolve));
+  for (let attempt = 0; attempt < 25 && !form.appended[0]?.value; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
   assert.equal(form.appended.length, 1, "must inject one hidden field in the real cart form");
   assert.equal(form.appended[0].type, "hidden");
   assert.equal(form.appended[0].name, "oms_checkout_nonce_hash");
