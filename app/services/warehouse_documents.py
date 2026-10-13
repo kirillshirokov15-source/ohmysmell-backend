@@ -81,7 +81,7 @@ class WarehouseDocumentService:
             supplier=await session.get(Supplier,purchase.supplier_id)
             if not supplier.external_reference or not settings.moysklad_organization_id:
                 raise DeskError('Supplier and organization mappings required')
-            catalog={p['id']:p for p in await ProductService().get_catalog_async(include_supply=False)}
+            catalog={p['id']:p for p in await ProductService().get_catalog_async(include_supply=False, fresh_stock=True)
             rows=[]
             items=purchase.snapshot['items']
             if costs is not None and (set(costs)!={i['product_id'] for i in items} or
@@ -197,7 +197,7 @@ class WarehouseDocumentService:
                     if real_partner.get('id') != supplier.external_reference or real_partner.get('archived'):
                         raise DeskError('Контрагент МойСклад не найден или архивирован.')
                     try:
-                        products={p['id']:p for p in await ProductService().get_catalog_async(include_supply=False)}
+                        products={p['id']:p for p in await ProductService().get_catalog_async(include_supply=False, fresh_stock=True)
                     except Exception as error:
                         raise DeskError('Каталог МойСклад временно недоступен. Оприходование запрещено.') from error
                     matched=products.get(item.product_id)
@@ -274,7 +274,7 @@ class WarehouseDocumentService:
                             own[pid]=own.get(pid,0)+a.qty
                     await lock_source_stock(session,[(pid,plan.warehouse_id) for pid in own])
                     if own:
-                        catalog={p['id']:p for p in await ProductService().get_catalog_async(include_supply=False)}
+                        catalog={p['id']:p for p in await ProductService().get_catalog_async(include_supply=False, fresh_stock=True)
                         for pid in own:
                             stock=next((s for s in catalog.get(pid,{}).get('stocks',[]) if s['id']==plan.warehouse_id),None)
                             claimed=await claimed_stock(session,pid,plan.warehouse_id)
