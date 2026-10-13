@@ -18,8 +18,8 @@ class SourcePart(BaseModel):
         if self.purchase_id is not None and self.source_type != 'external':
             raise ValueError('purchase_id is only valid for external supply')
         if self.source_type == "partner_x":
-            if self.base_cost_minor is None or self.offer_id is not None:
-                raise ValueError("Для единого партнёра Х нужна закупочная цена, без offer_id")
+            if self.offer_id is not None:
+                raise ValueError("Для единого партнёра Х недопустим offer_id")
         elif self.supplier_id is not None or self.base_cost_minor is not None:
             raise ValueError("supplier_id и base_cost_minor используются только для X")
         if (self.source_type == "external") != (self.offer_id is not None):
@@ -29,17 +29,21 @@ class SourcePart(BaseModel):
 
 class SourceAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    action: Literal["assign", "receive", "post_receipt", "cancel"]
+    action: Literal["assign", "receive", "post_receipt", "cancel", "set_x_cost"]
     expected_revision: int = Field(strict=True, ge=0)
     idempotency_key: str = Field(min_length=1, max_length=128)
     parts: list[SourcePart] = Field(default_factory=list, max_length=100)
     allocation_id: int | None = Field(default=None, strict=True, gt=0)
+    x_unit_cost_minor: int | None = Field(default=None, strict=True, ge=0, le=100_000_000_000)
 
     @model_validator(mode="after")
     def action_fields(self):
         if self.action == "assign":
-            if not self.parts or self.allocation_id is not None:
-                raise ValueError("Для назначения нужны parts без allocation_id")
-        elif self.parts or self.allocation_id is None:
-            raise ValueError("Для операции нужен allocation_id без parts")
+            if not self.parts or self.allocation_id is not None or self.x_unit_cost_minor is not None:
+                raise ValueError("Для назначения нужны parts без allocation_id и цены себестоимости")
+        elif self.action == "set_x_cost":
+            if self.parts or self.allocation_id is None or self.x_unit_cost_minor is None:
+                raise ValueError("Для подтверждения X нужны allocation_id и закупочная себестоимость")
+        elif self.parts or self.allocation_id is None or self.x_unit_cost_minor is not None:
+            raise ValueError("Для операции нужен allocation_id без parts и цены")
         return self
