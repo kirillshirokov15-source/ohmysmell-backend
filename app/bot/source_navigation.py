@@ -136,13 +136,7 @@ async def show_sources(message, actor, order_id, *, edit=False):
             lines.append("  Этапы Х: получить товар → оприходовать в МойСклад → резерв → отгрузка.")
             rows.append(button("Проверить оприходование Х",
                 dict(state, step="x_receipt_preview", allocation_id=allocation["id"])))
-            if allocation.get("x_cost_pending"):
-                lines.append("  Себестоимость Х: ожидает отдельного подтверждения. Расчёт выплат и поступление заблокированы.")
-            else:
-                from app.services.telegram_display import telegram_rubles
-                cost_minor = allocation.get("x_total_cost_minor")
-                lines.append("  Себестоимость Х подтверждена: " +
-                    (telegram_rubles(cost_minor) if cost_minor is not None else "не определена"))
+            lines.append("  Наш физический склад Х — без контрагента и закупочной цены.")
             # Physical receipt is a factual assertion, not a financial write:
             # confirm only on explicit manager click; never infer from cost.
             if (editable and not frozen and allocation["status"] == "awaiting_receipt"):
@@ -150,10 +144,6 @@ async def show_sources(message, actor, order_id, *, edit=False):
                     dict(state, step="confirm_receive", allocation_id=allocation["id"])))
         if not editable or allocation["plan_status"] != "planned":
             continue
-        if (allocation["source_type"] == "partner_x" and allocation.get("x_cost_pending")
-                and allocation["status"] in {"awaiting_receipt", "received"} and not frozen):
-            rows.append(button("Дополнительно: себестоимость Х",
-                dict(state, step="cost", allocation_id=allocation["id"], qty=allocation["qty"])))
         if simulation_allowed() and allocation["status"] == "awaiting_receipt" and (
                 allocation["source_type"] == "partner_x" or allocation["purchase_status"] == "received"):
             rows.append(button(f"Получено: {label} · {allocation['qty']} шт.", dict(state, step="apply",
@@ -335,12 +325,6 @@ def register(dp, check_access, safe_callback_answer):
                 if not outcome["physically_received"] and not outcome["already_posted"]:
                     rows.append(button("1. Подтвердить физическое получение",
                         dict(state, step="confirm_receive")))
-                if outcome["cost_minor"] is None and not outcome["already_posted"]:
-                    rows.append(button("2. Указать реальную себестоимость Х",
-                        dict(state, step="cost", qty=outcome["quantity"])))
-                if not outcome["partner_uuid_ready"]:
-                    rows.append(button("3. Найти контрагента «Склад Х» в МойСклад",
-                        dict(state, step="x_receipt_find_partner")))
                 if outcome["ready"]:
                     rows.append(button("⚠️ Реальное оприходование в МойСклад",
                         dict(state, step="x_receipt_confirm")))
@@ -379,8 +363,10 @@ def register(dp, check_access, safe_callback_answer):
                     f"Товар: {outcome['product_name'][:140]}\n"
                     f"Количество: {outcome['quantity']} шт.\n"
                     f"Склад: Х\n"
-                    f"Себестоимость: {telegram_rubles(outcome['cost_minor'])}\n"
-                    "При подтверждении будет создан настоящий документ поступления. "
+                    "Склад Х — наш склад, поставщик не нужен.\n"
+                    "Будет создан документ «Оприходование» (enter).\n"
+                    "Цена продажи из Tilda не подменяет учётную стоимость.\n"
+                    "При подтверждении будет создан настоящий документ оприходования. "
                     "При неизвестном результате повтор запрещён — нужна сверка.")
                 rows.append(button("✅ Подтверждаю реальное оприходование",
                                    dict(state, step="execute_live_receipt")))
