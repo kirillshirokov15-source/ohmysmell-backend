@@ -224,14 +224,29 @@ class OrderSourceService:
             catalog = {p["id"]: p for p in await products.get_catalog_async(include_supply=False)}
         except Exception as error:
             raise DeskError("Не удалось проверить актуальные остатки и склады.") from error
+        from app.integrations.moysklad.async_gateway import AsyncMoySkladGateway
+        from app.integrations.moysklad.client import MoySkladClient
+        try:
+            active_warehouses = {store["id"] for store in
+                await AsyncMoySkladGateway(MoySkladClient()).get_stores()
+                if store.get("id") and not store.get("archived")}
+        except Exception as error:
+            raise DeskError("Не удалось проверить склады МойСклад.") from error
         by_warehouse = {p.warehouse_id: p for p in plans}
         for part in parts:
             item = items[part.item_id]
             product = catalog.get(item.product_id)
-            stores = {s["id"]: s for s in product.get("stocks", [])} if product else {}
-            if part.warehouse_id not in stores or (settings.warehouse_ids and part.warehouse_id not in settings.warehouse_ids):
-                raise DeskError("Товар или склад отсутствует в актуальном каталоге.")
+            if not product:
+                raise DeskError("Товар не найден в актуальном каталоге МойСклад.")
+            stores = {s["id"]: s for s in product.get("stocks", [])}
+            if (part.warehouse_id not in active_warehouses or
+                    (settings.warehouse_ids and part.warehouse_id not in settings.warehouse_ids)):
+                raise DeskError("Склад не разрешён или отсутствует в МойСклад.")
+            # X and outside vendors replenish an existing product; they do not
+            # require the product to have its *own* current stock at this store.
             if part.source_type == "own":
+                if part.warehouse_id not in stores:
+                    raise DeskError("На собственном складе товар не отображается.")
                 stock = stores[part.warehouse_id]
                 claimed = await claimed_stock(session, item.product_id, part.warehouse_id)
                 if part.qty > available_units(stock.get("stock"), stock.get("reserve")) - claimed:
