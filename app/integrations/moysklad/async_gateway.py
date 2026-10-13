@@ -40,6 +40,35 @@ class ProductCatalogTTLCache:
 catalog_cache = ProductCatalogTTLCache()
 
 
+class OperationTTLCache:
+    """Short-lived read model for chat navigation, not inventory decisions."""
+    def __init__(self, ttl_seconds):
+        self.ttl_seconds = ttl_seconds
+        self._data = None
+        self._expires_at = 0.0
+        self._lock = asyncio.Lock()
+
+    async def load(self, loader, *, fresh=False):
+        if fresh:
+            return await loader()
+        if self._data is not None and monotonic() < self._expires_at:
+            return self._data
+        async with self._lock:
+            if self._data is None or monotonic() >= self._expires_at:
+                value = await loader()
+                self._data = value
+                self._expires_at = monotonic() + self.ttl_seconds
+            return self._data
+
+    def invalidate(self):
+        self._data = None
+        self._expires_at = 0.0
+
+
+stores_cache = OperationTTLCache(60.0)
+stock_cache = OperationTTLCache(5.0)
+
+
 class AsyncMoySkladGateway:
     def __init__(
         self,
@@ -114,12 +143,18 @@ class AsyncMoySkladGateway:
             "get_counterparty", self.client.get_counterparty, counterparty_id
         )
 
-    async def get_stores(self) -> list[dict]:
-        return await self._call("get_stores", self.client.get_stores)
+    async def get_stores(self, *, fresh=False) -> list[dict]:
+        cache = stores_cache if self.product_cache is catalog_cache else OperationTTLCache(60)
+        return await cache.load(
+            lambda: self._call("get_stores", self.client.get_stores),
+            fresh=fresh,
+        )
 
-    async def get_stock_by_store(self) -> dict:
-        return await self._call(
-            "get_stock_by_store", self.client.get_stock_by_store
+    async def get_stock_by_store(self, *, fresh=False) -> dict:
+        cache = stock_cache if self.product_cache is catalog_cache else OperationTTLCache(5)
+        return await cache.load(
+            lambda: self._call("get_stock_by_store", self.client.get_stock_by_store),
+            fresh=fresh,
         )
 
     async def create_customer_order(self, **kwargs) -> dict:
