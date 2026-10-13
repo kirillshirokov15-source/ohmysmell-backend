@@ -18,7 +18,7 @@ from app.services.order_source_service import OrderSourceService, source_plans, 
 from app.services.order_desk import DeskError, authorized_manager, require_owner
 from app.services.external_operation_service import ExternalOperationService
 from app.integrations.moysklad.documents import FakeDocumentAdapter, MoySkladDocumentAdapter
-from app.integrations.moysklad.payloads import reservation, supply, demand
+from app.integrations.moysklad.payloads import reservation, supply, demand, inventory_enter, direct_demand
 from app.integrations.write_guard import require_external_writes
 
 
@@ -118,7 +118,7 @@ class WarehouseDocumentService:
             return receipt
 
     async def act(self, order_id, actor, chat_id, revision, action, target_id, *, reconcile=False, receipt_cost_minor=None):
-        if action not in {'receipt','reserve','ship','release'}:
+        if action not in {'receipt','reserve','ship','release','ship_x'}:
             raise DeskError('Unsupported warehouse document')
         if receipt_cost_minor is not None and (action!='receipt' or type(receipt_cost_minor) is not int
                                               or not 0<=receipt_cost_minor<=10**12):
@@ -176,26 +176,31 @@ class WarehouseDocumentService:
                 raise DeskError('Organization mapping required')
             bare_key=key.removeprefix('simulation:')
             if action=='receipt':
-                if order.fulfillment_status!='new' or a.source_type=='own' or a.supply_status!='received':
-                    raise DeskError('Actual receipt must be recorded before posting')
-                supplier=await session.get(Supplier,a.supplier_id)
-                if not supplier or not supplier.external_reference:
-                    raise DeskError('Supplier counterparty mapping required')
+                if order.fulfillment_status!='new' or a.source_type=='own':
+                    raise DeskError('Receipt is unavailable for this order')
+                if a.source_type=='partner_x' and a.supply_status not in {'awaiting_receipt','received'}:
+                    raise DeskError('Склад Х уже оприходован или распределение отменено')
+                if a.source_type=='external' and a.supply_status!='received':
+                    raise DeskError('Закупка поставщика должна быть физически получена в Buying')
+                supplier=await session.get(Supplier,a.supplier_id) if a.source_type=='external' else None
+                if a.source_type=='external' and (not supplier or not supplier.external_reference):
+                    raise DeskError('Для внешнего поставщика нужна подтверждённая привязка контрагента')
                 item=items[a.order_item_id]
                 if not fake:
                     from app.services.x_warehouse_preview import real_moysklad_id
                     from app.services.product_service import ProductService
                     from app.integrations.moysklad.client import MoySkladClient
                     import asyncio
-                    if not real_moysklad_id(supplier.external_reference):
-                        raise DeskError('Привяжите партнёра Х/поставщика к реальному контрагенту МойСклад (UUID).')
-                    try:
-                        real_partner=await asyncio.to_thread(
-                            MoySkladClient().get_counterparty, supplier.external_reference)
-                    except Exception as error:
-                        raise DeskError('Не удалось подтвердить существующего контрагента МойСклад.') from error
-                    if real_partner.get('id') != supplier.external_reference or real_partner.get('archived'):
-                        raise DeskError('Контрагент МойСклад не найден или архивирован.')
+                    if a.source_type=='external':
+                        if not real_moysklad_id(supplier.external_reference):
+                            raise DeskError('Поставщик Buying должен быть связан с реальным контрагентом МойСклад.')
+                        try:
+                            real_partner=await asyncio.to_thread(
+                                MoySkladClient().get_counterparty, supplier.external_reference)
+                        except Exception as error:
+                            raise DeskError('Не удалось подтвердить существующего контрагента МойСклад.') from error
+                        if real_partner.get('id') != supplier.external_reference or real_partner.get('archived'):
+                            raise DeskError('Контрагент МойСклад не найден или архивирован.')
                     try:
                         products={p['id']:p for p in await ProductService().get_catalog_async(include_supply=False)}
                     except Exception as error:
@@ -214,16 +219,21 @@ class WarehouseDocumentService:
                     if p.snapshot['currency']!='RUB' and receipt_cost_minor is None:
                         raise DeskError('Confirm actual receipt cost in RUB; approximate FX is insufficient')
                     cost=matching[0]['unit_price_minor'] if receipt_cost_minor is None else receipt_cost_minor
+                    document=supply(settings.moysklad_organization_id,supplier.external_reference,
+                        plan.warehouse_id,[{'id':item.product_id,'qty':a.qty,'price':cost}],bare_key)
+                    entity='supply'
                 else:
-                    settlement=await session.scalar(select(XSettlement).where(XSettlement.allocation_id==a.id))
-                    if not settlement or settlement.base_cost_minor % a.qty:
-                        raise DeskError('Exact X receipt cost required')
-                    cost=settlement.base_cost_minor//a.qty
+                    # 'partner_x' is only the legacy persisted enum. X is OUR
+                    # physical warehouse. MoySklad must receive /entity/enter,
+                    # not supplier /entity/supply and no X partner settlement.
+                    if settings.x_enter_unit_cost_minor is None and not fake:
+                        raise DeskError('Не задана учётная оценка оприходования Х (X_ENTER_UNIT_COST_MINOR).')
+                    cost=settings.x_enter_unit_cost_minor if settings.x_enter_unit_cost_minor is not None else 0
                     if receipt_cost_minor is not None and receipt_cost_minor!=cost:
-                        raise DeskError('X receipt cost must match the approved settlement')
-                document=supply(settings.moysklad_organization_id,supplier.external_reference,plan.warehouse_id,
-                    [{'id':item.product_id,'qty':a.qty,'price':cost}],bare_key)
-                entity='supply'
+                        raise DeskError('Оценка прихода Х не совпадает с настройкой учёта.')
+                    document=inventory_enter(settings.moysklad_organization_id,plan.warehouse_id,
+                        [{'id':item.product_id,'qty':a.qty,'price':cost}],bare_key)
+                    entity='enter'
             else:
                 rows=[a for a in plan.allocations if a.supply_status!='cancelled']
                 if not rows or not all(allocation_ready(a,manual=order.manual_fulfillment) for a in rows):
