@@ -105,19 +105,23 @@ async def show_sources(message, actor, order_id, *, edit=False):
     order = await get_order(order_id)
     editable = order.fulfillment_status == "new" and order.status != "rejected" and not order.needs_review
     from app.services.order_source_service import source_plans, simulation_allowed
-    from app.services.warehouse_documents import frozen_plan
+    from app.services.warehouse_documents import frozen_plans, plan_key
+    from app.models.fulfillment import ExternalOperation
     async with async_session() as session:
         plans = await source_plans(session, order_id)
-        frozen = any([await frozen_plan(session, plan) for plan in plans])
-        from app.models.fulfillment import ExternalOperation
-        from app.services.warehouse_documents import plan_key
+        frozen = any((await frozen_plans(session, plans)).values())
+        document_keys = [plan_key(plan, action, False)
+                         for plan in plans for action in ("reserve", "ship", "ship_x")]
+        documents = {
+            key: status for key, status in (await session.execute(
+                select(ExternalOperation.key, ExternalOperation.status)
+                .where(ExternalOperation.key.in_(document_keys)))).all()
+        } if document_keys else {}
         plan_docs = {}
         for plan in plans:
-            reserved = await session.get(ExternalOperation, plan_key(plan, "reserve", False))
-            shipped = await session.get(ExternalOperation, plan_key(plan, "ship", False))
             plan_docs[plan.id] = dict(
-                reserved=reserved is not None and reserved.status == "succeeded",
-                shipped=shipped is not None,
+                reserved=documents.get(plan_key(plan, "reserve", False)) == "succeeded",
+                shipped=any(plan_key(plan, action, False) in documents for action in ("ship", "ship_x")),
             )
     state = dict(actor=actor, chat=message.chat.id, order_id=order_id, revision=view["revision"])
     rows, lines = [], [f"Обеспечение заказа №{order_id}"]
