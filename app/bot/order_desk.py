@@ -17,6 +17,59 @@ async def desk_access(actor, chat_id):
     return True
 
 
+async def product_matches(draft_id, item_id, actor, chat_id, query=None):
+    """Read-only verified catalogue suggestions, never automatic supplier selection."""
+    from app.database.session import async_session
+    from app.models.draft_order import DraftOrder, DraftOrderItem
+    from app.models.order_desk import OrderDesk
+    from app.services.order_desk import require_owner
+    from app.services.product_matching_service import ProductMatchingService
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+    async with async_session() as session:
+        await authorized_manager(session, actor, chat_id)
+        desk = await session.get(OrderDesk, draft_id)
+        draft = await session.scalar(select(DraftOrder).where(DraftOrder.id == draft_id)
+            .options(selectinload(DraftOrder.items)))
+        if not draft or not desk or desk.order_id or draft.status == "rejected":
+            raise DeskError("Заявка закрыта.")
+        require_owner(desk, actor)
+        item = next((i for i in draft.items if i.id == item_id), None)
+        if not item:
+            raise DeskError("Позиция отсутствует в заявке.")
+        term = (query or item.raw_product_text or "").strip()
+    matcher = ProductMatchingService()
+    products = await matcher.products_async()
+    normalized = matcher.normalize(term)
+    tokens = [w for w in normalized.split() if len(w) >= 3 and w not in {"the", "with", "set", "and", "для", "набор"}]
+    if not tokens:
+        raise DeskError("Введите хотя бы одно слово для поиска товара.")
+    ranked = []
+    for product in products:
+        name = matcher.normalize(product.get("name"))
+        article = matcher.normalize(product.get("article"))
+        code = matcher.normalize(product.get("code"))
+        score = 10 if normalized and normalized in (article, code, name) else 0
+        score += sum(4 for word in tokens if word in name.split() or word in (article, code))
+        score += sum(1 for word in tokens if word in name and word not in name.split())
+        if score > 0 and product.get("id"):
+            ranked.append((score,product))
+    ranked.sort(key=lambda pair: (-pair[0], (pair[1].get("name") or "").casefold()))
+    rows=[]
+    for _,product in ranked[:8]:
+        rows.append([{"text": (product.get("name") or "Товар")[:45] +
+                     ((" · " + str(product.get("article")))[:20] if product.get("article") else ""),
+                     "callback_data": f"desk:match:{draft_id}:{item_id}:{product['id']}"}])
+    text = f"Заявка №{draft_id}: выберите точный товар из МойСклад для строки:\n{item.raw_product_text[:160]}\n"
+    if not rows:
+        text += (f"Ничего не найдено по запросу «{term[:90]}».\n"
+                 f"Ищите более коротко: /sitematch {draft_id} {item_id} Boadicea")
+    else:
+        text += ("Выбор — только привязка номенклатуры. Источник (свой/X/поставщик) "
+                 "выбирается отдельно после подтверждения заказа.")
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def register(dp, check_access, safe_callback_answer):
     @dp.message(Command("site", "siteitems", "sitereprice", "reply", "outbox_retry", "outbox_sent"))
     async def desk_command(message):
@@ -88,6 +141,22 @@ def register(dp, check_access, safe_callback_answer):
             await message.answer(str(error) if isinstance(error, DeskError) else
                 "Формат: /site ЗАЯВКА; /reply ЗАЯВКА текст; /sitereprice ЗАЯВКА; /outbox_retry ID; /outbox_sent ID TELEGRAM_MESSAGE_ID", parse_mode=None)
 
+    @dp.message(Command("sitematch"))
+    async def manual_lookup(message):
+        if not await check_access(message):
+            return
+        if not await desk_access(message.from_user.id, message.chat.id):
+            return
+        try:
+            parts = (message.text or "").split(maxsplit=3)
+            if len(parts) != 4:
+                raise DeskError("Формат: /sitematch НОМЕР_ЗАЯВКИ ID_ПОЗИЦИИ название или артикул")
+            text, keyboard = await product_matches(int(parts[1]), int(parts[2]),
+                message.from_user.id, message.chat.id, parts[3])
+            await message.answer(text, reply_markup=keyboard, parse_mode=None)
+        except (DeskError, ValueError) as error:
+            await message.answer(str(error) if isinstance(error, DeskError) else "Проверьте номер заявки/позиции.", parse_mode=None)
+
     @dp.callback_query(F.data.startswith("desk:"))
     async def desk_callback(callback):
         if not allowed_event(callback, callback=True):
@@ -105,6 +174,39 @@ def register(dp, check_access, safe_callback_answer):
             service = DeskService()
             if action == "claim":
                 await service.claim(draft_id, callback.from_user.id, callback.message.chat.id)
+            elif action == "find":
+                text, keyboard = await product_matches(draft_id, int(parts[3]),
+                    callback.from_user.id, callback.message.chat.id)
+                await callback.message.answer(text, reply_markup=keyboard, parse_mode=None, protect_content=True)
+                return
+            elif action == "match":
+                await service.set_manual_product(draft_id, int(parts[3]), parts[4],
+                    callback.from_user.id, callback.message.chat.id)
+                await callback.message.answer("Товар МойСклад привязан к строке Tilda. "
+                    "Источник поставки выберете после подтверждения заказа.", parse_mode=None)
+            elif action == "total":
+                from app.services.telegram_display import telegram_rubles
+                from app.database.session import async_session
+                from app.models.draft_order import DraftOrder
+                from sqlalchemy import select
+                from sqlalchemy.orm import selectinload
+                async with async_session() as session:
+                    draft = await session.scalar(select(DraftOrder).where(DraftOrder.id == draft_id)
+                        .options(selectinload(DraftOrder.items)))
+                    if not draft or draft.revision != int(parts[3]):
+                        raise DeskError("Заявка изменилась. Обновите её.")
+                    price = sum(i.price * i.qty for i in draft.items if i.price is not None)
+                await callback.message.answer(
+                    f"Подтвердите сумму {telegram_rubles(price)} по позициям Tilda для заявки №{draft_id}.\n"
+                    "Итог Tilda отсутствует. Вы должны согласовать сумму и товары с покупателем. "
+                    "Это НЕ подтверждение оплаты и НЕ создание отгрузки.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[{
+                        "text": "Да, сумма согласована", "callback_data": f"desk:totalaccept:{draft_id}:{int(parts[3])}"
+                    }]]),parse_mode=None)
+                return
+            elif action == "totalaccept":
+                await service.approve_missing_total(draft_id, int(parts[3]),
+                    callback.from_user.id, callback.message.chat.id)
             elif action == "items":
                 message = callback.message.model_copy(update={"from_user": callback.from_user, "text": f"/siteitems {draft_id}"}).as_(callback.bot)
                 await desk_command(message)
@@ -159,5 +261,5 @@ def register(dp, check_access, safe_callback_answer):
             except TelegramBadRequest as error:
                 if "message is not modified" not in str(error).lower():
                     raise
-        except (ValueError, IndexError) as error:
+        except (ValueError, IndexError, KeyError) as error:
             await callback.message.answer(str(error) if isinstance(error, DeskError) else "Действие недоступно. Обновите карточку.", parse_mode=None)
