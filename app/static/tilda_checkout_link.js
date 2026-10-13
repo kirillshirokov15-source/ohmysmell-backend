@@ -83,7 +83,15 @@
           ui.status.textContent = "Перейдите по персональной ссылке и нажмите Start в Telegram.";
           ui.link.href = body.deep_link;
           ui.link.style.display = "block";
-          ui.link.onclick = () => { try { sessionStorage.removeItem(STORAGE_KEY); } catch (_) {} };
+          const expiresAt = Date.now() + Number(body.expires_in_seconds || 1800) * 1000;
+          ui.link.onclick = event => {
+            if (Date.now() >= expiresAt - 10000) {
+              event.preventDefault();
+              displayLink(nonce);
+            }
+          };
+          ui.again.style.display = "inline-block";
+          ui.again.onclick = () => displayLink(nonce);
           return;
         }
         if (response.status !== 404 && response.status !== 503) break;
