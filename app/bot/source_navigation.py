@@ -6,6 +6,7 @@ requires reopening the order; revisions and idempotency remain in the CRM.
 import secrets
 import time
 from aiogram import F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy import select
 from app.database.session import async_session
@@ -16,6 +17,18 @@ from app.services.order_desk import DeskError
 from app.schemas.order_sources import SourceAction
 
 navigation = {}
+
+
+async def replace_screen(message, text, rows):
+    """Edit one existing manager card; do not stack callback replies."""
+    try:
+        await message.edit_text(text[:3900], parse_mode=None,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    except TelegramBadRequest as error:
+        if "message is not modified" not in str(error).casefold():
+            raise
+
+
 
 
 def button(label, state):
@@ -64,8 +77,11 @@ async def show_sources(message, actor, order_id, *, edit=False):
             rows.append(button(f"Убрать источник: {label} · {allocation['qty']} шт.", dict(state, step="confirm_cancel",
                 allocation_id=allocation["id"])))
     rows.append([{"text": "Назад к заказу", "callback_data": f"order:refresh:{order_id}:{view['revision']}"}])
-    send = message.edit_text if edit else message.answer
-    await send("\n".join(lines)[:3900], parse_mode=None, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    if edit:
+        await replace_screen(message, "\n".join(lines), rows)
+    else:
+        await message.answer("\n".join(lines)[:3900], parse_mode=None,
+                             reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 def register(dp, check_access, safe_callback_answer):
