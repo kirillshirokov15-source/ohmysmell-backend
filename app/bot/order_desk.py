@@ -167,7 +167,7 @@ def register(dp, check_access, safe_callback_answer):
                 else:
                     await callback.message.answer(
                         f"Не нашёл совпадений по первым словам названия. Поиск вручную: "
-                        f"/sitematch {draft_id} {position} Boadicea", parse_mode=None)
+                        f"/sitematch {draft_id} {position} НАЗВАНИЕ_ИЛИ_АРТИКУЛ", parse_mode=None)
                 return
             elif action == "bind":
                 if len(parts) != 6:
@@ -213,7 +213,7 @@ def register(dp, check_access, safe_callback_answer):
                 await service.stage(draft_id, callback.from_user.id, callback.message.chat.id,
                                     "awaiting_payment")
             elif action == "confirm":
-                await callback.message.answer("Подтвердите: товары, наличие и розничная сумма из карточки согласованы с клиентом. "
+                await callback.message.answer("Подтвердите: товары, количество и розничная сумма согласованы с клиентом. Источник товара будет выбран отдельно после подтверждения. "
                     "Заявленные сайтом скидки не применяются автоматически.", reply_markup=InlineKeyboardMarkup(
                         inline_keyboard=[[{"text": "Да, согласовано", "callback_data": f"desk:accept:{draft_id}:{int(parts[3])}"}]]))
                 return
