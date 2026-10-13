@@ -233,18 +233,30 @@ class DeskService:
             audit(session, desk, "manager_claim_succeeded", actor)
             return desk
 
-    async def issue_link(self, draft_id):
+    async def issue_link(self, draft_id, *, actor=None, chat_id=None):
+        # Never issue a customer-authentication capability unless the dedicated
+        # customer bot and durable reply delivery have been explicitly enabled.
+        if os.getenv("CLIENT_LINKS_ENABLED", "false").lower() != "true":
+            raise DeskError(
+                "Клиентский Telegram-бот ещё не подключён. "
+                "Нужны отдельный бот и включённая доставка сообщений клиентам.")
         username = os.getenv("CLIENT_TELEGRAM_BOT_USERNAME", "")
         if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
-            raise DeskError("Клиентский бот не настроен.")
+            raise DeskError("Имя отдельного клиентского Telegram-бота не настроено.")
         ttl = int(os.getenv("CLIENT_TELEGRAM_LINK_TTL_MINUTES", "30"))
         if not 1 <= ttl <= 1440:
             raise DeskError("Некорректный срок ссылки.")
         token = secrets.token_urlsafe(32)
         async with async_session() as session, session.begin():
+            if actor is not None or chat_id is not None:
+                if actor is None or chat_id is None:
+                    raise DeskError("Для ссылки нужен авторизованный менеджер.")
+                await authorized_manager(session, actor, chat_id)
             desk = await session.get(OrderDesk, draft_id, with_for_update=True)
             if not desk or desk.customer_telegram_id:
                 raise DeskError("Ссылка недоступна.")
+            if actor is not None:
+                require_owner(desk, actor)
             # Reissuing revokes all unused links, while retaining hashed audit records.
             from sqlalchemy import update
             await session.execute(update(OrderLink).where(OrderLink.draft_id == draft_id,
