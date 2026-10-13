@@ -174,7 +174,8 @@ class OrderSourceService:
                     requires_purchase=a.source_type == "external" and (not purchase or purchase.status == "draft"),
                     receipt_simulated=a.receipt_simulated, receipt_reference=a.receipt_reference))
         return dict(order_id=order.id, revision=order.revision, allocations=allocations,
-            items=[dict(id=i.id, name=i.name, qty=i.qty, assigned=assigned[i.id], ready=ready[i.id]) for i in order.items])
+            items=[dict(id=i.id, name=i.name, qty=i.qty, sale_unit_minor=i.price,
+                assigned=assigned[i.id], ready=ready[i.id]) for i in order.items])
 
     async def act(self, order_id, actor, chat_id, request):
         digest = hashlib.sha256(request.model_dump_json(exclude={"idempotency_key"}).encode()).hexdigest()
