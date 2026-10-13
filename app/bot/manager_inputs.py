@@ -121,12 +121,22 @@ async def route(message, check_access):
                 await message.answer("Введите цену в рублях, например 1250,50.")
                 return True
             from app.bot.source_navigation import button
-            row = button(f"Подтвердить: {data['qty']} шт. по {price} ₽", dict(data, base_cost_minor=int(price * 100), step="apply", action="assign"))
+            if "allocation_id" not in data:
+                # Old pending ForceReply states from pre-cutover cannot silently
+                # create a new X settlement or overwrite the Tilda retail price.
+                await message.answer(
+                    "Старый запрос цены устарел. Откройте заказ и используйте кнопку "
+                    "«Указать закупочную себестоимость Х».")
+                pending.pop(key, None)
+                return True
+            row = button("✅ Подтвердить себестоимость Х · " + str(price) + " ₽/шт.",
+                dict(data, x_unit_cost_minor=int(price * 100), step="apply", action="set_x_cost"))
             await complete_source_prompt(message, data, pending[key][1],
-                                         "Склад Х · заказ №" + str(data["order_id"])
-                                         + "\nЗакупочная цена за единицу: " + str(price) + " ₽"
-                                         + "\nКоличество: " + str(data["qty"]) + " шт."
-                                         + "\nЭто ещё не создание закупки или документа МойСклад.",
+                                         "Заказ №" + str(data["order_id"])
+                                         + " · себестоимость склада Х\n"
+                                         + "Закупочная цена: " + str(price) + " ₽/шт.\n"
+                                         + "Цена продажи из Tilda остаётся неизменной.\n"
+                                         + "Подтвердите только фактическую закупочную цену.",
                                          row)
         pending.pop(key, None)
         if action in {"source_quantity", "source_cost"}:
