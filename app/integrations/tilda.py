@@ -241,8 +241,20 @@ def normalize(payload, delivery_key=None):
     subtotal = sum(i["price_minor"] * i["qty"] for i in rows) if all(i["price_minor"] is not None for i in rows) else None
     if subtotal is None or amounts["discount"] is None or amounts["total"] != subtotal - amounts["discount"]:
         problems.append("total_mismatch")
+    checkout_nonce = path_value(payload, "oms_checkout_nonce")
+    checkout_nonce_digest = None
+    if checkout_nonce is not None:
+        # A fresh random 32-byte browser nonce binds a Tilda webhook to the
+        # same browser's success screen. Only the digest enters the database.
+        from app.services.tilda_checkout_link import checkout_nonce_hash
+        try:
+            checkout_nonce_digest = checkout_nonce_hash(checkout_nonce)
+        except ValueError:
+            raise TildaInvalid("invalid_checkout_nonce") from None
     result = {"external_id": str(external), "items": rows, "currency": currency,
               "reported_total": amounts["total"], "discount": amounts["discount"], "problems": sorted(set(problems))}
+    if checkout_nonce_digest is not None:
+        result["checkout_nonce_hash"] = checkout_nonce_digest
     for key, limit in (("name", 255), ("phone", 100), ("email", 320), ("comment", 2000)):
         value = get(key)
         if value is not None and not isinstance(value, str):
