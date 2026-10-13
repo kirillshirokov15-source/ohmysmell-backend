@@ -19,20 +19,18 @@ async def shipments_for(order_id):
             .order_by(Shipment.warehouse_id))).scalars())
 
 
-async def site_titles_for(order):
-    """Optional, verified projection of original Tilda titles (read-only).
-
-    A title is shown only if draft/order item ordering and immutable
-    identities agree. Ambiguity falls back to the confirmed MoySklad name.
-    """
+async def site_titles_for(order, *, session=None):
+    """Read-only original Tilda titles; reuse the caller's DB session when supplied."""
     if not getattr(order, "desk_draft_id", None):
         return {}
     from app.models.draft_order import DraftOrderItem
-    async with async_session() as session:
-        originals = list((await session.scalars(
-            select(DraftOrderItem).where(
-                DraftOrderItem.draft_order_id == order.desk_draft_id)
-            .order_by(DraftOrderItem.id))).all())
+    query = select(DraftOrderItem).where(
+        DraftOrderItem.draft_order_id == order.desk_draft_id).order_by(DraftOrderItem.id)
+    if session is None:
+        async with async_session() as own:
+            originals = list((await own.scalars(query)).all())
+    else:
+        originals = list((await session.scalars(query)).all())
     confirmed = sorted(order.items, key=lambda row: row.id)
     if len(originals) != len(confirmed) or any(
         old.product_id != new.product_id or old.qty != new.qty or
