@@ -47,6 +47,10 @@ class Settings:
         if self.x_enter_unit_cost_minor is not None and not 0 <= self.x_enter_unit_cost_minor <= 100_000_000_000:
             raise ValueError("X_ENTER_UNIT_COST_MINOR must be nonnegative RUB minor units")
         self.x_default_buyer_id = os.getenv("MOYSKLAD_WEB_COUNTERPARTY_ID", "").strip()
+        # Existing #5 is explicitly a test order; never auto-post its stock.
+        excluded = os.getenv("X_AUTO_EXCLUDED_ORDER_IDS", "5")
+        self.x_auto_excluded_order_ids = frozenset(
+            int(v.strip()) for v in excluded.split(",") if v.strip())
         self.environment = os.getenv("APP_ENV", "development")
         if self.environment not in {"development", "staging", "production"}:
             raise ValueError("APP_ENV must be development, staging or production")
