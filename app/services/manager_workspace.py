@@ -138,24 +138,80 @@ def order_keyboard(order, shipments=(), *, expanded=False):
     if active and not order.needs_review and order.fulfillment_status == "assembled" and order.delivery_method == "unselected":
         primary = {"text": "Выбрать доставку", "callback_data": f"order:actions:{order.id}:{order.revision}"}
     result = [[primary]] if primary else []
-    result += [[{"text": label, "callback_data": f"order:{action}:{order.id}:{order.revision}"}]
-               for label, action in (("Подробнее", "details"), ("⋯ Действия", "actions"))]
+    result.append([{"text": "⋯ Действия", "callback_data": f"order:actions:{order.id}:{order.revision}"}])
     return {"inline_keyboard": result}
 
 
+
 def order_card(order, shipments=()):
+    """Complete read-only manager card; buyer channel and stock source are distinct."""
     from app.services.desk_status import stage_label
-    if getattr(order, "manual_fulfillment", False):
-        from app.services.order_source_service import OrderSourceService
-        view = OrderSourceService.view(order, shipments)
-        ready = sum(i["ready"] for i in view["items"])
-        supply = f"Готово к сборке: {ready} из {sum(i.qty for i in order.items)} шт."
+    from app.services.order_source_service import allocation_ready
+    source_labels = {"own": "Свой склад", "partner_x": "Склад Х",
+                     "external": "Внешний поставщик"}
+    item_sources = {item.id: [] for item in order.items}
+    total_quantity = sum(item.qty for item in order.items)
+    ready_quantity = 0
+    for shipment in shipments:
+        if shipment.status not in {"planned", "exported"}:
+            continue
+        for allocation in shipment.allocations:
+            if allocation.supply_status == "cancelled":
+                continue
+            ready = allocation_ready(allocation, manual=order.manual_fulfillment)
+            if ready:
+                ready_quantity += allocation.qty
+            label = source_labels.get(allocation.source_type, "Неизвестный источник")
+            state = ("готово" if ready else
+                     "ожидает поступления" if allocation.source_type != "own"
+                     else "ожидает проверки")
+            item_sources.setdefault(allocation.order_item_id, []).append(
+                (label, allocation.qty, state))
+    all_sources = list(dict.fromkeys(
+        source for entries in item_sources.values() for source, _, _ in entries))
+    lines = [
+        f"Заказ №{order.id}",
+        f"Статус: {stage_label(None, None, order)}",
+        f"Клиент: {order.customer_name or 'не указан'}",
+        f"Телефон: {order.phone or 'не указан'}",
+        f"Канал: {SOURCE_LABELS.get(order.source, order.source or 'не указан')}",
+        "Источник товара: " + (", ".join(all_sources) if all_sources else "не назначен"),
+        "Товары:",
+    ]
+    for index, item in enumerate(order.items, 1):
+        name = (item.name or "Без названия").strip()
+        line = f"{index}. {name[:150]} · {item.qty} шт. × {telegram_rubles(item.price)}"
+        assigned = item_sources.get(item.id) or []
+        if assigned:
+            line += "\n   " + "; ".join(f"{source}: {count} шт. ({state})"
+                                       for source, count, state in assigned)
+        if len("\n".join(lines + [line]).encode("utf-16-le")) // 2 > 2850:
+            lines.append(f"… Ещё позиций: {len(order.items) - index + 1}. См. «Все товары».")
+            break
+        lines.append(line)
+    lines.extend([
+        f"Итого: {telegram_rubles(order.total)}",
+        f"Оплата: {PAYMENT_LABELS.get(order.payment_status, order.payment_status)}",
+        f"Сборка: {FULFILLMENT_LABELS.get(order.fulfillment_status, order.fulfillment_status)}",
+        f"Готово к сборке: {min(ready_quantity, total_quantity)} из {total_quantity} шт.",
+    ])
+    pending_x = any(shipment.status in {"planned", "exported"} and
+        allocation.source_type == "partner_x" and
+        allocation.supply_status in {"awaiting_receipt", "received"}
+        for shipment in shipments for allocation in shipment.allocations)
+    if order.needs_review:
+        next_step = "устранить замечания к заказу."
+    elif pending_x:
+        next_step = "склад Х → подтвердить физическое получение → оприходовать в МойСклад → резерв → сборка → отгрузка."
+    elif ready_quantity < total_quantity:
+        next_step = "назначить и подтвердить источники товаров."
+    elif order.fulfillment_status == "new":
+        next_step = "создать подтверждённый резерв МойСклад и начать сборку."
+    elif order.fulfillment_status == "assembled":
+        next_step = "оформить отгрузку МойСклад."
     else:
-        supply = "Ожидаем поставку" if getattr(order, "supply_has_external", False) and not getattr(order, "supply_received", False) else (
-            "Источники назначены" if shipments else "Требуется распределение товаров")
-    buttons = order_keyboard(order, shipments)["inline_keyboard"]
-    next_step = buttons[0][0]["text"] if len(buttons) > 2 else (
-        "Уточните условия обеспечения" if order.needs_review else "Действий не требуется")
-    return "\n".join([f"Заказ №{order.id}", f"Статус: {stage_label(None, None, order)}",
-        f"Товаров: {sum(i.qty for i in order.items)} шт.", f"Сумма: {telegram_rubles(order.total)}",
-        f"Оплата: {PAYMENT_LABELS[order.payment_status]}", supply, f"Сейчас: {next_step}"])
+        next_step = "открыть действия заказа."
+    lines.append("Следующий шаг: " + next_step)
+    full = "\n".join(lines)
+    raw = full.encode("utf-16-le")
+    return full if len(raw) <= 7700 else raw[:7600].decode("utf-16-le", errors="ignore")
