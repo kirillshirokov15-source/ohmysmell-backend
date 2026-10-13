@@ -234,6 +234,45 @@ class WarehouseDocumentService:
                     document=inventory_enter(settings.moysklad_organization_id,plan.warehouse_id,
                         [{'id':item.product_id,'qty':a.qty,'price':cost}],bare_key)
                     entity='enter'
+            elif action=='ship_x':
+                # Direct document of X stock shipment, with no fictitious
+                # supplier, purchase order, or customer reservation.
+                if plan.status!='planned' or order.fulfillment_status not in {'new','assembling','assembled'}:
+                    raise DeskError('План Х уже отгружен или заказ закрыт')
+                active=[a for a in plan.allocations if a.supply_status!='cancelled']
+                if not active or any(a.source_type!='partner_x' for a in active):
+                    raise DeskError('Прямая отгрузка Х разрешена только для отдельных планов склада Х')
+                if any(not allocation_ready(a,manual=order.manual_fulfillment) for a in active):
+                    raise DeskError('Сначала требуется подтверждённое оприходование Х в МойСклад')
+                for entry in active:
+                    receipt=await session.get(ExternalOperation,
+                        ('simulation:' if fake else '')+f'warehouse:allocation:{entry.id}:receipt')
+                    if (not receipt or receipt.status!='succeeded' or
+                            receipt.result['id']!=entry.receipt_reference or
+                            receipt.payload['entity']!='enter'):
+                        raise DeskError('Отсутствует проверенный документ оприходования склада Х')
+                buyer=order.counterparty_id or settings.x_default_buyer_id
+                if not buyer and fake:
+                    buyer='00000000-0000-4000-8000-000000000001'
+                if not buyer:
+                    raise DeskError('Для отгрузки укажите подтверждённого покупателя МойСклад')
+                if not fake:
+                    from app.integrations.moysklad.client import MoySkladClient
+                    from app.services.x_warehouse_preview import real_moysklad_id
+                    import asyncio
+                    if not real_moysklad_id(buyer):
+                        raise DeskError('Некорректный UUID покупателя МойСклад')
+                    try:
+                        valid=await asyncio.to_thread(MoySkladClient().get_counterparty,buyer)
+                    except Exception as error:
+                        raise DeskError('Покупатель МойСклад недоступен, отгрузка не создана') from error
+                    if valid.get('id')!=buyer or valid.get('archived'):
+                        raise DeskError('Контрагент покупателя МойСклад не найден или архивирован')
+                rows=[{'id':items[a.order_item_id].product_id,'qty':a.qty,
+                       'price':items[a.order_item_id].price} for a in active]
+                document=direct_demand(settings.moysklad_organization_id,buyer,
+                    plan.warehouse_id,rows,bare_key,order_id=order.id)
+                entity='demand'
             else:
                 rows=[a for a in plan.allocations if a.supply_status!='cancelled']
                 if not rows or not all(allocation_ready(a,manual=order.manual_fulfillment) for a in rows):
@@ -304,7 +343,7 @@ class WarehouseDocumentService:
                 result=await self.operations.execute(key,intent,self.adapter.create)
             if action=='receipt':
                 a.supply_status='confirmed'; a.receipt_reference=result['id']; a.receipt_simulated=fake
-            elif action=='ship':
+            elif action in {'ship','ship_x'}:
                 plan.external_id=result['id']; plan.status='exported'
             order.revision+=1
             after={'id':result['id'],'revision':order.revision,'action':action,'simulated':fake}
