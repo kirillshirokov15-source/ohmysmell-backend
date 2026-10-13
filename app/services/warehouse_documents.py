@@ -142,6 +142,10 @@ class WarehouseDocumentService:
             plans=await source_plans(session,order_id)
             if order.status=='rejected' or order.fulfillment_status=='cancelled' or order.needs_review:
                 raise DeskError('Order is unavailable')
+            if not fake and order.manual_fulfillment and (
+                'test oms' in (order.customer_name or '').casefold()
+                or 'test oms' in (order.comment or '').casefold()):
+                raise DeskError('Тестовый заказ: создание реальных документов МойСклад запрещено.')
             items={i.id:i for i in order.items}
             if action=='receipt':
                 pair=next(((p,a) for p in plans for a in p.allocations if a.id==target_id),None)
@@ -178,6 +182,28 @@ class WarehouseDocumentService:
                 if not supplier or not supplier.external_reference:
                     raise DeskError('Supplier counterparty mapping required')
                 item=items[a.order_item_id]
+                if not fake:
+                    from app.services.x_warehouse_preview import real_moysklad_id
+                    from app.services.product_service import ProductService
+                    from app.integrations.moysklad.client import MoySkladClient
+                    import asyncio
+                    if not real_moysklad_id(supplier.external_reference):
+                        raise DeskError('Привяжите партнёра Х/поставщика к реальному контрагенту МойСклад (UUID).')
+                    try:
+                        real_partner=await asyncio.to_thread(
+                            MoySkladClient().get_counterparty, supplier.external_reference)
+                    except Exception as error:
+                        raise DeskError('Не удалось подтвердить существующего контрагента МойСклад.') from error
+                    if real_partner.get('id') != supplier.external_reference or real_partner.get('archived'):
+                        raise DeskError('Контрагент МойСклад не найден или архивирован.')
+                    try:
+                        products={p['id']:p for p in await ProductService().get_catalog_async(include_supply=False)}
+                    except Exception as error:
+                        raise DeskError('Каталог МойСклад временно недоступен. Оприходование запрещено.') from error
+                    matched=products.get(item.product_id)
+                    if (not matched or matched.get('archived') or
+                            plan.warehouse_id not in {store['id'] for store in matched.get('stocks',[])}):
+                        raise DeskError('Название с сайта нужно сперва однозначно сопоставить с товаром и складом МойСклад.')
                 if a.source_type=='external':
                     p=a.buying_purchase
                     if not p or p.status!='received':
