@@ -78,8 +78,14 @@ def test_claim_concurrent_one_winner_and_actor_audit(desk_db):
             events=(await s.scalars(select(DeskEvent).where(DeskEvent.draft_id==did,DeskEvent.action=="manager_claim_succeeded"))).all()
             assert len(events)==1 and events[0].actor_telegram_id==winner
         from app.services.desk_display import desk_card
-        card,_=await desk_card(did)
+        card,keyboard=await desk_card(did)
         assert "Ответственный: SYNTHETIC manager" in card
+        assert "Клиент:" in card and "Телефон:" in card and "Email:" in card
+        assert "Товары:" in card and "Следующий шаг:" in card
+        labels=[button.text for row in keyboard.inline_keyboard for button in row]
+        assert "Подробнее" not in labels and "⋯ Действия" not in labels
+        assert "Ожидает подтверждения" not in labels
+        assert "✅ Подтвердить заказ" in labels
         for actor,chat in [(333,-100123456),(winner,-999),(winner,winner)]:
             with pytest.raises(DeskError): await DeskService().claim(did,actor,chat)
         async with factory() as s,s.begin():
