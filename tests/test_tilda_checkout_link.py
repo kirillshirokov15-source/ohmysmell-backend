@@ -21,7 +21,7 @@ def new_nonce():
 def test_checkout_nonce_normalized_as_digest_only(tilda_config):
     nonce = new_nonce()
     data = payload()
-    data["oms_checkout_nonce"] = nonce
+    data["oms_checkout_nonce_hash"] = checkout_nonce_hash(nonce)
     result = normalize(data)
     assert result["checkout_nonce_hash"] == hashlib.sha256(nonce.encode()).hexdigest()
     assert nonce not in str(result)
@@ -32,7 +32,7 @@ def test_checkout_nonce_normalized_as_digest_only(tilda_config):
 @pytest.mark.parametrize("nonce", ["short", "a" * 42, "a" * 44, "a" * 42 + "!", 123, True, {}, None])
 def test_checkout_nonce_invalid_form_fails_closed(tilda_config, nonce):
     data = payload()
-    data["oms_checkout_nonce"] = nonce
+    data["oms_checkout_nonce_hash"] = nonce
     # An absent field and an explicitly null nonce are different.
     if nonce is None:
         assert "checkout_nonce_hash" not in normalize(data)
@@ -72,7 +72,7 @@ def test_checkout_claim_real_postgres_and_expired_link_retry(staging_sessions, t
     async def run():
         nonce = new_nonce()
         data = payload(uuid4().hex)
-        data["oms_checkout_nonce"] = nonce
+        data["oms_checkout_nonce_hash"] = checkout_nonce_hash(nonce)
         did = (await TildaIntake().submit(normalize(data)))["draft_id"]
         async with factory() as session:
             draft = await session.get(DraftOrder, did)
