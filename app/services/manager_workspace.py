@@ -148,12 +148,16 @@ def order_keyboard(order, shipments=(), *, expanded=False):
     rows = available_order_keyboard(order, shipments)["inline_keyboard"]
     active = order.fulfillment_status not in {"cancelled", "shipped"} and order.status != "rejected"
     source = {"text": "Выбрать источник", "callback_data": f"order:sources:{order.id}:{order.revision}"}
-    if active and getattr(order, "manual_fulfillment", False) and not order.needs_review and order.fulfillment_status == "new":
-        from app.services.order_source_service import OrderSourceService
-        view = OrderSourceService.view(order, shipments)
-        if view["items"] and all(i["assigned"] == i["qty"] for i in view["items"]):
-            source["text"] = "Проверить поступление"
-        rows.insert(0, [source])
+    if active and getattr(order, "manual_fulfillment", False) and not order.needs_review:
+        if order.fulfillment_status == "new":
+            from app.services.order_source_service import OrderSourceService
+            view = OrderSourceService.view(order, shipments)
+            if view["items"] and all(i["assigned"] == i["qty"] for i in view["items"]):
+                source["text"] = "Проверить поступление / резерв"
+            rows.insert(0, [source])
+        elif order.fulfillment_status in {"assembling", "assembled"}:
+            source["text"] = "Складские документы"
+            rows.insert(0, [source])
     if expanded:
         return {"inline_keyboard": rows}
     priorities = ("resolve", "assembling", "assembled", "shipped", "allocate", "sources", "procurement", "delivered", "paid")
