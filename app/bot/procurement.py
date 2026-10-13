@@ -51,7 +51,9 @@ async def supply_order_card(order, shipments=(), *, details=False):
                 quantities = {}
     order.ui_supply_ready = bool(order.items) and quantities == {i.id: i.qty for i in order.items}
     if not details:
-        return order_card(order, shipments)
+        from app.services.manager_workspace import site_titles_for
+        titles = await site_titles_for(order) if order.manual_fulfillment else {}
+        return order_card(order, shipments, site_titles=titles)
     from app.services.manager_workspace import order_details_card
     lines = [order_details_card(order, shipments)]
     for s in snapshots:
