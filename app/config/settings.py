@@ -39,6 +39,14 @@ class Settings:
             if parsed.scheme not in ('http', 'https') or not parsed.netloc or parsed.path or parsed.query or parsed.fragment or parsed.username or '*' in origin:
                 raise ValueError("BUYING_ALLOWED_ORIGINS requires exact HTTP(S) origins without paths")
         self.supplier_email_send_enabled = os.getenv("SUPPLIER_EMAIL_SEND_ENABLED", "false").lower() == "true"
+        # Safety switch for LIVE inventory documents. Never enabled implicitly
+        # by EXTERNAL_WRITES_ENABLED, including in production.
+        self.x_auto_fulfill_enabled = os.getenv("X_AUTO_FULFILL_ENABLED", "false").lower() == "true"
+        valuation = os.getenv("X_ENTER_UNIT_COST_MINOR", "")
+        self.x_enter_unit_cost_minor = int(valuation) if valuation else None
+        if self.x_enter_unit_cost_minor is not None and not 0 <= self.x_enter_unit_cost_minor <= 100_000_000_000:
+            raise ValueError("X_ENTER_UNIT_COST_MINOR must be nonnegative RUB minor units")
+        self.x_default_buyer_id = os.getenv("MOYSKLAD_WEB_COUNTERPARTY_ID", "").strip()
         self.environment = os.getenv("APP_ENV", "development")
         if self.environment not in {"development", "staging", "production"}:
             raise ValueError("APP_ENV must be development, staging or production")
