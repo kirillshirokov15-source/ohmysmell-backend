@@ -113,7 +113,7 @@ class TildaIntake:
                 received_at=now(), processing_status="processed", customer_id=customer.id)
             session.add(inbound)
             await session.flush()
-            rows, total, problems = await review(payload)
+            rows, total, problems = await review(payload, manual_matches=(draft.contact_details or {}).get("tilda_manual_matches"))
             draft = DraftOrder(inbound_message_id=inbound.id, customer_id=customer.id, source="website",
                 customer_type="retail", customer_name=payload["name"] or "Клиент сайта", sender_email=email,
                 subject="Заказ Tilda", status="needs_review", counterparty_candidates=[],
@@ -138,6 +138,83 @@ class TildaIntake:
 
 
 class DeskService:
+    async def search_site_products(self, draft_id, actor, chat_id, query):
+        """Manager-only read-only catalog search; do not infer product from Tilda text."""
+        if not isinstance(query, str) or not 2 <= len(query.strip()) <= 140:
+            raise DeskError("Укажите поисковый запрос длиной 2–140 символов.")
+        async with async_session() as session:
+            await authorized_manager(session, actor, chat_id)
+            desk = await session.get(OrderDesk, draft_id)
+            draft = await session.get(DraftOrder, draft_id)
+            if not desk or not draft or desk.order_id or draft.status == "rejected":
+                raise DeskError("Заявка закрыта для поиска.")
+            require_owner(desk, actor)
+        from app.services.product_matching_service import ProductMatchingService
+        matcher = ProductMatchingService()
+        catalog = await matcher.products_async()
+        query_norm = matcher.normalize(query)
+        query_terms = set(query_norm.split())
+        scored = []
+        for product in catalog:
+            if not product.get("id") or product.get("archived"):
+                continue
+            name = matcher.normalize(product.get("name"))
+            article = matcher.normalize(product.get("article"))
+            code = matcher.normalize(product.get("code"))
+            if query_norm in {article, code}:
+                score = 5
+            elif query_norm == name:
+                score = 4
+            elif query_norm and (query_norm in name or query_norm in article or query_norm in code):
+                score = 3
+            else:
+                overlap = len(query_terms.intersection(set(name.split())))
+                score = 2 + overlap / max(1, len(query_terms)) if overlap else 0
+            if score:
+                scored.append((score, product))
+        scored.sort(key=lambda item: (-item[0], str(item[1].get("name") or "").casefold()))
+        return [dict(id=p["id"], name=str(p.get("name") or "")[:120],
+                     article=str(p.get("article") or "")[:80]) for _, p in scored[:8]]
+
+    async def bind_site_product(self, draft_id, actor, chat_id, position, expected_revision, product_id):
+        """Explicit, audited manual SKU binding. Never adjusts source price/quantity."""
+        if type(position) is not int or position < 1 or type(expected_revision) is not int:
+            raise DeskError("Некорректный номер позиции или ревизия.")
+        if not isinstance(product_id, str) or not 1 <= len(product_id) <= 255:
+            raise DeskError("Некорректный товар МойСклад.")
+        async with async_session() as session, session.begin():
+            await authorized_manager(session, actor, chat_id)
+            draft = await session.scalar(select(DraftOrder).where(DraftOrder.id == draft_id)
+                .options(selectinload(DraftOrder.items)).with_for_update())
+            desk = await session.get(OrderDesk, draft_id, with_for_update=True)
+            if not draft or not desk or draft.source != "website" or draft.status == "rejected" or desk.order_id:
+                raise DeskError("Заявка закрыта для сопоставления.")
+            require_owner(desk, actor)
+            if draft.revision != expected_revision:
+                raise DeskError("Карточка устарела. Обновите заявку и повторите поиск.")
+            inbound = await session.get(InboundMessage, draft.inbound_message_id)
+            try:
+                payload, items, bindings = source_rows(draft, desk, inbound)
+            except (ValueError, KeyError, TypeError) as error:
+                raise DeskError("Исходный заказ Tilda не прошёл проверку целостности.") from error
+            if position > len(items):
+                raise DeskError("Такой позиции нет в заявке.")
+            # Positions in the UI are sorted by DB ID; source rows have their own binding order.
+            item_by_position = sorted(draft.items, key=lambda i: i.id)[position - 1]
+            source_index = bindings[str(item_by_position.id)]
+            matches = dict((draft.contact_details or {}).get("tilda_manual_matches") or {})
+            matches[str(source_index)] = product_id
+            rows, total, problems = await review(payload, manual_matches=matches)
+            if rows[source_index]["product_id"] != product_id or rows[source_index]["match_status"] != "matched":
+                raise DeskError("Товар отсутствует или архивирован в МойСклад. Выполните поиск заново.")
+            apply_review(draft, rows, total, problems, items)
+            draft.contact_details = {**draft.contact_details,
+                                     "tilda_manual_matches": matches,
+                                     "tilda_item_sources": bindings}
+            draft.revision += 1
+            audit(session, desk, "tilda_product_manually_matched", actor,
+                  position=position, product_id=product_id, revision=draft.revision)
+            return dict(revision=draft.revision, remaining_problems=problems)
     async def claim(self, draft_id, actor, chat_id):
         async with async_session() as session, session.begin():
             manager = await authorized_manager(session, actor, chat_id)
@@ -378,7 +455,7 @@ class DeskService:
                     raise DeskError("Товары, цены, скидка или сумма требуют проверки. Выполните /sitereprice.")
                 # Revalidate identity against a fresh (TTL-bounded) catalog. Never
                 # silently replace a product or approve an expired match.
-                checked, _, problems = await review(payload)
+                checked, _, problems = await review(payload, manual_matches=(draft.contact_details or {}).get("tilda_manual_matches"))
                 if problems or any(i.product_id != r["product_id"] for i, r in zip(items, checked, strict=True)):
                     raise DeskError("Каталог недоступен или сопоставление изменилось. Выполните /sitereprice.")
                 draft.status = "ready"
