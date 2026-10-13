@@ -329,21 +329,13 @@ class OrderSourceService:
             plan.allocations.append(allocation)
             await session.flush()
             if part.source_type == "partner_x":
-                # Do not ask the manager to choose a partner: there is one X.
-                # Resolve/create a local CRM card only after an explicit confirm.
-                supplier = await singleton_x_partner(session)
-                if part.supplier_id is not None and part.supplier_id != supplier.id:
-                    raise DeskError("Устаревшая карточка партнёра Х. Обновите выбор источника.")
-                allocation.supplier_id = supplier.id
-                # Tilda retail price is authoritative and already stored on
-                # the customer order. Do not mistake it for X procurement cost.
-                # No financial settlement is created until X unit cost is known.
-                if part.base_cost_minor is not None:
-                    values = x_calculation(part.base_cost_minor * part.qty, item.price * part.qty)
-                    if values["status"] != "calculated":
-                        raise DeskError("Стоимость X превышает цену продажи; требуется финансовое решение.")
-                    session.add(XSettlement(order_id=order.id, order_item_id=item.id, allocation_id=allocation.id,
-                        supplier_id=supplier.id, **values))
+                # Backward-compatible database value: X means our own physical
+                # warehouse, never an external counterparty or purchase.
+                # Legacy records remain readable but new X allocations do not
+                # create supplier rows or XSettlements.
+                if part.supplier_id is not None or part.base_cost_minor is not None:
+                    raise DeskError("Склад Х — собственный склад. Поставщик и закупочная цена не нужны.")
+                allocation.supplier_id = None
             elif part.source_type == "external":
                 offer = await session.get(SupplierOffer, part.offer_id)
                 supplier = await session.get(Supplier, offer.supplier_id) if offer else None
