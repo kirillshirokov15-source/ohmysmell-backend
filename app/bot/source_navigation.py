@@ -19,6 +19,18 @@ from app.schemas.order_sources import SourceAction
 navigation = {}
 
 
+def source_warehouses(product, allowed_ids, source_type):
+    """Distinct source and physical warehouse: X never appears under Own."""
+    if source_type not in {"own", "partner_x", "external"}:
+        return []
+    def is_x(stock):
+        name = (stock.get("name") or "").replace(" ", "").casefold()
+        return name in {"складх", "складx"}
+    return [stock for stock in product.get("stocks", [])
+            if (not allowed_ids or stock["id"] in allowed_ids)
+            and (is_x(stock) if source_type == "partner_x" else not is_x(stock))]
+
+
 async def replace_screen(message, text, rows):
     """Edit one existing manager card; do not stack callback replies."""
     try:
@@ -125,10 +137,7 @@ def register(dp, check_access, safe_callback_answer):
                     raise DeskError("Позиция заказа не найдена.")
                 catalog = await ProductService().get_catalog_async(include_supply=False)
                 product = next((p for p in catalog if p["id"] == item.product_id), {})
-                warehouses = [stock for stock in product.get("stocks", [])
-                    if (not settings.warehouse_ids or stock["id"] in settings.warehouse_ids)
-                    and (stock.get("name") or "").replace(" ", "").casefold()
-                        in {"складх", "складx"}]
+                warehouses = source_warehouses(product, settings.warehouse_ids, "partner_x")
                 if len(warehouses) != 1:
                     empty_reason = ("Склад Х не найден однозначно среди разрешённых складов "
                                     "МойСклад. Проверьте его название и привязку товара.")
@@ -154,10 +163,7 @@ def register(dp, check_access, safe_callback_answer):
                 # receiving choice. One eligible receiving warehouse is selected
                 # automatically: choosing a supply type must not ask for the same
                 # warehouse again.
-                warehouses = [stock for stock in product.get("stocks", [])
-                    if (not settings.warehouse_ids or stock["id"] in settings.warehouse_ids)
-                    and (stock.get("name") or "").replace(" ", "").casefold()
-                        not in {"складх", "складx"}]
+                warehouses = source_warehouses(product, settings.warehouse_ids, state["source_type"])
                 if not warehouses:
                     empty_reason = ("Для этого источника не найден основной склад. "
                         "«Склад Х» не может быть выбран как собственный склад "
@@ -168,7 +174,7 @@ def register(dp, check_access, safe_callback_answer):
                                     warehouse_label=warehouse.get("name") or "Основной склад")
                     if state["source_type"] == "own":
                         text = (f"Заказ №{state['order_id']} · свой склад\\n"
-                            f"{selected['warehouse_label']} · {state['qty']} шт.\\n"
+                            f"{selected['warehouse_label']} · {state['qty']} шт.\n"
                             "Подтвердить распределение? Реальные документы МойСклад этим не создаются.")
                         rows.append(button("✅ Подтвердить свой склад",
                                            dict(selected, step="apply", action="assign")))
