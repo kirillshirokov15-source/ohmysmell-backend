@@ -3,7 +3,8 @@ import logging
 import os
 import re
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse, PlainTextResponse\nfrom pydantic import BaseModel, Field\nfrom app.services.tilda_checkout_link import issue_checkout_link
+from fastapi.responses import JSONResponse, PlainTextResponse, FileResponse
+from pathlib import Path\nfrom pydantic import BaseModel, Field\nfrom app.services.tilda_checkout_link import issue_checkout_link
 from app.api.auth import require_internal_api_token
 from app.integrations.tilda import (
     TildaInvalid, TildaConfigurationError, normalize, parse_body,
@@ -73,6 +74,17 @@ async def receive_order(request: Request):
         raise HTTPException(409 if str(error) == "external_id_conflict" else 503, "tilda_unavailable_or_conflict") from None
     log_event(logger, "tilda_webhook_accepted", draft_id=result["draft_id"], duplicate=result["duplicate"])
     return JSONResponse(result, status_code=200)
+
+
+@router.get("/integrations/tilda/checkout-link.js")
+async def checkout_script():
+    """Public versioned checkout integration. No secrets or personal data."""
+    return FileResponse(
+        Path(__file__).resolve().parents[1] / "static" / "tilda_checkout_link.js",
+        media_type="text/javascript",
+        headers={"Cache-Control": "public, max-age=300",
+                 "X-Content-Type-Options": "nosniff"},
+    )
 
 
 class CheckoutTelegramClaim(BaseModel):
