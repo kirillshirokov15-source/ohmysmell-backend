@@ -180,8 +180,14 @@ def register(dp, check_access, safe_callback_answer):
                     callback.message.chat.id, int(parts[3]), int(parts[4]), parts[5])
                 # Updated complete draft card below replaces the picker; no duplicate reply.
             elif action == "items":
-                message = callback.message.model_copy(update={"from_user": callback.from_user, "text": f"/siteitems {draft_id}"}).as_(callback.bot)
-                await desk_command(message)
+                from app.services.desk_display import desk_items
+                rows = await desk_items(draft_id)
+                text = "\n\n".join(rows)
+                if len(text.encode("utf-16-le")) // 2 > 3500:
+                    text = text[:3400] + "\n… Остальные позиции: /siteitems " + str(draft_id)
+                await callback.message.edit_text(text, parse_mode=None,
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                        {"text": "← К заявке", "callback_data": f"desk:refresh:{draft_id}"}]]))
                 return
             elif action == "reply":
                 from app.bot.manager_inputs import prompt_input
@@ -196,21 +202,10 @@ def register(dp, check_access, safe_callback_answer):
                         {"text": "← К заявке", "callback_data": f"desk:refresh:{draft_id}"}]]))
                 return
             elif action == "recheck":
-                result = await service.reprice(draft_id, callback.from_user.id, callback.message.chat.id,
-                                               dry_run=False)
-                if result["problems"]:
-                    from app.services.desk_display import REVIEW_PROBLEM_LABELS
-                    messages = [REVIEW_PROBLEM_LABELS.get(code, code) for code in result["problems"]]
-                    await callback.message.answer(
-                        "Проверка заявки №" + str(draft_id) + ":\n"
-                        + "\n".join("• " + text for text in messages[:10])
-                        + "\n\nЕсли сумма отсутствует или не совпадает, проверьте передачу суммы в Tilda; "
-                          "нельзя подтверждать такой заказ без исправления исходных данных.",
-                        parse_mode=None, protect_content=True)
-                else:
-                    await callback.message.answer(
-                        "Проверка завершена. Теперь можно нажать «Подтвердить заказ».",
-                        parse_mode=None)
+                # reprice updates the stored draft; the full refreshed card below
+                # already lists all blockers and the next action.
+                await service.reprice(draft_id, callback.from_user.id, callback.message.chat.id,
+                                      dry_run=False)
             elif action == "payment":
                 await service.stage(draft_id, callback.from_user.id, callback.message.chat.id,
                                     "awaiting_payment")
@@ -243,4 +238,9 @@ def register(dp, check_access, safe_callback_answer):
                 if "message is not modified" not in str(error).lower():
                     raise
         except (ValueError, IndexError) as error:
-            await callback.message.answer(str(error) if isinstance(error, DeskError) else "Действие недоступно. Обновите карточку.", parse_mode=None)
+            notice = str(error) if isinstance(error, DeskError) else "Действие недоступно. Обновите карточку."
+            draft_id = locals().get("draft_id")
+            back = f"desk:refresh:{draft_id}" if draft_id else "draftpage:needs_review:0"
+            await callback.message.edit_text("⚠️ " + notice, parse_mode=None,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    {"text": "Вернуться к заявке", "callback_data": back}]]))
