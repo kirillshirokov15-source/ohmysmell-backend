@@ -1,9 +1,11 @@
 """Explicit replies only, bound to actor, chat and bot prompt; ordinary chat is untouched."""
 import time
+import logging
 from aiogram.types import ForceReply, ReplyParameters, InlineKeyboardMarkup
 from aiogram.exceptions import TelegramBadRequest
 
 pending = {}
+logger = logging.getLogger(__name__)
 
 
 def waiting(message):
@@ -90,6 +92,8 @@ async def route(message, check_access):
         return True
     key = (message.chat.id, message.from_user.id)
     _, _, action, data = pending[key]
+    if action in {"source_quantity", "source_cost"}:
+        logger.info("manager_source_input_received order_id=%s action=%s", data.get("order_id"), action)
     if not message.text:
         await message.answer("Ответьте текстом.")
         return True
@@ -125,6 +129,8 @@ async def route(message, check_access):
                                          + "\nЭто ещё не создание закупки или документа МойСклад.",
                                          row)
         pending.pop(key, None)
+        if action in {"source_quantity", "source_cost"}:
+            logger.info("manager_source_input_confirm_ready order_id=%s action=%s", data.get("order_id"), action)
     except ValueError as error:
         from app.services.order_desk import DeskError
         await message.answer(str(error) if isinstance(error, DeskError) else "Проверьте данные и повторите ответ.")
