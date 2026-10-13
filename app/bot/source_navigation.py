@@ -3,6 +3,7 @@
 Tokens are disposable navigation, never operation receipts. A restart simply
 requires reopening the order; revisions and idempotency remain in the CRM.
 """
+import asyncio
 import secrets
 import time
 from aiogram import F
@@ -17,6 +18,40 @@ from app.services.order_desk import DeskError
 from app.schemas.order_sources import SourceAction
 
 navigation = {}
+
+# Read-only browsing cache, never used as authority for mutations. The
+# assignment service ALWAYS rechecks fresh stock and CRM claims before commit.
+_browse_cache = None
+_browse_loaded_at = 0.0
+_browse_lock = asyncio.Lock()
+
+
+async def catalog_for_navigation():
+    global _browse_cache, _browse_loaded_at
+    now = time.monotonic()
+    if _browse_cache is not None and now - _browse_loaded_at < 15:
+        return _browse_cache
+    async with _browse_lock:
+        now = time.monotonic()
+        if _browse_cache is not None and now - _browse_loaded_at < 15:
+            return _browse_cache
+        from app.services.product_service import ProductService
+        try:
+            # Provider read timeouts must not freeze the whole Telegram UI.
+            # The underlying thread may still finish, but cannot write stock.
+            catalog = await asyncio.wait_for(
+                ProductService().get_catalog_async(include_supply=False), timeout=12)
+        except Exception as error:
+            # A recent snapshot can only be used to browse available options;
+            # OrderSourceService._assign() independently checks current stock.
+            if _browse_cache is not None and now - _browse_loaded_at < 180:
+                return _browse_cache
+            raise DeskError(
+                "МойСклад долго отвечает. Данные наличия недоступны — "
+                "повторите выбор источника позже. Заказ сохранён.") from error
+        _browse_cache, _browse_loaded_at = catalog, time.monotonic()
+        return catalog
+
 
 
 def source_warehouses(product, allowed_ids, source_type):
@@ -216,7 +251,7 @@ def register(dp, check_access, safe_callback_answer):
                 from app.config.settings import settings
                 async with async_session() as session:
                     target = await session.get(OrderItem, state["item_id"])
-                    stock_snapshot = await ProductService().get_catalog_async(include_supply=False)
+                    stock_snapshot = await catalog_for_navigation()
                     product = next((p for p in stock_snapshot if p["id"] == target.product_id), None) if target else None
                     own_stores = source_warehouses(product or {}, settings.warehouse_ids, "own")
                     has_own = False
@@ -244,7 +279,7 @@ def register(dp, check_access, safe_callback_answer):
                     item = await session.get(OrderItem, state["item_id"])
                 if not item:
                     raise DeskError("Позиция заказа не найдена.")
-                catalog = await ProductService().get_catalog_async(include_supply=False)
+                catalog = await catalog_for_navigation()
                 product = next((p for p in catalog if p["id"] == item.product_id), {})
                 warehouses = source_warehouses(product, settings.warehouse_ids, "partner_x")
                 if len(warehouses) != 1:
@@ -273,7 +308,7 @@ def register(dp, check_access, safe_callback_answer):
                 from app.config.settings import settings
                 async with async_session() as session:
                     item = await session.get(OrderItem, state["item_id"])
-                catalog = await ProductService().get_catalog_async(include_supply=False)
+                catalog = await catalog_for_navigation()
                 product = next((p for p in catalog if p["id"] == item.product_id), {})
                 # An X warehouse must never appear as an own-stock or external
                 # receiving choice. One eligible receiving warehouse is selected
