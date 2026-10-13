@@ -21,24 +21,62 @@ async def prompt_input(message, action, data, text):
 
 
 async def complete_source_prompt(message, data, prompt_id, label, row):
-    """Reuse the original order card; discard the temporary ForceReply prompt."""
+    """Replace original order card; never leave a quoted DELETED bot prompt.
+
+    The user's text reply is removed *before* its temporary ForceReply
+    prompt. If the bot lacks delete-message rights, leave the prompt in place
+    (edited as completed) so Telegram never displays 'Deleted message' as the
+    parent of a surviving manager reply.
+    """
     markup = InlineKeyboardMarkup(inline_keyboard=[row])
     origin_id = data.get("origin_message_id")
+    updated = False
     if origin_id:
         try:
             await message.bot.edit_message_text(
                 chat_id=message.chat.id, message_id=origin_id, text=label,
                 parse_mode=None, reply_markup=markup)
+            updated = True
         except TelegramBadRequest as error:
-            if "message is not modified" not in str(error).casefold():
-                # The old card may have been deleted; preserve the confirmed input.
+            if "message is not modified" in str(error).casefold():
+                updated = True
+            else:
+                # If the original card disappeared, preserve the confirmed
+                # input on a replacement, rather than silently discarding it.
                 await message.answer(label, reply_markup=markup, parse_mode=None)
-        try:
-            await message.bot.delete_message(chat_id=message.chat.id, message_id=prompt_id)
-        except TelegramBadRequest:
-            pass  # Deletion is optional if Telegram permissions do not allow it.
+                updated = True
     else:
         await message.answer(label, reply_markup=markup, parse_mode=None)
+        updated = True
+
+    if not updated:
+        return False
+
+    reply_deleted = False
+    try:
+        await message.bot.delete_message(chat_id=message.chat.id,
+                                         message_id=message.message_id)
+        reply_deleted = True
+    except TelegramBadRequest:
+        # Bot may lack delete rights in a Telegram supergroup.
+        pass
+    if reply_deleted:
+        try:
+            await message.bot.delete_message(chat_id=message.chat.id,
+                                             message_id=prompt_id)
+        except TelegramBadRequest:
+            # Bot message may already be removed. No user reply remains.
+            pass
+    else:
+        try:
+            # Do NOT delete a prompt while the reply quoting it remains.
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id, message_id=prompt_id,
+                text="✅ Ввод принят. Продолжите в обновлённой карточке заказа.",
+                parse_mode=None)
+        except TelegramBadRequest:
+            pass
+    return True
 
 
 async def route(message, check_access):
