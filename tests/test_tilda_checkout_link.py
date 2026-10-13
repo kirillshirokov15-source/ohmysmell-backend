@@ -48,10 +48,10 @@ def test_checkout_claim_endpoint_does_not_accept_order_id(tilda_config, monkeypa
         "deep_link": "https://t.me/synthetic_client_bot?start=" + "a" * 43,
         "expires_in_seconds": 1800}))
     nonce = new_nonce()
-    status, data = asyncio.run(request(app, "POST", "/integrations/tilda/telegram-link", {"checkout_nonce": nonce}))
+    status, data, _ = asyncio.run(request(app, "POST", "/integrations/tilda/telegram-link", {"checkout_nonce": nonce}))
     assert status == 200 and data["expires_in_seconds"] == 1800
     tilda.issue_checkout_link.assert_awaited_once_with(nonce)
-    status, _ = asyncio.run(request(app, "POST", "/integrations/tilda/telegram-link", {"order_id": 10}))
+    status, _, _ = asyncio.run(request(app, "POST", "/integrations/tilda/telegram-link", {"order_id": 10}))
     assert status == 422
 
 
