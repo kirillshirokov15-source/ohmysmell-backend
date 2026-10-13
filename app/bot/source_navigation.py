@@ -173,14 +173,14 @@ def register(dp, check_access, safe_callback_answer):
                     selected = dict(state, warehouse_id=warehouse["id"],
                                     warehouse_label=warehouse.get("name") or "Основной склад")
                     if state["source_type"] == "own":
-                        text = (f"Заказ №{state['order_id']} · свой склад\\n"
+                        text = (f"Заказ №{state['order_id']} · свой склад\n"
                             f"{selected['warehouse_label']} · {state['qty']} шт.\n"
                             "Подтвердить распределение? Реальные документы МойСклад этим не создаются.")
                         rows.append(button("✅ Подтвердить свой склад",
                                            dict(selected, step="apply", action="assign")))
                     else:
                         text = ("Склад для поступления: " + selected["warehouse_label"]
-                            + ".\\nСледующий шаг — выбрать предложение поставщика.")
+                            + ".\nСледующий шаг — выбрать предложение поставщика.")
                         rows.append(button("Выбрать поставщика",
                                            dict(selected, step="supplier")))
                     rows.append(button("← Другой источник", dict(state, step="type")))
