@@ -68,7 +68,7 @@ async def snapshot(order_id, *, require_buyer=True):
             .options(selectinload(Order.items)))
         if not order or not order.manual_fulfillment or order.source != "website":
             raise DeskError("Автооперации Х разрешены только по подтверждённым заказам Tilda.")
-        if order.status == "rejected" or order.needs_review or test_order(order):
+        if order.status == "rejected" or order.needs_review or (test_order(order) and require_buyer):
             raise DeskError("Отменённый, тестовый или непроверенный заказ нельзя отправлять в МойСклад.")
         if order.fulfillment_status not in {"new", "shipped"}:
             raise DeskError("Автоотгрузка Х недоступна после ручного начала сборки.")
@@ -105,7 +105,7 @@ async def snapshot(order_id, *, require_buyer=True):
             return dict(order_id=order.id, plan_rows=[], order_revision=order.revision)
         captured = dict(order_id=order.id, organization_id=settings.moysklad_organization_id,
             counterparty_id=order.counterparty_id, order_revision=order.revision,
-            plan_rows=rows)
+            test_order=test_order(order), plan_rows=rows)
     # Live catalog check is outside DB session and before any external document.
     catalog = {p["id"]: p for p in await ProductService().get_catalog_async(include_supply=False)}
     for plan in captured["plan_rows"]:
