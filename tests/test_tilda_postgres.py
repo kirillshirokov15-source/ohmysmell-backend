@@ -437,3 +437,39 @@ def test_staging_default_deny_does_not_mutate_queue(desk_db,monkeypatch):
             assert before==after
         await engine.dispose()
     asyncio.run(run())
+
+
+def test_tilda_manual_catalog_mapping_persists_and_confirms(desk_db):
+    factory, engine, actors = desk_db
+    async def run():
+        async with factory() as s, s.begin():
+            s.add_all([Manager(telegram_id=a, name=f"SYNTHETIC manager {i}", is_active=True)
+                       for i, a in enumerate(actors)])
+        source = payload(uuid4().hex)
+        source["products"][0]["externalid"] = "TILDA-NAME-NOT-ARTICLE"
+        did = (await TildaIntake().submit(normalize(source)))["draft_id"]
+        service = DeskService()
+        async with factory() as s:
+            draft = await s.get(DraftOrder, did)
+            assert draft.total is None and "sku_not_found" in draft.contact_details["tilda_review_problems"]
+        await service.claim(did, actors[0], -100123456)
+        result = await service.search_site_products(did, actors[0], -100123456, "sku-a")
+        assert any(item["id"] == "sku-a" for item in result["products"])
+        with pytest.raises(DeskError):
+            await service.bind_site_product(did, actors[1], -100123456, 1, 0, "sku-a")
+        with pytest.raises(DeskError):
+            await service.bind_site_product(did, actors[0], -100123456, 1, 7, "sku-a")
+        bound = await service.bind_site_product(did, actors[0], -100123456, 1, 0, "sku-a")
+        assert bound["revision"] == 1 and bound["remaining_problems"] == []
+        async with factory() as s:
+            draft = await s.get(DraftOrder, did)
+            assert draft.total == 3030 and draft.contact_details["tilda_manual_matches"] == {"0": "sku-a"}
+            assert await s.scalar(select(func.count()).select_from(DeskEvent).where(
+                DeskEvent.draft_id == did, DeskEvent.action == "tilda_product_manually_matched")) == 1
+        rechecked = await service.reprice(did, actors[0], -100123456)
+        assert rechecked["problems"] == []
+        order = await service.confirm(did, actors[0], -100123456, rechecked["revision"])
+        assert order.manual_fulfillment and order.total == 3030
+        assert len(order.items) == 2
+        await engine.dispose()
+    asyncio.run(run())
