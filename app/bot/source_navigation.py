@@ -165,14 +165,8 @@ def register(dp, check_access, safe_callback_answer):
                 text = "Выберите поставщика"
                 async with async_session() as session:
                     if state["source_type"] == "partner_x":
-                        suppliers = (await session.scalars(select(Supplier).where(
-                            Supplier.supplier_type == "partner_x", Supplier.status == "active"))).all()
-                        for supplier in suppliers:
-                            rows.append(button(supplier.name, dict(state, step="cost", supplier_id=supplier.id)))
-                        if not rows:
-                            empty_reason = ("Для склада Х ещё не настроен активный партнёр типа «X» в CRM. "
-                                            "Само наличие склада «Склад Х» в МойСклад не создаёт партнёра. "
-                                            "Нужно добавить карточку партнёра Х; реальных закупок пока нет.")
+                        # Legacy callback tokens also resolve to the fixed X partner.
+                        rows.append(button("Продолжить: Склад Х", dict(state, step="cost")))
                     else:
                         item = await session.get(OrderItem, state["item_id"])
                         offers = (await session.execute(select(SupplierOffer, Supplier).join(Supplier).where(
@@ -205,7 +199,13 @@ def register(dp, check_access, safe_callback_answer):
             elif step == "cost":
                 # A price is a deliberate manager input, never inferred from retail price.
                 from app.bot.manager_inputs import prompt_input
-                await prompt_input(message, "source_cost", state, "Введите закупочную цену X за штуку в рублях.")
+                state = dict(state, origin_message_id=callback.message.message_id)
+                await replace_screen(callback.message,
+                    "Склад Х · заказ №" + str(state["order_id"])
+                    + "\nВведите закупочную стоимость за штуку ответом на сообщение.",
+                    [button("← Другой источник", dict(state, step="type"))])
+                await prompt_input(message, "source_cost", state,
+                    "Введите закупочную цену склада Х за штуку в рублях.")
                 return
             elif step in {"confirm", "confirm_cancel"}:
                 text = "Убрать это назначение источника?" if step == "confirm_cancel" else f"Назначить источник на {state['qty']} шт.?"
@@ -214,7 +214,13 @@ def register(dp, check_access, safe_callback_answer):
                     rows.append(button("Изменить количество", dict(state, step="quantity", quantity_next="apply")))
             elif step == "quantity":
                 from app.bot.manager_inputs import prompt_input
-                await prompt_input(message, "source_quantity", state, "Сколько штук назначить этому источнику?")
+                state = dict(state, origin_message_id=callback.message.message_id)
+                await replace_screen(callback.message,
+                    "Заказ №" + str(state["order_id"])
+                    + "\nВведите количество ответом на сообщение.",
+                    [button("← Другой источник", dict(state, step="type"))])
+                await prompt_input(message, "source_quantity", state,
+                                   "Сколько штук назначить этому источнику?")
                 return
             elif step == "apply":
                 action = state["action"]
