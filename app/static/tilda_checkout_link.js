@@ -9,6 +9,9 @@
   const BOT = "https://t.me/OhMySmell_OrdersBot";
   const fieldName = "oms_checkout_nonce_hash";
   const prepared = new WeakSet();
+  const checkoutDebug = {loaded: true, scanned: 0, bound: 0, lastError: null};
+  // Read-only diagnostics: never expose the nonce, its hash or order details.
+  window.__omsCheckoutLinkStatus = checkoutDebug;
   let overlay;
   let panelControls;
 
@@ -109,9 +112,11 @@
     const hidden = document.createElement("input");
     hidden.type = "hidden";
     hidden.name = fieldName;
+    hidden.className = "t-input";
     form.appendChild(hidden);
     let nonce = token();
     hidden.value = await digest(nonce);
+    checkoutDebug.bound += 1;
     form.addEventListener("tildaform:aftersuccess", function () {
       if (!hidden.value) return;
       const completed = nonce;
@@ -124,12 +129,37 @@
   }
 
   function findForms() {
-    document.querySelectorAll("#rec4616518301 form, .t706__cartwin form").forEach(prepare);
+    // Tilda may move the cart popup outside its original record or render
+    // a new .t706__orderform only after the user opens their shopping cart.
+    // form4616518301 is the observed production cart form.
+    const selector = [
+      "form#form4616518301",
+      ".t706 form",
+      ".t706__cartwin form",
+      ".t706__orderform",
+      "#rec4616518301 form"
+    ].join(", ");
+    try {
+      const forms = document.querySelectorAll(selector);
+      checkoutDebug.scanned = Math.max(checkoutDebug.scanned, forms.length);
+      forms.forEach(form => {
+        if (form.tagName !== "FORM") return;
+        prepare(form).catch(error => {
+          checkoutDebug.lastError = error && error.name || "prepare_error";
+        });
+      });
+    } catch (error) {
+      checkoutDebug.lastError = error && error.name || "selector_error";
+    }
   }
   function init() {
-    if (!crypto || !crypto.subtle) return;
+    if (typeof crypto === "undefined" || !crypto.subtle) {
+      checkoutDebug.lastError = "webcrypto_unavailable";
+      return;
+    }
     findForms();
-    new MutationObserver(findForms).observe(document.documentElement, {childList: true, subtree: true});
+    const observer = new MutationObserver(findForms);
+    observer.observe(document.documentElement, {childList: true, subtree: true});
     try {
       const lastNonce = sessionStorage.getItem(STORAGE_KEY);
       if (lastNonce && /^[A-Za-z0-9_-]{43}$/.test(lastNonce)) displayLink(lastNonce);
