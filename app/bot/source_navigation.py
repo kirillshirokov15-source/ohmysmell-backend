@@ -233,9 +233,13 @@ def register(dp, check_access, safe_callback_answer):
                 return
             if not rows:
                 text = empty_reason or "На этом шаге нет доступных вариантов. Проверьте настройки источника."
-                if step in {"warehouse", "supplier"}:
+                if step in {"warehouse", "supplier", "x_warehouse"}:
                     rows.append(button("← Другой источник", dict(state, step="type")))
             rows.append([{"text": "Назад к заказу", "callback_data": f"order:refresh:{state['order_id']}:{state['revision']}"}])
-            await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode=None)
+            await replace_screen(callback.message, text, rows)
         except (DeskError, ValueError) as error:
-            await callback.message.answer(str(error) if isinstance(error, DeskError) else "Проверьте выбранные данные.")
+            text = str(error) if isinstance(error, DeskError) else "Проверьте выбранные данные."
+            await replace_screen(callback.message, "⚠️ " + text, [
+                button("← Другой источник", dict(state, step="type")),
+                [{"text": "Назад к заказу",
+                  "callback_data": f"order:refresh:{state['order_id']}:0"}]])
