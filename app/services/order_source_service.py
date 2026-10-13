@@ -88,6 +88,34 @@ async def claimed_stock(session, product_id, warehouse_id, *, managed_only=False
     return claimed
 
 
+async def singleton_x_partner(session):
+    """Only one operational X counterparty. Created locally on explicit assignment.
+
+    This is a CRM supplier row, NOT a MoySklad counterparty, purchase, or receipt.
+    Advisory locking prevents duplicate creations by simultaneous managers.
+    """
+    await transaction_lock(session, "oms:partner-x:singleton")
+    active = list((await session.scalars(
+        select(Supplier).where(Supplier.supplier_type == "partner_x",
+                               Supplier.status == "active").order_by(Supplier.id))).all())
+    preferred = [s for s in active
+                 if s.external_reference == "oms:partner-x:singleton"
+                 or s.name.strip().casefold() in {"склад х", "склад x"}]
+    if len(active) == 1:
+        return active[0]
+    if len(preferred) == 1:
+        return preferred[0]
+    if len(active) > 1:
+        raise DeskError(
+            "Настроено несколько активных партнёров Х. "
+            "Оставьте одного (Склад Х) в CRM, чтобы не создать неправильные взаиморасчёты.")
+    partner = Supplier(supplier_type="partner_x", name="Склад Х",
+                       status="active", external_reference="oms:partner-x:singleton")
+    session.add(partner)
+    await session.flush()
+    return partner
+
+
 class OrderSourceService:
     def __init__(self, products=None):
         self.products = products
@@ -253,9 +281,11 @@ class OrderSourceService:
             plan.allocations.append(allocation)
             await session.flush()
             if part.source_type == "partner_x":
-                supplier = await session.get(Supplier, part.supplier_id)
-                if not supplier or supplier.supplier_type != "partner_x" or supplier.status != "active":
-                    raise DeskError("Партнёр X недоступен.")
+                # Do not ask the manager to choose a partner: there is one X.
+                # Resolve/create a local CRM card only after an explicit confirm.
+                supplier = await singleton_x_partner(session)
+                if part.supplier_id is not None and part.supplier_id != supplier.id:
+                    raise DeskError("Устаревшая карточка партнёра Х. Обновите выбор источника.")
                 values = x_calculation(part.base_cost_minor * part.qty, item.price * part.qty)
                 if values["status"] != "calculated":
                     raise DeskError("Стоимость X превышает цену продажи; требуется финансовое решение.")
