@@ -287,3 +287,55 @@ def test_telegram_assignment_is_versioned_and_idempotent(monkeypatch):
     assert args[:3] == (10, 111, CHAT)
     assert args[3].expected_revision == 4 and args[3].parts[0].qty == 2
     assert args[3].idempotency_key == f"source:{CHAT}:70"
+
+
+def test_single_x_counterparty_created_only_on_confirmed_allocation(source_db):
+    """The X menu never needs a supplier choice and never creates a real provider document."""
+    async def run():
+        order, service, parts = await seed_sources(source_db)
+        async with source_db() as session, session.begin():
+            original = list((await session.scalars(
+                select(Supplier).where(Supplier.supplier_type == "partner_x"))).all())
+            assert len(original) == 1
+            original[0].status = "inactive"
+        async with source_db() as session:
+            assert not (await session.scalars(select(Supplier).where(
+                Supplier.supplier_type == "partner_x", Supplier.status == "active"))).all()
+        x_part = {k: v for k, v in parts[2].items() if k != "supplier_id"}
+        assert SourceAction(action="assign", parts=[x_part], expected_revision=0,
+                            idempotency_key=uuid4().hex).parts[0].supplier_id is None
+        view = await service.act(order.id, 111, CHAT, SourceAction(
+            action="assign", parts=[x_part], expected_revision=0,
+            idempotency_key=uuid4().hex))
+        assert view["items"][0]["assigned"] == 1 and view["items"][0]["ready"] == 0
+        async with source_db() as session:
+            partners = (await session.scalars(select(Supplier).where(
+                Supplier.supplier_type == "partner_x", Supplier.status == "active"))).all()
+            assert len(partners) == 1 and partners[0].name == "Склад Х"
+            assert view["allocations"][0]["supplier_id"] == partners[0].id
+            assert await session.scalar(select(func.count()).select_from(XSettlement).where(
+                XSettlement.order_id == order.id)) == 1
+        again = await service.act(order.id, 111, CHAT, SourceAction(
+            action="assign", parts=[{**x_part, "warehouse_id": "wh2"}],
+            expected_revision=1, idempotency_key=uuid4().hex))
+        assert again["items"][0]["assigned"] == 2
+        async with source_db() as session:
+            partners = (await session.scalars(select(Supplier).where(
+                Supplier.supplier_type == "partner_x", Supplier.status == "active"))).all()
+            assert len(partners) == 1
+    asyncio.run(run())
+
+
+def test_multiple_active_x_partners_fail_closed_without_selection(source_db):
+    async def run():
+        order, service, parts = await seed_sources(source_db)
+        async with source_db() as session, session.begin():
+            session.add(Supplier(name="Another supplier X", supplier_type="partner_x"))
+        x_part = {k: v for k, v in parts[2].items() if k != "supplier_id"}
+        with pytest.raises(DeskError, match="несколько активных партнёров"):
+            await service.act(order.id, 111, CHAT, SourceAction(
+                action="assign", parts=[x_part], expected_revision=0,
+                idempotency_key=uuid4().hex))
+        result = await service.read(order.id, 111, CHAT)
+        assert result["revision"] == 0 and result["allocations"] == []
+    asyncio.run(run())
