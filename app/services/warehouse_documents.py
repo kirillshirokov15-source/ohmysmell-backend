@@ -35,10 +35,15 @@ async def frozen_plan(session, plan):
     for fake in (False,True):
         for a in plan.allocations:
             receipt=await session.get(ExternalOperation,('simulation:' if fake else '')+f'warehouse:allocation:{a.id}:receipt')
-            # Posted goods cannot be silently freed and received a second time.
-            # Returns/reassignment after posting require an explicit inventory workflow.
+            # Any X enter intent freezes its allocation immediately, even
+            # while outcome is uncertain. Never cancel and recreate it.
+            if a.source_type == "partner_x" and await session.get(
+                    ExternalOperation, f"xown:allocation:{a.id}:enter"):
+                return True
             if receipt:
                 return True
+        if await session.get(ExternalOperation, f"xown:shipment:{plan.id}:demand"):
+            return True
         reserved=await session.get(ExternalOperation,plan_key(plan,'reserve',fake))
         released=await session.get(ExternalOperation,plan_key(plan,'release',fake))
         if reserved and not (released and released.status=='succeeded'):
@@ -178,6 +183,9 @@ class WarehouseDocumentService:
             if action=='receipt':
                 if order.fulfillment_status!='new' or a.source_type=='own' or a.supply_status!='received':
                     raise DeskError('Actual receipt must be recorded before posting')
+                if a.source_type == 'partner_x':
+                    raise DeskError('Склад Х — наш склад: не используйте Приёмку поставщика. '
+                                    'Для него предназначены Оприходование (enter) и автоотгрузка (demand).')
                 supplier=await session.get(Supplier,a.supplier_id)
                 if not supplier or not supplier.external_reference:
                     raise DeskError('Supplier counterparty mapping required')
