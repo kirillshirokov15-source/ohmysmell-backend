@@ -62,7 +62,7 @@ async def desk_card(draft_id, *, view="details"):
         stage = stage_label(desk, draft, order)
         lines = [
             f"Заявка с сайта №{draft.id}" + (f" · заказ №{desk.order_id}" if desk.order_id else ""),
-            f"Статус: {stage}",
+            f"Этап: {stage}" if order or desk.order_id else f"Статус: {stage}",
             f"Клиент: {draft.customer_name or 'не указан'}",
             f"Телефон: {data.get('phone') or 'не указан'}",
             f"Email: {draft.sender_email or 'не указан'}",
