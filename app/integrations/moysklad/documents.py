@@ -22,8 +22,12 @@ def verified_document(intent, document):
             return False
         positions = positions.get('rows', [])
     def signature(row):
+        # Enter does not take a commercial unit sale price. A provider
+        # default of zero may appear in its response; any other unexpected
+        # valuation must be manually reconciled, never silently accepted.
+        price = row.get('price', 0) if intent['entity'] == 'enter' else row.get('price')
         return (row.get('assortment', {}).get('meta', {}).get('href'), row.get('quantity'),
-                row.get('price'), row.get('reserve', 0))
+                price, row.get('reserve', 0))
     return Counter(map(signature, expected['positions'])) == Counter(map(signature, positions))
 
 
