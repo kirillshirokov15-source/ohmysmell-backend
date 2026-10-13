@@ -126,15 +126,57 @@ def path_value(payload, path):
     return value
 
 
+_ORDER_IDENTIFIER_PATHS = (
+    "payment.tranid",
+    "orderid",
+    "order_id",
+    "payment.orderid",
+    "payment.order_id",
+    "payment.id",
+    "tildaTranId",
+    "tildaOrderId",
+    "dataid",
+)
+
+
+def resolve_external_id(payload, configured_path, delivery_key=None):
+    """Prefer lead ID; otherwise require a REAL stable Tilda order/delivery key.
+
+    Never derive an ID from buyer contact, a cart fingerprint, or a time bucket:
+    two genuine orders can have identical contents.
+    """
+    paths = (configured_path,) + tuple(path for path in _ORDER_IDENTIFIER_PATHS
+                                       if path != configured_path)
+    for path in paths:
+        value = path_value(payload, path)
+        if type(value) in (int, str) and 1 <= len(str(value).strip()) <= 200:
+            identifier = str(value).strip()
+            return identifier if path == configured_path else "source:" + path + ":" + identifier
+    if type(delivery_key) in (str, int) and 1 <= len(str(delivery_key).strip()) <= 200:
+        return str(delivery_key).strip()
+    raise TildaInvalid("stable_external_id_required")
+
+
+def intake_shape_flags(payload, delivery_key=None):
+    """Allowlisted structural flags only, with no values or customer data."""
+    paths = ("tranid", "payment.tranid", "orderid", "order_id",
+             "payment.orderid", "payment.order_id", "payment.id",
+             "tildaTranId", "tildaOrderId", "dataid",
+             "products", "payment.products", "amount", "payment.amount")
+    return {
+        "fields_present": [path for path in paths if path_value(payload, path) is not None],
+        "has_delivery_header": bool(delivery_key),
+        "has_formid": path_value(payload, "formid") is not None,
+    }
+
+
 def normalize(payload, delivery_key=None):
     fields = field_map("TILDA_FIELD_MAP_JSON", DEFAULT_FIELDS)
     get = lambda key: path_value(payload, fields[key])
-    external = get("external_id")
-    if external in (None, ""):
-        external = delivery_key
-    if type(external) not in (str, int) or not 1 <= len(str(external).strip()) <= 200:
-        raise TildaInvalid("stable_external_id_required")
+    external = resolve_external_id(payload, fields["external_id"], delivery_key)
     items = get("items")
+    if items in (None, ""):
+        items = path_value(payload, "payment.products")
     if isinstance(items, str):
         try:
             items = decode_json(items)
@@ -182,13 +224,17 @@ def normalize(payload, delivery_key=None):
             rows[-1]["reported_item_total_minor"] = item_total
             if price is None or item_total != price * int(qty):
                 problems.append("item_total_mismatch")
-    currency = str(get("currency") or os.getenv("TILDA_DEFAULT_CURRENCY", "RUB")).upper()
+    currency = str(get("currency") or path_value(payload, "payment.currency")
+                   or os.getenv("TILDA_DEFAULT_CURRENCY", "RUB")).upper()
     if currency != "RUB":
         problems.append("unsupported_currency")
     amounts = {}
     for key in ("total", "discount"):
+        source_value = get(key)
+        if source_value in (None, ""):
+            source_value = path_value(payload, "payment.amount" if key == "total" else "payment.discount")
         try:
-            amounts[key] = money(get(key) if get(key) not in (None, "") else (0 if key == "discount" else None))
+            amounts[key] = money(source_value if source_value not in (None, "") else (0 if key == "discount" else None))
         except TildaInvalid:
             amounts[key] = None
             problems.append("invalid_" + key)
