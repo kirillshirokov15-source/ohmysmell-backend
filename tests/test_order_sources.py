@@ -364,16 +364,22 @@ def test_x_assignment_uses_final_tilda_sale_price_without_faking_cost(source_db)
             assert unchanged.items[0].price == 168000
             assert await session.scalar(select(func.count()).select_from(XSettlement).where(
                 XSettlement.order_id == order.id)) == 0
-        # Invalid attempt to mark an unpriced X allocation received must not
-        # create a physical receipt, settlement or false ready quantity.
-        with pytest.raises(DeskError, match="закупочную себестоимость"):
-            await service.act(order.id, 111, CHAT, SourceAction(action="receive",
-                allocation_id=allocation["id"], expected_revision=1,
-                idempotency_key=uuid4().hex))
+        # Physical receipt is factual and may be confirmed before purchase
+        # cost is known, but it does not create a financial or stock document.
+        physically_received = await service.act(order.id, 111, CHAT, SourceAction(
+            action="receive", allocation_id=allocation["id"],
+            expected_revision=1, idempotency_key=uuid4().hex))
+        assert physically_received["revision"] == 2
+        assert physically_received["allocations"][0]["status"] == "received"
+        assert physically_received["allocations"][0]["ready"] is False
+        assert physically_received["allocations"][0]["x_cost_pending"] is True
+        async with source_db() as session:
+            assert await session.scalar(select(func.count()).select_from(XSettlement).where(
+                XSettlement.order_id == order.id)) == 0
         confirmed = await service.act(order.id, 111, CHAT, SourceAction(
             action="set_x_cost", allocation_id=allocation["id"], x_unit_cost_minor=100000,
-            expected_revision=1, idempotency_key=uuid4().hex))
-        assert confirmed["revision"] == 2
+            expected_revision=2, idempotency_key=uuid4().hex))
+        assert confirmed["revision"] == 3
         assert confirmed["allocations"][0]["x_cost_pending"] is False
         assert confirmed["allocations"][0]["x_total_cost_minor"] == 100000
         async with source_db() as session:
@@ -387,7 +393,7 @@ def test_x_assignment_uses_final_tilda_sale_price_without_faking_cost(source_db)
         with pytest.raises(DeskError, match="подтверждена"):
             await service.act(order.id, 111, CHAT, SourceAction(
                 action="set_x_cost", allocation_id=allocation["id"],
-                x_unit_cost_minor=90000, expected_revision=2,
+                x_unit_cost_minor=90000, expected_revision=3,
                 idempotency_key=uuid4().hex))
     asyncio.run(run())
 
