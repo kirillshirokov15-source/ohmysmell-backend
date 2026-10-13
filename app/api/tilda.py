@@ -3,7 +3,7 @@ import logging
 import os
 import re
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse\nfrom pydantic import BaseModel, Field\nfrom app.services.tilda_checkout_link import issue_checkout_link
 from app.api.auth import require_internal_api_token
 from app.integrations.tilda import (
     TildaInvalid, TildaConfigurationError, normalize, parse_body,
@@ -73,6 +73,23 @@ async def receive_order(request: Request):
         raise HTTPException(409 if str(error) == "external_id_conflict" else 503, "tilda_unavailable_or_conflict") from None
     log_event(logger, "tilda_webhook_accepted", draft_id=result["draft_id"], duplicate=result["duplicate"])
     return JSONResponse(result, status_code=200)
+
+
+class CheckoutTelegramClaim(BaseModel):
+    checkout_nonce: str = Field(min_length=43, max_length=43)
+
+
+@router.post("/integrations/tilda/telegram-link")
+async def customer_checkout_link(payload: CheckoutTelegramClaim):
+    """Only a valid random checkout secret from the Tilda webhook can claim."""
+    try:
+        result = await issue_checkout_link(payload.checkout_nonce)
+    except DeskError:
+        # Same response for absent, invalid, expired or already linked orders.
+        raise HTTPException(404, "link_unavailable") from None
+    return JSONResponse(result, headers={"Cache-Control": "no-store",
+                                        "Referrer-Policy": "no-referrer",
+                                        "X-Content-Type-Options": "nosniff"})
 
 
 @router.post("/internal/tilda/drafts/{draft_id}/telegram-link", dependencies=[Depends(require_internal_api_token)])
