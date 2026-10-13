@@ -19,7 +19,9 @@ def stage_label(desk, draft, order=None):
         return "Статус уточняется у менеджера"
     if draft.status == "rejected":
         return "Отменена"
-    return {"new": "Получен", "working": "В работе",
+    # Historical 'new'/'working' drafts also appear as awaiting approval.
+    # This is a status projection, not a conversion into a confirmed order.
+    return {"new": "Ожидает подтверждения", "working": "Ожидает подтверждения",
             "awaiting_confirmation": "Ожидает подтверждения",
             "awaiting_payment": "Ожидает подтверждения"}[desk.stage]
 
