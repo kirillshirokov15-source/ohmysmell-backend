@@ -112,3 +112,84 @@ async def x_receipt_preflight(order_id, allocation_id, actor, chat_id):
     else:
         lines.append("Готово к оформлению реального документа поступления МойСклад.")
     return {"text": "\n".join(lines), "ready": not blockers, **state}
+
+
+async def plan_document_preflight(order_id, plan_id, action, actor, chat_id):
+    """Read-only preview for actual MoySklad customer reservation or shipment."""
+    if action not in {"reserve", "ship"}:
+        raise DeskError("Неизвестный складской документ.")
+    from app.models.fulfillment import ExternalOperation
+    from app.services.warehouse_documents import plan_key
+    from app.services.order_source_service import allocation_ready
+    from sqlalchemy.orm import selectinload
+    async with async_session() as session, session.begin():
+        await authorized_manager(session, actor, chat_id)
+        desk = await session.scalar(select(OrderDesk).where(OrderDesk.order_id == order_id))
+        if not desk:
+            raise DeskError("К заказу не привязана заявка клиента.")
+        require_owner(desk, actor)
+        order = await session.scalar(select(Order).where(Order.id == order_id)
+                                     .options(selectinload(Order.items)))
+        plans = await source_plans(session, order_id)
+        plan = next((p for p in plans if p.id == plan_id), None)
+        if not plan or not order:
+            raise DeskError("Складской план не найден.")
+        reservations = await session.get(ExternalOperation, plan_key(plan, "reserve", False))
+        released = await session.get(ExternalOperation, plan_key(plan, "release", False))
+        shipped = await session.get(ExternalOperation, plan_key(plan, "ship", False))
+        active = [a for a in plan.allocations if a.supply_status != "cancelled"]
+        blockers = []
+        if not active or any(not allocation_ready(a, manual=order.manual_fulfillment)
+                             for a in active):
+            blockers.append("Сначала подтвердите реальные оприходования всех товаров этого склада.")
+        if not real_moysklad_id(order.counterparty_id):
+            blockers.append("Контрагент покупателя должен быть привязан к МойСклад (UUID).")
+        if order.needs_review or order.status == "rejected" or order.fulfillment_status == "cancelled":
+            blockers.append("Заказ недоступен для складских документов.")
+        if "test oms" in (order.customer_name or "").casefold() or "test oms" in (order.comment or "").casefold():
+            blockers.append("Для тестового заказа запрещены реальные документы МойСклад.")
+        if not real_moysklad_id(settings.moysklad_organization_id):
+            blockers.append("Организация МойСклад не настроена.")
+        if settings.warehouse_ids and plan.warehouse_id not in settings.warehouse_ids:
+            blockers.append("Склад не входит в разрешённые склады МойСклад.")
+        if plan.status != "planned":
+            blockers.append("Складской план уже передан или закрыт.")
+        if action == "reserve":
+            if order.fulfillment_status != "new":
+                blockers.append("Резерв создаётся до начала сборки.")
+            if reservations:
+                blockers.append("По этому плану уже существует операция резервирования.")
+            if released or shipped:
+                blockers.append("У плана есть более поздние складские операции.")
+        else:
+            if order.fulfillment_status != "assembled":
+                blockers.append("Перед отгрузкой заказ должен иметь статус «Собран».")
+            if not reservations or reservations.status != "succeeded":
+                blockers.append("Нет подтверждённого резерва МойСклад.")
+            if released:
+                blockers.append("Резерв уже снят.")
+            if shipped:
+                blockers.append("Отгрузка для этого плана уже зарегистрирована.")
+        names = {i.id: i for i in order.items}
+        descriptions = []
+        for a in active:
+            item = names.get(a.order_item_id)
+            if not item or not real_moysklad_id(item.product_id):
+                blockers.append("Товар не имеет подтверждённого идентификатора МойСклад.")
+            else:
+                descriptions.append(f"• {item.name[:140]} · {a.qty} шт. · "
+                    + {"own": "свой", "partner_x": "Х", "external": "поставщик"}.get(a.source_type, "?"))
+        text = [
+            f"МойСклад · {'резерв' if action == 'reserve' else 'отгрузка'} · заказ №{order_id}",
+            f"Склад: {plan.warehouse_id}",
+            "Товары:",
+            *descriptions,
+            "Это реальное изменение складских документов МойСклад.",
+        ]
+        if blockers:
+            text.append("Сначала устраните:")
+            text.extend("• " + cause for cause in dict.fromkeys(blockers))
+        else:
+            text.append("Все локальные условия выполнены. Нужна явная финальная команда менеджера.")
+        return {"text": "\n".join(text), "ready": not blockers,
+                "revision": order.revision, "plan_id": plan.id, "action": action}
