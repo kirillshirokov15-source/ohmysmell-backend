@@ -313,95 +313,50 @@ def register(dp, check_access, safe_callback_answer):
                                    if not offers else "Что требуется проверить: " + "; ".join(sorted(configuration_issues)) + ".")
                                 + " Настройка предложения в CRM/Buying обязательна, "
                                   "но заказ клиента можно оставить в ожидании закупки.")
-            elif step == "x_receipt_preview":
-                from app.services.x_warehouse_preview import x_receipt_preflight
-                outcome = await x_receipt_preflight(state["order_id"], state["allocation_id"],
-                    state["actor"], state["chat"])
-                text = outcome["text"]
-                if not outcome["physically_received"] and not outcome["already_posted"]:
-                    rows.append(button("1. Подтвердить физическое получение",
-                        dict(state, step="confirm_receive")))
-                if outcome["cost_minor"] is None and not outcome["already_posted"]:
-                    rows.append(button("2. Указать реальную себестоимость Х",
-                        dict(state, step="cost", qty=outcome["quantity"])))
-                if not outcome["partner_uuid_ready"]:
-                    rows.append(button("3. Найти контрагента «Склад Х» в МойСклад",
-                        dict(state, step="x_receipt_find_partner")))
-                if outcome["ready"]:
-                    rows.append(button("⚠️ Реальное оприходование в МойСклад",
-                        dict(state, step="x_receipt_confirm")))
-                rows.append(button("← К обеспечению", dict(state, step="source_home")))
-            elif step == "x_receipt_find_partner":
-                from app.services.x_warehouse_preview import lookup_x_counterparty
-                partner = await lookup_x_counterparty()
-                state = dict(state, partner_uuid=partner["id"])
-                text = (f"Контрагент «Склад Х» найден в МойСклад.\n"
-                    f"Название: {partner['name']}\n"
-                    f"UUID: {partner['id']}\n\n"
-                    "Это существующий контрагент. После подтверждения он будет "
-                    "привязан к единственной локальной карточке Х в CRM. "
-                    "Новая карточка МойСклад НЕ создаётся.")
-                rows.append(button("✅ Привязать контрагента Х",
-                    dict(state, step="x_receipt_bind_partner")))
-                rows.append(button("Отмена", dict(state, step="x_receipt_preview")))
-            elif step == "x_receipt_bind_partner":
-                from app.services.x_warehouse_preview import bind_x_counterparty
-                result = await bind_x_counterparty(state["order_id"],
-                    state["allocation_id"], state["actor"], state["chat"],
-                    state["partner_uuid"])
-                text = ("Контрагент «Склад Х» успешно привязан к МойСклад."
-                    if result == "linked" else
-                    "Контрагент Х уже был корректно привязан.")
-                rows.append(button("← Проверка оприходования Х",
-                    dict(state, step="x_receipt_preview")))
-            elif step == "x_receipt_confirm":
-                from app.services.x_warehouse_preview import x_receipt_preflight
-                outcome = await x_receipt_preflight(state["order_id"], state["allocation_id"],
-                    state["actor"], state["chat"])
-                if not outcome["ready"]:
-                    raise DeskError("Условия прихода изменились. Проверьте оприходование заново.")
-                from app.services.telegram_display import telegram_rubles
-                text = (f"РЕАЛЬНОЕ оприходование МойСклад · заказ №{state['order_id']}\n"
-                    f"Товар: {outcome['product_name'][:140]}\n"
-                    f"Количество: {outcome['quantity']} шт.\n"
-                    f"Склад: Х\n"
-                    f"Себестоимость: {telegram_rubles(outcome['cost_minor'])}\n"
-                    "При подтверждении будет создан настоящий документ поступления. "
-                    "При неизвестном результате повтор запрещён — нужна сверка.")
-                rows.append(button("✅ Подтверждаю реальное оприходование",
-                                   dict(state, step="execute_live_receipt")))
-                rows.append(button("Отменить", dict(state, step="x_receipt_preview")))
-            elif step == "execute_live_receipt":
-                from app.services.x_warehouse_preview import x_receipt_preflight
-                outcome = await x_receipt_preflight(state["order_id"], state["allocation_id"],
-                    state["actor"], state["chat"])
-                if not outcome["ready"] or outcome["order_revision"] != state["revision"]:
-                    raise DeskError("Данные поступления изменились. Откройте проверку заново.")
-                from app.services.warehouse_documents import WarehouseDocumentService
-                from app.services.external_operation_service import ExternalOperationConflict
-                try:
-                    posted = await WarehouseDocumentService().act(
-                        state["order_id"], state["actor"], state["chat"],
-                        state["revision"], "receipt", state["allocation_id"])
-                except (DeskError, ExternalOperationConflict) as error:
-                    raise DeskError(str(error)) from error
-                except Exception:
-                    # External create can have succeeded despite a timeout.
-                    # Do not retry or present a fake "failed" confirmation.
-                    import logging
-                    logging.getLogger(__name__).exception("x_receipt_outcome_uncertain")
-                    await replace_screen(callback.message,
-                        "Неизвестен результат оприходования. НЕ повторяйте операцию. "
-                        "Проверьте журнал внешних операций и документ МойСклад.",
-                        [[{"text": "К заказу", "callback_data":
-                            f"order:refresh:{state['order_id']}:0"}]])
-                    return
-                await replace_screen(callback.message,
-                    f"Оприходование подтверждено МойСклад. Документ {posted['id']}. "
-                    "Далее нужно создать резерв, собрать и отгрузить товар.",
-                    [[{"text": "Обеспечение заказа",
-                       "callback_data": f"order:sources:{state['order_id']}:{posted['revision']}"}]])
+            elif step in {"x_receipt_preview", "x_receipt_find_partner",
+                              "x_receipt_bind_partner", "x_receipt_confirm",
+                              "execute_live_receipt", "confirm_receive",
+                              "cost", "cost_key", "cost_review"}:
+                # All old X supplier and manual cost callback tokens are
+                # invalidated after switching to our own physical warehouse.
+                # No accidental supplier receipt may be reached via old messages.
+                await show_sources(callback.message, state["actor"], state["order_id"], edit=True)
                 return
+            elif step == "x_auto_preview":
+                from app.services.x_own_warehouse import XOwnWarehouseAutomation, x_autoflow_enabled, x_enter_key, x_demand_key
+                from app.models.fulfillment import ExternalOperation
+                overview = await XOwnWarehouseAutomation().process_order(
+                    state["order_id"], dry_run=True)
+                matching = next((p for p in overview.get("plan_rows", [])
+                     if any(a["allocation_id"] == state.get("allocation_id") for a in p["parts"])), None)
+                if not matching:
+                    raise DeskError("Назначение склада Х не найдено.")
+                lines = [
+                    f"Склад Х · заказ №{state['order_id']}",
+                    "Наш склад, без поставщика и без ввода себестоимости.",
+                    f"Склад МойСклад: {matching['store_id']}",
+                    f"Позиций: {len(matching['parts'])} · количество: "
+                    + str(sum(a["qty"] for a in matching["parts"])) + " шт.",
+                    "Цена продажи: берётся непосредственно из заказа Tilda.",
+                ]
+                async with async_session() as session:
+                    enter_events = [await session.get(ExternalOperation, x_enter_key(a["allocation_id"]))
+                                    for a in matching["parts"]]
+                    demand_event = await session.get(ExternalOperation, x_demand_key(matching["plan_id"]))
+                for part, event in zip(matching["parts"], enter_events):
+                    lines.append("Оприходование позиции №" + str(part["item_id"]) + ": "
+                                 + (event.status if event else "ожидает"))
+                lines.append("Отгрузка: " + (demand_event.status if demand_event else "ожидает"))
+                if overview.get("test_order"):
+                    lines.append("Тестовый заказ: запись реальных документов запрещена.")
+                elif not overview.get("counterparty_id"):
+                    lines.append("Для автоматической отгрузки нужно сопоставить покупателя с МойСклад.")
+                elif not x_autoflow_enabled():
+                    lines.append("Автообработка временно выключена до завершения проверки API.")
+                else:
+                    lines.append("Автообработка активна; документы создаются в порядке enter → demand.")
+                text = "\n".join(lines)
+                rows.append(button("← К обеспечению", dict(state, step="source_home")))
             elif step == "plan_doc_preview":
                 from app.services.x_warehouse_preview import plan_document_preflight
                 report = await plan_document_preflight(
@@ -456,12 +411,7 @@ def register(dp, check_access, safe_callback_answer):
                     [[{"text": "К заказу", "callback_data":
                         f"order:refresh:{state['order_id']}:{record['revision']}"}]])
                 return
-            elif step == "confirm_receive":
-                text = ("Подтвердить, что товар со склада Х фактически получен? "
-                    "Это отмечает только получение в CRM и НЕ создаёт документ МойСклад.")
-                rows.append(button("✅ Товар физически получен",
-                                   dict(state, step="apply", action="receive")))
-                rows.append(button("Отмена", dict(state, step="source_home")))
+
             elif step == "source_home":
                 await show_sources(callback.message, state["actor"], state["order_id"], edit=True)
                 return
