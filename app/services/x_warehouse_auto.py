@@ -105,3 +105,47 @@ class XWarehouseAutoService:
         logger.info("x_auto_documents_finished order_id=%s receipts=%s shipments=%s",
                     order_id, len(receipts), len(shipments))
         return dict(status="completed", order_id=order_id, receipts=receipts, shipments=shipments)
+
+
+async def x_auto_status(order_id, allocation_id, actor, chat_id):
+    """Read-only status projection for one physical X stock allocation."""
+    from app.models.fulfillment import ExternalOperation
+    from app.services.warehouse_documents import plan_key
+    from app.services.order_source_service import source_plans
+    view = await OrderSourceService().read(order_id, actor, chat_id)
+    allocation = next((a for a in view["allocations"] if a["id"] == allocation_id
+                       and a["source_type"] == "partner_x"
+                       and a["status"] != "cancelled"), None)
+    if not allocation:
+        raise DeskError("Для этого заказа нет активного распределения со склада Х.")
+    async with async_session() as session:
+        order = await session.scalar(select(Order).where(Order.id == order_id)
+                                     .options(selectinload(Order.items)))
+        plans = await source_plans(session, order_id)
+        plan = next((p for p in plans if p.id == allocation["plan_id"]), None)
+        inbound = await session.get(ExternalOperation,
+            f"warehouse:allocation:{allocation_id}:receipt")
+        shipped = await session.get(ExternalOperation,
+            plan_key(plan, "ship_x", False)) if plan else None
+    item = next((i for i in order.items if i.id == allocation["item_id"]), None)
+    reason = x_auto_blocked_reason(order)
+    enter_status = inbound.status if inbound else "not_started"
+    demand_status = shipped.status if shipped else "not_started"
+    if enter_status in {"uncertain", "inflight"} or demand_status in {"uncertain", "inflight"}:
+        reason = "Внешняя операция имеет неопределённый результат. Повторные записи запрещены до сверки."
+    info = [
+        f"Склад Х — наш неучтённый физический остаток · заказ №{order_id}",
+        f"Товар МойСклад: {(item.name if item else 'не найден')[:170]}",
+        f"Количество: {allocation['qty']} шт.",
+        "Оприходование (entity/enter): " + enter_status,
+        "Отгрузка (entity/demand): " + demand_status,
+        "Контрагент Х: не нужен.",
+        "Закупка и Buying: не нужны.",
+        "Цена продажи Tilda: неизменна.",
+    ]
+    if reason:
+        info.append("Автоисполнение: " + reason)
+    else:
+        info.append("Автоисполнение настроено; безопасный запуск происходит после назначения склада Х.")
+    return dict(text="\n".join(info), blocked=bool(reason),
+                receipt_status=enter_status, shipment_status=demand_status)
