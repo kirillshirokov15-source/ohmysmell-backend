@@ -226,14 +226,19 @@ def order_card(order, shipments=(), *, site_titles=None):
         f"Сборка: {FULFILLMENT_LABELS.get(order.fulfillment_status, order.fulfillment_status)}",
         f"Готово к сборке: {min(ready_quantity, total_quantity)} из {total_quantity} шт.",
     ])
-    pending_x = any(shipment.status in {"planned", "exported"} and
+    pending_x = any(shipment.status == "planned" and
         allocation.source_type == "partner_x" and
         allocation.supply_status in {"awaiting_receipt", "received"}
+        for shipment in shipments for allocation in shipment.allocations)
+    exported_x = any(shipment.status == "exported" and
+        allocation.source_type == "partner_x"
         for shipment in shipments for allocation in shipment.allocations)
     if order.needs_review:
         next_step = "устранить замечания к заказу."
     elif pending_x:
-        next_step = "склад Х → подтвердить физическое получение → оприходовать в МойСклад → резерв → сборка → отгрузка."
+        next_step = "склад Х → автоматическое оприходование (enter) → отгрузка (demand), после проверки настроек."
+    elif exported_x:
+        next_step = "документ отгрузки склада Х создан в МойСклад; подтвердить физическую передачу и доставку."
     elif ready_quantity < total_quantity:
         next_step = "назначить и подтвердить источники товаров."
     elif order.fulfillment_status == "new":
