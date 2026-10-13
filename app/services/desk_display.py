@@ -141,6 +141,9 @@ async def desk_card(draft_id, *, view="details"):
                               "callback_data": f"desk:payment:{draft_id}"}])
         if desk.customer_telegram_id:
             rows.append([{"text": "Ответить клиенту", "callback_data": f"desk:reply:{draft_id}"}])
+        elif active or desk.order_id:
+            rows.append([{"text": "Ссылка клиенту для отслеживания заказа",
+                          "callback_data": f"desk:link:{draft_id}"}])
         if truncated_items:
             rows.append([{"text": "Все товары", "callback_data": f"desk:items:{draft_id}"}])
         rows.append([{"text": "История действий", "callback_data": f"desk:history:{draft_id}"}])
