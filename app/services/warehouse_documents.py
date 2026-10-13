@@ -143,6 +143,7 @@ class WarehouseDocumentService:
             if order.status=='rejected' or order.fulfillment_status=='cancelled' or order.needs_review:
                 raise DeskError('Order is unavailable')
             if not fake and order.manual_fulfillment and (
+                order.id in settings.x_auto_excluded_order_ids or
                 'test oms' in (order.customer_name or '').casefold()
                 or 'test oms' in (order.comment or '').casefold()):
                 raise DeskError('Тестовый заказ: создание реальных документов МойСклад запрещено.')
