@@ -212,6 +212,7 @@ class OrderSourceService:
                 if plan.status != "planned" or allocation.supply_status == "cancelled":
                     raise DeskError("Складской план или распределение недоступны.")
                 if request.action == "set_x_cost":
+                    raise DeskError("Склад Х — собственный склад, а не закупка у партнёра. Себестоимость Х здесь не вводится.")
                     if allocation.source_type != "partner_x" or allocation.supply_status not in {"awaiting_receipt", "received"}:
                         raise DeskError("Закупочная цена доступна для Х до оприходования, включая физически полученный товар.")
                     if allocation.receipt_reference:
@@ -307,6 +308,9 @@ class OrderSourceService:
             if part.warehouse_id not in stores or (settings.warehouse_ids and part.warehouse_id not in settings.warehouse_ids):
                 raise DeskError("Товар или склад отсутствует в актуальном каталоге.")
             if part.source_type == "own":
+                warehouse_name = (stores[part.warehouse_id].get("name") or "").replace(" ", "").casefold()
+                if warehouse_name in {"складх", "складx"}:
+                    raise DeskError("Физический склад Х нельзя назначить как собственный учтённый остаток.")
                 stock = stores[part.warehouse_id]
                 claimed = await claimed_stock(session, item.product_id, part.warehouse_id)
                 if part.qty > available_units(stock.get("stock"), stock.get("reserve")) - claimed:
@@ -328,21 +332,15 @@ class OrderSourceService:
             plan.allocations.append(allocation)
             await session.flush()
             if part.source_type == "partner_x":
-                # Do not ask the manager to choose a partner: there is one X.
-                # Resolve/create a local CRM card only after an explicit confirm.
-                supplier = await singleton_x_partner(session)
-                if part.supplier_id is not None and part.supplier_id != supplier.id:
-                    raise DeskError("Устаревшая карточка партнёра Х. Обновите выбор источника.")
-                allocation.supplier_id = supplier.id
-                # Tilda retail price is authoritative and already stored on
-                # the customer order. Do not mistake it for X procurement cost.
-                # No financial settlement is created until X unit cost is known.
-                if part.base_cost_minor is not None:
-                    values = x_calculation(part.base_cost_minor * part.qty, item.price * part.qty)
-                    if values["status"] != "calculated":
-                        raise DeskError("Стоимость X превышает цену продажи; требуется финансовое решение.")
-                    session.add(XSettlement(order_id=order.id, order_item_id=item.id, allocation_id=allocation.id,
-                        supplier_id=supplier.id, **values))
+                # Legacy enum 'partner_x' now means PHYSICAL WAREHOUSE X owned
+                # by the shop. It must never create a vendor/counterparty,
+                # Buying purchase, supplier settlement or fabricated cost.
+                store_name = (stores[part.warehouse_id].get("name") or "").replace(" ", "").casefold()
+                if store_name not in {"складх", "складx"}:
+                    raise DeskError("Для источника Х разрешён только физический склад «Склад Х».")
+                if part.supplier_id is not None or part.base_cost_minor is not None:
+                    raise DeskError("Склад Х — собственный склад. Поставщик и закупочная цена не требуются.")
+                allocation.supplier_id = None
             elif part.source_type == "external":
                 offer = await session.get(SupplierOffer, part.offer_id)
                 supplier = await session.get(Supplier, offer.supplier_id) if offer else None
