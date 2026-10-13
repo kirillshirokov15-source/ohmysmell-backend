@@ -197,6 +197,12 @@ class WarehouseDocumentService:
                         (store.get('name') or '').replace(' ','').casefold() not in {'складх','складx'}):
                         raise DeskError('Оприходование Х допускается только на склад «Склад Х».')
                 if a.source_type=='partner_x':
+                    # Separate live gate: active backend/manager external write
+                    # permission alone must NOT silently enable X enter records.
+                    import os
+                    if (not fake and os.getenv('OMS_OWN_X_LIVE_ENABLED', 'false').lower() != 'true'):
+                        raise DeskError('Автоматическое оприходование склада Х ещё не активировано: '
+                                        'нужны проверка учётной стоимости и защита от повторного физического остатка.')
                     # X is owned inventory, not an external counterparty.
                     # Do not overwrite inventory valuation with Tilda retail.
                     document=enter(settings.moysklad_organization_id,plan.warehouse_id,
