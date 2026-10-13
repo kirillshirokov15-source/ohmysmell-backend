@@ -143,13 +143,15 @@ async def show_sources(message, actor, order_id, *, edit=False):
                 cost_minor = allocation.get("x_total_cost_minor")
                 lines.append("  Себестоимость Х подтверждена: " +
                     (telegram_rubles(cost_minor) if cost_minor is not None else "не определена"))
-                if (editable and not frozen and allocation["status"] == "awaiting_receipt"):
-                    rows.append(button("Физически получено со склада Х",
-                        dict(state, step="confirm_receive", allocation_id=allocation["id"])))
+            # Physical receipt is a factual assertion, not a financial write:
+            # confirm only on explicit manager click; never infer from cost.
+            if (editable and not frozen and allocation["status"] == "awaiting_receipt"):
+                rows.append(button("Физически получено со склада Х",
+                    dict(state, step="confirm_receive", allocation_id=allocation["id"])))
         if not editable or allocation["plan_status"] != "planned":
             continue
         if (allocation["source_type"] == "partner_x" and allocation.get("x_cost_pending")
-                and allocation["status"] == "awaiting_receipt" and not frozen):
+                and allocation["status"] in {"awaiting_receipt", "received"} and not frozen):
             rows.append(button("Дополнительно: себестоимость Х",
                 dict(state, step="cost", allocation_id=allocation["id"], qty=allocation["qty"])))
         if simulation_allowed() and allocation["status"] == "awaiting_receipt" and (
