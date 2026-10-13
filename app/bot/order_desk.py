@@ -189,6 +189,27 @@ def register(dp, check_access, safe_callback_answer):
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                         {"text": "← К заявке", "callback_data": f"desk:refresh:{draft_id}"}]]))
                 return
+            elif action == "link":
+                from app.database.session import async_session
+                from app.models.order_desk import OrderDesk
+                from app.services.order_desk import require_owner
+                async with async_session() as session:
+                    await authorized_manager(session, callback.from_user.id, callback.message.chat.id)
+                    assigned = await session.get(OrderDesk, draft_id)
+                    if not assigned:
+                        raise DeskError("Заказ сайта не найден.")
+                    require_owner(assigned, callback.from_user.id)
+                link = await service.issue_link(draft_id)
+                await callback.message.edit_text(
+                    "Ссылка для клиента к его конкретному заказу:\n"
+                    + link["deep_link"]
+                    + "\n\nСкопируйте ссылку и отправьте только покупателю. "
+                      "Она одноразовая, действует "
+                    + str(link["expires_in_seconds"] // 60) + " минут. "
+                      "Общая ссылка на бота сама по себе чужие заказы не открывает.",
+                    parse_mode=None, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                        {"text": "← К заявке", "callback_data": f"desk:refresh:{draft_id}"}]]))
+                return
             elif action == "reply":
                 from app.bot.manager_inputs import prompt_input
                 message = callback.message.model_copy(update={"from_user": callback.from_user}).as_(callback.bot)
