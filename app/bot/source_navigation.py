@@ -132,6 +132,11 @@ async def show_sources(message, actor, order_id, *, edit=False):
             continue
         label = {"own": "Свой склад", "partner_x": "X", "external": "Поставщик"}[allocation["source_type"]]
         lines.append(f"{label}: {allocation['qty']} шт. · " + ("готово" if allocation["ready"] else "ожидаем поступления"))
+        if allocation["source_type"] == "external" and allocation.get("purchase_id"):
+            lines.append(f"  Buying B-{allocation['purchase_id']:06d}: "
+                         f"{allocation.get('purchase_status') or 'черновик'}")
+            rows.append([{"text": f"Закупка B-{allocation['purchase_id']:06d} в Buying",
+                          "callback_data": f"order:procurement:{order_id}:{view['revision']}"}])
         if allocation["source_type"] == "partner_x":
             lines.append("  Склад Х — наш товар: оприходование → отгрузка, без поставщика и себестоимости.")
             rows.append(button("Состояние оформления склада Х",
@@ -305,11 +310,14 @@ def register(dp, check_access, safe_callback_answer):
                             warehouse_id=warehouse["id"],
                             warehouse_label=warehouse.get("name") or "Основной склад")))
             elif step == "supplier":
-                text = "Выберите поставщика"
+                text = ("Выберите предложение из Buying. После подтверждения CRM создаст "
+                        "привязанный к заказу черновик закупки без отправки письма "
+                        "и без передачи клиентских данных поставщику.")
                 async with async_session() as session:
                     if state["source_type"] == "partner_x":
-                        # Legacy callback tokens also resolve to the fixed X partner.
-                        rows.append(button("Продолжить: Склад Х", dict(state, step="cost")))
+                        # Legacy callback token cannot reach the old cost/supplier path.
+                        await show_sources(callback.message, state["actor"], state["order_id"], edit=True)
+                        return
                     else:
                         item = await session.get(OrderItem, state["item_id"])
                         offers = (await session.execute(select(SupplierOffer, Supplier).join(Supplier).where(
