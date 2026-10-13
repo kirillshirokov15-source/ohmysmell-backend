@@ -339,3 +339,77 @@ def test_multiple_active_x_partners_fail_closed_without_selection(source_db):
         result = await service.read(order.id, 111, CHAT)
         assert result["revision"] == 0 and result["allocations"] == []
     asyncio.run(run())
+
+
+def test_x_assignment_uses_final_tilda_sale_price_without_faking_cost(source_db):
+    """Stock allocation is not a financial settlement or a MoySklad receipt."""
+    async def run():
+        order, service, parts = await seed_sources(source_db)
+        x_part = {key: value for key, value in parts[2].items()
+                  if key not in {"supplier_id", "base_cost_minor"}}
+        request = SourceAction(action="assign", parts=[x_part],
+            expected_revision=0, idempotency_key=uuid4().hex)
+        assert request.parts[0].base_cost_minor is None
+        view = await service.act(order.id, 111, CHAT, request)
+        allocation = view["allocations"][0]
+        assert allocation["source_type"] == "partner_x"
+        assert allocation["x_cost_pending"] is True
+        assert allocation["ready"] is False
+        assert allocation["x_total_cost_minor"] is None
+        assert view["items"][0]["sale_unit_minor"] == 168000
+        async with source_db() as session:
+            unchanged = await session.get(Order, order.id)
+            assert unchanged.total == 8 * 168000
+            assert unchanged.items[0].price == 168000
+            assert await session.scalar(select(func.count()).select_from(XSettlement).where(
+                XSettlement.order_id == order.id)) == 0
+        # Invalid attempt to mark an unpriced X allocation received must not
+        # create a physical receipt, settlement or false ready quantity.
+        with pytest.raises(DeskError, match="закупочную себестоимость"):
+            await service.act(order.id, 111, CHAT, SourceAction(action="receive",
+                allocation_id=allocation["id"], expected_revision=1,
+                idempotency_key=uuid4().hex))
+        confirmed = await service.act(order.id, 111, CHAT, SourceAction(
+            action="set_x_cost", allocation_id=allocation["id"], x_unit_cost_minor=100000,
+            expected_revision=1, idempotency_key=uuid4().hex))
+        assert confirmed["revision"] == 2
+        assert confirmed["allocations"][0]["x_cost_pending"] is False
+        assert confirmed["allocations"][0]["x_total_cost_minor"] == 100000
+        async with source_db() as session:
+            settlement = await session.scalar(select(XSettlement).where(
+                XSettlement.allocation_id == allocation["id"]))
+            assert settlement.base_cost_minor == 100000
+            assert settlement.sale_price_minor == 168000
+            assert settlement.total_margin_minor == 68000
+            order_after = await session.get(Order, order.id)
+            assert order_after.total == 8 * 168000
+        with pytest.raises(DeskError, match="подтверждена"):
+            await service.act(order.id, 111, CHAT, SourceAction(
+                action="set_x_cost", allocation_id=allocation["id"],
+                x_unit_cost_minor=90000, expected_revision=2,
+                idempotency_key=uuid4().hex))
+    asyncio.run(run())
+
+
+def test_x_cost_cannot_be_substituted_from_tilda_retail_or_reassigned(source_db):
+    async def run():
+        order, service, parts = await seed_sources(source_db)
+        x_part = {key: value for key, value in parts[2].items()
+                  if key not in {"supplier_id", "base_cost_minor"}}
+        view = await service.act(order.id, 111, CHAT, SourceAction(
+            action="assign", parts=[x_part], expected_revision=0,
+            idempotency_key=uuid4().hex))
+        allocation = view["allocations"][0]
+        # Manager cannot use invoice price as the purchase cost implicitly;
+        # a separate explicit cost action and non-negative margin are required.
+        with pytest.raises(DeskError, match="финансовая"):
+            await service.act(order.id, 111, CHAT, SourceAction(
+                action="set_x_cost", allocation_id=allocation["id"],
+                x_unit_cost_minor=200000, expected_revision=1,
+                idempotency_key=uuid4().hex))
+        stale = await service.read(order.id, 111, CHAT)
+        assert stale["revision"] == 1 and stale["allocations"][0]["x_cost_pending"]
+        with pytest.raises(ValueError):
+            SourceAction(action="set_x_cost", allocation_id=allocation["id"],
+                expected_revision=1, idempotency_key=uuid4().hex)
+    asyncio.run(run())
