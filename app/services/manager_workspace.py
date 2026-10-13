@@ -19,6 +19,30 @@ async def shipments_for(order_id):
             .order_by(Shipment.warehouse_id))).scalars())
 
 
+async def site_titles_for(order):
+    """Optional, verified projection of original Tilda titles (read-only).
+
+    A title is shown only if draft/order item ordering and immutable
+    identities agree. Ambiguity falls back to the confirmed MoySklad name.
+    """
+    if not getattr(order, "desk_draft_id", None):
+        return {}
+    from app.models.draft_order import DraftOrderItem
+    async with async_session() as session:
+        originals = list((await session.scalars(
+            select(DraftOrderItem).where(
+                DraftOrderItem.draft_order_id == order.desk_draft_id)
+            .order_by(DraftOrderItem.id))).all())
+    confirmed = sorted(order.items, key=lambda row: row.id)
+    if len(originals) != len(confirmed) or any(
+        old.product_id != new.product_id or old.qty != new.qty or
+        old.price != new.price
+        for old, new in zip(originals, confirmed)):
+        return {}
+    return {new.id: old.raw_product_text for old, new in zip(originals, confirmed)
+            if old.raw_product_text}
+
+
 def order_details_card(order, shipments=()):
     from app.services.desk_status import stage_label
     lines = [f"Заказ №{order.id}", f"Статус: {stage_label(None, None, order)}", f"Клиент: {order.customer_name}", f"Тип: {customer_type_label(order.customer_type)}",
@@ -143,7 +167,7 @@ def order_keyboard(order, shipments=(), *, expanded=False):
 
 
 
-def order_card(order, shipments=()):
+def order_card(order, shipments=(), *, site_titles=None):
     """Complete read-only manager card; buyer channel and stock source are distinct."""
     from app.services.desk_status import stage_label
     from app.services.order_source_service import allocation_ready
@@ -179,8 +203,11 @@ def order_card(order, shipments=()):
         "Товары:",
     ]
     for index, item in enumerate(order.items, 1):
-        name = (item.name or "Без названия").strip()
-        line = f"{index}. {name[:150]} · {item.qty} шт. × {telegram_rubles(item.price)}"
+        confirmed_name = (item.name or "Без названия").strip()
+        site_name = ((site_titles or {}).get(item.id) or confirmed_name).strip()
+        line = f"{index}. {site_name[:150]} · {item.qty} шт. × {telegram_rubles(item.price)}"
+        if site_name.casefold() != confirmed_name.casefold():
+            line += "\n   МойСклад: " + confirmed_name[:125]
         assigned = item_sources.get(item.id) or []
         if assigned:
             line += "\n   " + "; ".join(f"{source}: {count} шт. ({state})"
