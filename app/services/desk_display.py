@@ -22,6 +22,8 @@ REVIEW_PROBLEM_LABELS = {
     "invalid_reported_price": "в Tilda отсутствует или некорректна цена позиции",
     "invalid_quantity": "некорректное количество",
     "sku_missing": "артикул сайта не найден в МойСклад",
+    "sku_not_found": "артикул Tilda не совпадает с артикулом МойСклад",
+    "sku_manual_invalid": "выбранный вручную товар пропал из каталога МойСклад",
     "sku_ambiguous": "артикул сопоставляется с несколькими товарами",
     "sku_unmatched": "артикул сайта не сопоставлен с МойСклад",
     "catalog_unavailable": "не удалось обновить каталог МойСклад",
@@ -102,12 +104,13 @@ async def desk_card(draft_id, *, view="details"):
                 truncated_items = True
                 break
             lines.append(line)
+        unmatched = active and any(item.match_status != "matched" for item in items)
         if active and problems:
             lines.append("⚠️ Нельзя подтвердить заказ:")
             for code in problems[:6]:
                 lines.append("• " + REVIEW_PROBLEM_LABELS.get(code, code.replace("_", " ")))
-            lines.append("Следующий шаг: проверить исходные данные Tilda и сопоставление товаров. "
-                         "Недостающую сумму нельзя подтвердить автоматически.")
+            lines.append("Следующий шаг: " + ("выбрать соответствующий товар в МойСклад."
+                         if unmatched else "устранить расхождение цены или суммы заказа."))
         elif active:
             lines.append("Следующий шаг: " + ("нажмите «Подтвердить заказ» и согласуйте сумму с клиентом"
                         if desk.manager_id else "нажмите «Взять заказ», затем «Подтвердить заказ»"))
@@ -120,8 +123,11 @@ async def desk_card(draft_id, *, view="details"):
         if active and not desk.manager_id:
             rows.append([{"text": "Взять заказ", "callback_data": f"desk:claim:{draft_id}"}])
         elif active and desk.manager_id:
+            if unmatched:
+                rows.append([{"text": "🔎 Найти товар в МойСклад",
+                              "callback_data": f"desk:find:{draft_id}"}])
             if problems:
-                rows.append([{"text": "🔎 Перепроверить товары и сумму",
+                rows.append([{"text": "Перепроверить данные заказа",
                               "callback_data": f"desk:recheck:{draft_id}"}])
             else:
                 rows.append([{"text": "✅ Подтвердить заказ",
