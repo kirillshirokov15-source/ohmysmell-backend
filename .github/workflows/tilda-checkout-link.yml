@@ -20,6 +20,7 @@ jobs:
         run: |
           python -m compileall -q app tests
           node --check app/static/tilda_checkout_link.js
+          node tests/tilda_checkout_link_smoke.cjs
       - name: Tilda webhook and checkout link tests (no database or external writes)
         env:
           EXTERNAL_WRITES_ENABLED: 'false'
