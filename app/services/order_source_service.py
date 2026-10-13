@@ -296,7 +296,8 @@ class OrderSourceService:
             await buying.lock(session)
         products = self.products or ProductService()
         try:
-            catalog = {p["id"]: p for p in await products.get_catalog_async(include_supply=False)}
+            catalog = {p["id"]: p for p in await products.get_catalog_async(
+                include_supply=False, fresh_stock=True)}
         except Exception as error:
             raise DeskError("Не удалось проверить актуальные остатки и склады.") from error
         by_warehouse = {p.warehouse_id: p for p in plans}
