@@ -66,3 +66,14 @@ def test_source_type_is_existing_db_enum_for_backwards_compatibility():
     from app.schemas.order_sources import SourcePart
     item=SourcePart(item_id=5,qty=1,source_type="partner_x",warehouse_id=STORE)
     assert item.base_cost_minor is None and item.supplier_id is None
+
+
+def test_exact_customer_phone_matching_rejects_ambiguous_or_similar_numbers():
+    from app.services.x_own_warehouse import unique_exact_customer
+    one = dict(id=BUYER, phone="+381 64 555 1234", name="Real buyer", archived=False)
+    similar = dict(id="a1111111-1111-4111-8111-111111111111",
+                   phone="+381 64 555 1235", name="Different buyer", archived=False)
+    assert unique_exact_customer([one, similar], "+381645551234", "Real buyer") == BUYER
+    duplicate = {**similar, "phone": one["phone"]}
+    assert unique_exact_customer([one, duplicate], "+381645551234", "Real buyer") is None
+    assert unique_exact_customer([similar], "+381645551234", "Real buyer") is None
