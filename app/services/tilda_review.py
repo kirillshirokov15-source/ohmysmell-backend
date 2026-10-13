@@ -39,8 +39,58 @@ def amounts(payload):
     return sorted(problems), total if not problems else None
 
 
-async def review(payload):
+
+def verified_amounts(payload, manual_total=None):
+    """Never fabricate a Tilda total: only explicit manager attestation of
+    immutable, valid line prices when the site omitted its order total.
+    """
     problems, total = amounts(payload)
+    if not manual_total:
+        return problems, total
+    valid = (
+        isinstance(manual_total, dict)
+        and manual_total.get("digest") == digest(payload)
+        and type(manual_total.get("amount_minor")) is int
+        and payload.get("reported_total") is None
+        and payload.get("discount") == 0
+        and set(problems) == {"invalid_total", "total_mismatch"}
+        and all(type(i.get("price_minor")) is int and 0 < i["price_minor"] <= 100_000_000_000
+                and type(i.get("qty")) is int and 1 <= i["qty"] <= 10000
+                for i in payload["items"])
+    )
+    subtotal = sum(i["price_minor"] * i["qty"] for i in payload["items"]) if valid else 0
+    if valid and subtotal == manual_total["amount_minor"] and 0 < subtotal <= 100_000_000_000:
+        return [], subtotal
+    return sorted(set(problems) | {"manual_total_invalid"}), None
+
+
+def choose_product(products, row, index, manual_matches=None):
+    """An authenticated manager may bind an unmatched Tilda SKU to a verified
+    catalogue product. The override is pinned to the immutable Webhook SKU.
+    """
+    from app.models.draft_order import ProductMatchStatus
+    override = (manual_matches or {}).get(str(index))
+    if override:
+        if override.get("sku") != row["externalid"]:
+            return ProductMatchingService.match_sku([], row["externalid"], row["qty"])
+        matches = [p for p in products if p.get("id") == override.get("product_id")]
+        if len(matches) == 1:
+            return ProductMatchStatus.MATCHED, matches[0]
+        return ProductMatchStatus.NOT_FOUND, None
+    match = ProductMatchingService.match_sku(products, row["externalid"], row["qty"])
+    if match.status == ProductMatchStatus.MATCHED:
+        return match.status, match.product
+    # Strict, unique *full name* fallback is safe; never fuzzy-auto-approve.
+    needle = ProductMatchingService.normalize(row["name"])
+    exact = [p for p in products if needle and
+             needle in ProductMatchingService.normalized_name_variants(p.get("name"))]
+    if len(exact) == 1:
+        return ProductMatchStatus.MATCHED, exact[0]
+    return match.status, None
+
+
+async def review(payload, *, manual_matches=None, manual_total=None):
+    problems, total = verified_amounts(payload, manual_total)
     try:
         matcher = ProductMatchingService()
         ttl = matcher.async_gateway.product_cache.ttl_seconds
@@ -52,17 +102,17 @@ async def review(payload):
         products = []
         problems.append("catalog_unavailable")
     rows = []
-    for row in payload["items"]:
-        match = ProductMatchingService.match_sku(products, row["externalid"], row["qty"])
-        product = match.product or {}
-        if match.status != "matched":
-            problems.append("sku_" + match.status)
+    for index, row in enumerate(payload["items"]):
+        match_status, matched_product = choose_product(products, row, index, manual_matches)
+        product = matched_product or {}
+        if match_status != "matched":
+            problems.append("sku_" + match_status)
         price, qty = row.get("price_minor"), row["qty"]
         valid_price = type(price) is int and 0 < price <= 100_000_000_000
         valid_qty = type(qty) is int and 1 <= qty <= 10000
         rows.append(dict(product_id=product.get("id"), product_name=product.get("name") or row["name"],
-            article=product.get("article"), match_status=match.status,
-            candidates=[asdict(c) for c in match.candidates], qty=qty,
+            article=product.get("article"), match_status=match_status,
+            candidates=[], qty=qty,
             quantity_confidence="confirmed" if valid_qty else "uncertain",
             price=price if valid_price else None,
             item_total=price * qty if valid_price and valid_qty else None))
@@ -110,7 +160,8 @@ def apply_review(draft, rows, total, problems, items=None):
 
 
 def confirmation_problems(draft, payload, items):
-    problems, total = amounts(payload)
+    details = draft.contact_details or {}
+    problems, total = verified_amounts(payload, details.get("tilda_manual_total"))
     for item, row in zip(items, payload["items"], strict=True):
         if (not item.product_id or item.match_status != "matched"
                 or item.quantity_confidence != "confirmed" or item.qty != row["qty"]
@@ -119,5 +170,5 @@ def confirmation_problems(draft, payload, items):
             problems.append("item_review_required")
     if draft.total != total or total is None:
         problems.append("total_review_required")
-    problems.extend((draft.contact_details or {}).get("tilda_review_problems", []))
+    problems.extend(details.get("tilda_review_problems", []))
     return sorted(set(problems))
