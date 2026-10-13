@@ -134,7 +134,7 @@ async def show_sources(message, actor, order_id, *, edit=False):
             continue
         if (allocation["source_type"] == "partner_x" and allocation.get("x_cost_pending")
                 and allocation["status"] == "awaiting_receipt" and not frozen):
-            rows.append(button("Указать закупочную себестоимость Х",
+            rows.append(button("Дополнительно: себестоимость Х",
                 dict(state, step="cost", allocation_id=allocation["id"], qty=allocation["qty"])))
         if simulation_allowed() and allocation["status"] == "awaiting_receipt" and (
                 allocation["source_type"] == "partner_x" or allocation["purchase_status"] == "received"):
