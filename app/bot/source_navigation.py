@@ -123,6 +123,9 @@ async def show_sources(message, actor, order_id, *, edit=False):
         label = {"own": "Свой склад", "partner_x": "X", "external": "Поставщик"}[allocation["source_type"]]
         lines.append(f"{label}: {allocation['qty']} шт. · " + ("готово" if allocation["ready"] else "ожидаем поступления"))
         if allocation["source_type"] == "partner_x":
+            lines.append("  Этапы Х: получить товар → оприходовать в МойСклад → резерв → отгрузка.")
+            rows.append(button("Проверить оприходование Х",
+                dict(state, step="x_receipt_preview", allocation_id=allocation["id"])))
             if allocation.get("x_cost_pending"):
                 lines.append("  Себестоимость Х: ожидает отдельного подтверждения. Расчёт выплат и поступление заблокированы.")
             else:
@@ -130,6 +133,9 @@ async def show_sources(message, actor, order_id, *, edit=False):
                 cost_minor = allocation.get("x_total_cost_minor")
                 lines.append("  Себестоимость Х подтверждена: " +
                     (telegram_rubles(cost_minor) if cost_minor is not None else "не определена"))
+                if (editable and not frozen and allocation["status"] == "awaiting_receipt"):
+                    rows.append(button("Физически получено со склада Х",
+                        dict(state, step="confirm_receive", allocation_id=allocation["id"])))
         if not editable or allocation["plan_status"] != "planned":
             continue
         if (allocation["source_type"] == "partner_x" and allocation.get("x_cost_pending")
@@ -290,6 +296,72 @@ def register(dp, check_access, safe_callback_answer):
                                    if not offers else "Что требуется проверить: " + "; ".join(sorted(configuration_issues)) + ".")
                                 + " Настройка предложения в CRM/Buying обязательна, "
                                   "но заказ клиента можно оставить в ожидании закупки.")
+            elif step == "x_receipt_preview":
+                from app.services.x_warehouse_preview import x_receipt_preflight
+                outcome = await x_receipt_preflight(state["order_id"], state["allocation_id"],
+                    state["actor"], state["chat"])
+                text = outcome["text"]
+                if outcome["ready"]:
+                    rows.append(button("⚠️ Реальное оприходование в МойСклад",
+                        dict(state, step="x_receipt_confirm")))
+                rows.append(button("← К обеспечению", dict(state, step="source_home")))
+            elif step == "x_receipt_confirm":
+                from app.services.x_warehouse_preview import x_receipt_preflight
+                outcome = await x_receipt_preflight(state["order_id"], state["allocation_id"],
+                    state["actor"], state["chat"])
+                if not outcome["ready"]:
+                    raise DeskError("Условия прихода изменились. Проверьте оприходование заново.")
+                from app.services.telegram_display import telegram_rubles
+                text = (f"РЕАЛЬНОЕ оприходование МойСклад · заказ №{state['order_id']}\n"
+                    f"Товар: {outcome['product_name'][:140]}\n"
+                    f"Количество: {outcome['quantity']} шт.\n"
+                    f"Склад: Х\n"
+                    f"Себестоимость: {telegram_rubles(outcome['cost_minor'])}\n"
+                    "При подтверждении будет создан настоящий документ поступления. "
+                    "При неизвестном результате повтор запрещён — нужна сверка.")
+                rows.append(button("✅ Подтверждаю реальное оприходование",
+                                   dict(state, step="execute_live_receipt")))
+                rows.append(button("Отменить", dict(state, step="x_receipt_preview")))
+            elif step == "execute_live_receipt":
+                from app.services.x_warehouse_preview import x_receipt_preflight
+                outcome = await x_receipt_preflight(state["order_id"], state["allocation_id"],
+                    state["actor"], state["chat"])
+                if not outcome["ready"] or outcome["order_revision"] != state["revision"]:
+                    raise DeskError("Данные поступления изменились. Откройте проверку заново.")
+                from app.services.warehouse_documents import WarehouseDocumentService
+                from app.services.external_operation_service import ExternalOperationConflict
+                try:
+                    posted = await WarehouseDocumentService().act(
+                        state["order_id"], state["actor"], state["chat"],
+                        state["revision"], "receipt", state["allocation_id"])
+                except (DeskError, ExternalOperationConflict) as error:
+                    raise DeskError(str(error)) from error
+                except Exception:
+                    # External create can have succeeded despite a timeout.
+                    # Do not retry or present a fake "failed" confirmation.
+                    import logging
+                    logging.getLogger(__name__).exception("x_receipt_outcome_uncertain")
+                    await replace_screen(callback.message,
+                        "Неизвестен результат оприходования. НЕ повторяйте операцию. "
+                        "Проверьте журнал внешних операций и документ МойСклад.",
+                        [[{"text": "К заказу", "callback_data":
+                            f"order:refresh:{state['order_id']}:0"}]])
+                    return
+                await replace_screen(callback.message,
+                    f"Оприходование подтверждено МойСклад. Документ {posted['id']}. "
+                    "Далее нужно создать резерв, собрать и отгрузить товар.",
+                    [[{"text": "Обеспечение заказа",
+                       "callback_data": f"order:sources:{state['order_id']}:{posted['revision']}"}]])
+                return
+            elif step == "confirm_receive":
+                text = ("Подтвердить, что товар со склада Х фактически получен? "
+                    "Это отмечает только получение в CRM и НЕ создаёт документ МойСклад.")
+                rows.append(button("✅ Товар физически получен",
+                                   dict(state, step="apply", action="receive")))
+                rows.append(button("Отмена", dict(state, step="source_home")))
+            elif step == "source_home":
+                await show_sources(callback.message, state["actor"], state["order_id"], edit=True)
+                return
             elif step == "cost":
                 # The optional X cost does not require ForceReply or new chat messages.
                 if "allocation_id" not in state:
