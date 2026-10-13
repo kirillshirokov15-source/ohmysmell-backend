@@ -118,9 +118,25 @@ def register(dp, check_access, safe_callback_answer):
                 from app.services.desk_display import desk_history
                 await callback.message.answer(await desk_history(draft_id), parse_mode=None, protect_content=True)
                 return
-            elif action in {"wait", "payment"}:
+            elif action == "recheck":
+                result = await service.reprice(draft_id, callback.from_user.id, callback.message.chat.id,
+                                               dry_run=False)
+                if result["problems"]:
+                    from app.services.desk_display import REVIEW_PROBLEM_LABELS
+                    messages = [REVIEW_PROBLEM_LABELS.get(code, code) for code in result["problems"]]
+                    await callback.message.answer(
+                        "Проверка заявки №" + str(draft_id) + ":\n"
+                        + "\n".join("• " + text for text in messages[:10])
+                        + "\n\nЕсли сумма отсутствует или не совпадает, проверьте передачу суммы в Tilda; "
+                          "нельзя подтверждать такой заказ без исправления исходных данных.",
+                        parse_mode=None, protect_content=True)
+                else:
+                    await callback.message.answer(
+                        "Проверка завершена. Теперь можно нажать «Подтвердить заказ».",
+                        parse_mode=None)
+            elif action == "payment":
                 await service.stage(draft_id, callback.from_user.id, callback.message.chat.id,
-                    "awaiting_confirmation" if action == "wait" else "awaiting_payment")
+                                    "awaiting_payment")
             elif action == "confirm":
                 await callback.message.answer("Подтвердите: товары, наличие и розничная сумма из карточки согласованы с клиентом. "
                     "Заявленные сайтом скидки не применяются автоматически.", reply_markup=InlineKeyboardMarkup(
@@ -136,7 +152,7 @@ def register(dp, check_access, safe_callback_answer):
                 await service.cancel(draft_id, callback.from_user.id, callback.message.chat.id)
             elif action not in {"refresh", "details", "actions"}:
                 return
-            text, keyboard = await desk_card(draft_id, view=action if action in {"details", "actions"} else "compact")
+            text, keyboard = await desk_card(draft_id)
             from aiogram.exceptions import TelegramBadRequest
             try:
                 await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=None)
