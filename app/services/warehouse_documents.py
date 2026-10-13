@@ -31,20 +31,48 @@ def plan_key(plan, action, fake):
     return ('simulation:' if fake else '')+f'warehouse:{plan.id}:{plan_generation(plan)}:{action}'
 
 
-async def frozen_plan(session, plan):
-    for fake in (False,True):
-        for a in plan.allocations:
-            receipt=await session.get(ExternalOperation,('simulation:' if fake else '')+f'warehouse:allocation:{a.id}:receipt')
-            # Posted goods cannot be silently freed and received a second time.
-            # Returns/reassignment after posting require an explicit inventory workflow.
-            if receipt:
-                return True
-        reserved=await session.get(ExternalOperation,plan_key(plan,'reserve',fake))
-        released=await session.get(ExternalOperation,plan_key(plan,'release',fake))
-        if reserved and not (released and released.status=='succeeded'):
-            return True
-    return False
+async def frozen_plans(session, plans):
+    """Read all warehouse operation locks in ONE query, not 2N+4N round trips.
 
+    Includes both simulated and live receipt/reserve/release intents; even an
+    uncertain provider operation remains frozen until reconciliation.
+    """
+    plans = list(plans)
+    if not plans:
+        return {}
+    keys = set()
+    for plan in plans:
+        for fake in (False, True):
+            prefix = "simulation:" if fake else ""
+            keys.update(prefix + f"warehouse:allocation:{a.id}:receipt" for a in plan.allocations)
+            keys.add(plan_key(plan, "reserve", fake))
+            keys.add(plan_key(plan, "release", fake))
+    existing = {
+        operation.key: operation.status
+        for operation in (await session.scalars(
+            select(ExternalOperation).where(ExternalOperation.key.in_(keys)))).all()
+    }
+    flags = {}
+    for plan in plans:
+        frozen = False
+        for fake in (False, True):
+            prefix = "simulation:" if fake else ""
+            if any(prefix + f"warehouse:allocation:{a.id}:receipt" in existing
+                   for a in plan.allocations):
+                frozen = True
+                break
+            reserve = plan_key(plan, "reserve", fake)
+            release = plan_key(plan, "release", fake)
+            if reserve in existing and existing.get(release) != "succeeded":
+                frozen = True
+                break
+        flags[plan.id] = frozen
+    return flags
+
+
+async def frozen_plan(session, plan):
+    # Compatibility for callers validating one plan; remains one DB query.
+    return (await frozen_plans(session, [plan]))[plan.id]
 
 class WarehouseDocumentService:
     def __init__(self, adapter=None, operations=None, sessions=None):
