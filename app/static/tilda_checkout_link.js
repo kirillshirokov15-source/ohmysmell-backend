@@ -4,7 +4,7 @@
   if (window.__omsCheckoutLinkInstalled) return;
   window.__omsCheckoutLinkInstalled = true;
 
-  const ENDPOINT = "https://ohmysmell-backend-production.up.railway.app/integrations/tilda/telegram-link";
+  const ENDPOINT = new URL("/integrations/tilda/telegram-link", (document.currentScript && document.currentScript.src) || "https://ohmysmell-backend-production.up.railway.app").href;
   const STORAGE_KEY = "oms-last-checkout-nonce-v1";
   const BOT = "https://t.me/OhMySmell_OrdersBot";
   const fieldName = "oms_checkout_nonce_hash";
