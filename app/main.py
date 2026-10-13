@@ -175,7 +175,9 @@ from app.api.buying_cors import BuyingCORSMiddleware
 app.add_middleware(
     BuyingCORSMiddleware,
     buying_origins=settings.buying_allowed_origins,
-    allow_origins=settings.cors_origins,
+    allow_origins=list(dict.fromkeys([
+        *settings.cors_origins, "https://ohmysmell.ru", "https://www.ohmysmell.ru"
+    ])),
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Content-Type", "Authorization", "Idempotency-Key", "X-Internal-API-Token"],
