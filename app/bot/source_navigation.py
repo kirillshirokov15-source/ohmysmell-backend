@@ -204,8 +204,33 @@ def register(dp, check_access, safe_callback_answer):
             empty_reason = None
             step = state["step"]
             if step == "type":
-                for value, label in (("own", "Свой склад"), ("partner_x", "Склад Х"), ("external", "Внешний поставщик")):
-                    rows.append(button(label, dict(state, step="x_warehouse" if value == "partner_x" else "warehouse", source_type=value)))
+                # Real own-stock availability gates the own option; an item
+                # without primary stock must never be offered as "in stock".
+                from app.services.product_service import ProductService
+                from app.services.stock_allocation import available_units
+                from app.services.order_source_service import claimed_stock
+                from app.config.settings import settings
+                async with async_session() as session:
+                    target = await session.get(OrderItem, state["item_id"])
+                    stock_snapshot = await ProductService().get_catalog_async(include_supply=False)
+                    product = next((p for p in stock_snapshot if p["id"] == target.product_id), None) if target else None
+                    own_stores = source_warehouses(product or {}, settings.warehouse_ids, "own")
+                    has_own = False
+                    for warehouse in own_stores:
+                        claimed = await claimed_stock(session, target.product_id, warehouse["id"])
+                        if available_units(warehouse.get("stock"), warehouse.get("reserve")) - claimed >= state["qty"]:
+                            has_own = True
+                            break
+                text = ("Товар есть на основном складе. Выберите источник:"
+                        if has_own else
+                        "На основном складе нет достаточного свободного остатка. "
+                        "Выберите склад Х или внешнего поставщика:")
+                if has_own:
+                    rows.append(button("Свой склад · в наличии", dict(state, step="warehouse", source_type="own")))
+                rows.append(button("Склад Х · наш неучтённый остаток",
+                    dict(state, step="x_warehouse", source_type="partner_x")))
+                rows.append(button("Внешний поставщик · Buying",
+                    dict(state, step="warehouse", source_type="external")))
                 rows.append(button(f"Количество: {state['qty']} шт. · изменить", dict(state,
                     step="quantity", quantity_next="type")))
             elif step == "x_warehouse":
@@ -233,8 +258,9 @@ def register(dp, check_access, safe_callback_answer):
                     text = (f"Склад Х · заказ №{state['order_id']}\n"
                         f"Количество: {state['qty']} шт.\n"
                         f"Цена продажи по Tilda: {telegram_rubles(item_view['sale_unit_minor'])} за шт.\n"
-                        "Закупочная себестоимость Х: не указана (вносится отдельно).\n"
-                        "Назначить склад Х без закупки, резерва или финансового расчёта?")
+                        "Склад Х — наш физический остаток, не поставщик.\n"
+                        "После назначения система сможет автоматически создать "
+                        "Оприходование и Отгрузку МойСклад при включённых безопасных настройках.")
                     rows.append(button("✅ Назначить склад Х",
                                        dict(state, step="apply", action="assign")))
                     rows.append(button("← Другой источник", dict(state, step="type")))
