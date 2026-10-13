@@ -10,6 +10,7 @@
   const fieldName = "oms_checkout_nonce_hash";
   const prepared = new WeakSet();
   let overlay;
+  let panelControls;
 
   function token() {
     const bytes = new Uint8Array(32);
@@ -26,7 +27,7 @@
   }
 
   function panel() {
-    if (overlay) return overlay;
+    if (overlay) return panelControls;
     overlay = document.createElement("section");
     overlay.setAttribute("role", "status");
     overlay.setAttribute("aria-live", "polite");
@@ -51,10 +52,11 @@
     close.textContent = "×";
     close.setAttribute("aria-label", "Закрыть");
     close.style.cssText = "position:absolute;right:12px;top:8px;background:transparent;border:0;font-size:24px;cursor:pointer";
-    close.addEventListener("click", () => { overlay.remove(); overlay = null; });
+    close.addEventListener("click", () => { overlay.remove(); overlay = null; panelControls = null; });
     overlay.append(title, status, link, again, close);
     document.body.append(overlay);
-    return {status, link, again};
+    panelControls = {status, link, again};
+    return panelControls;
   }
 
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
