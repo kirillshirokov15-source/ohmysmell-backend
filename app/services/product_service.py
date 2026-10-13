@@ -62,10 +62,13 @@ class ProductService:
         include_price_types: bool = False,
         strict_pricing: bool = False,
         include_supply: bool = True,
+        fresh_stock: bool = False,
     ) -> list[dict]:
         products = await self.async_gateway.get_products()
-        stores = await self.async_gateway.get_stores()
-        stock_report = await self.async_gateway.get_stock_by_store()
+        stores = await (self.async_gateway.get_stores(fresh=True) if fresh_stock
+                        else self.async_gateway.get_stores())
+        stock_report = await (self.async_gateway.get_stock_by_store(fresh=True)
+                              if fresh_stock else self.async_gateway.get_stock_by_store())
         catalog = self._build_catalog(
             products,
             stores,
