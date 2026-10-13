@@ -109,6 +109,16 @@ async def show_sources(message, actor, order_id, *, edit=False):
     async with async_session() as session:
         plans = await source_plans(session, order_id)
         frozen = any([await frozen_plan(session, plan) for plan in plans])
+        from app.models.fulfillment import ExternalOperation
+        from app.services.warehouse_documents import plan_key
+        plan_docs = {}
+        for plan in plans:
+            reserved = await session.get(ExternalOperation, plan_key(plan, "reserve", False))
+            shipped = await session.get(ExternalOperation, plan_key(plan, "ship", False))
+            plan_docs[plan.id] = dict(
+                reserved=reserved is not None and reserved.status == "succeeded",
+                shipped=shipped is not None,
+            )
     state = dict(actor=actor, chat=message.chat.id, order_id=order_id, revision=view["revision"])
     rows, lines = [], [f"Обеспечение заказа №{order_id}"]
     for item in view["items"]:
@@ -152,6 +162,25 @@ async def show_sources(message, actor, order_id, *, edit=False):
         if not frozen:
             rows.append(button(f"Убрать источник: {label} · {allocation['qty']} шт.", dict(state, step="confirm_cancel",
                 allocation_id=allocation["id"])))
+    # Documents are ordered: real receipt → customer reserve → assembly → shipment.
+    # Only local readiness is used for visibility; final confirmation rechecks
+    # all prerequisites and invokes the idempotent external operation ledger.
+    from app.services.order_source_service import allocation_ready
+    for plan in plans:
+        active_allocations = [a for a in plan.allocations if a.supply_status != "cancelled"]
+        if not active_allocations:
+            continue
+        ready = all(allocation_ready(a, manual=order.manual_fulfillment)
+                    for a in active_allocations)
+        if (ready and plan.status == "planned" and not plan_docs[plan.id]["reserved"]
+                and order.fulfillment_status == "new" and not order.needs_review):
+            rows.append(button("Проверить резерв МойСклад",
+                dict(state, step="plan_doc_preview", plan_id=plan.id, doc_action="reserve")))
+        if (ready and plan.status == "planned" and plan_docs[plan.id]["reserved"]
+                and not plan_docs[plan.id]["shipped"]
+                and order.fulfillment_status == "assembled" and not order.needs_review):
+            rows.append(button("Проверить отгрузку МойСклад",
+                dict(state, step="plan_doc_preview", plan_id=plan.id, doc_action="ship")))
     rows.append([{"text": "Назад к заказу", "callback_data": f"order:refresh:{order_id}:{view['revision']}"}])
     if edit:
         await replace_screen(message, "\n".join(lines), rows)
@@ -352,6 +381,60 @@ def register(dp, check_access, safe_callback_answer):
                     "Далее нужно создать резерв, собрать и отгрузить товар.",
                     [[{"text": "Обеспечение заказа",
                        "callback_data": f"order:sources:{state['order_id']}:{posted['revision']}"}]])
+                return
+            elif step == "plan_doc_preview":
+                from app.services.x_warehouse_preview import plan_document_preflight
+                report = await plan_document_preflight(
+                    state["order_id"], state["plan_id"], state["doc_action"],
+                    state["actor"], state["chat"])
+                text = report["text"]
+                if report["ready"]:
+                    rows.append(button("⚠️ Продолжить к реальной операции",
+                        dict(state, step="plan_doc_confirm")))
+                rows.append(button("← К обеспечению", dict(state, step="source_home")))
+            elif step == "plan_doc_confirm":
+                from app.services.x_warehouse_preview import plan_document_preflight
+                report = await plan_document_preflight(
+                    state["order_id"], state["plan_id"], state["doc_action"],
+                    state["actor"], state["chat"])
+                if not report["ready"]:
+                    raise DeskError("Данные резерва/отгрузки изменились. Выполните проверку заново.")
+                verb = "РЕЗЕРВ" if state["doc_action"] == "reserve" else "ОТГРУЗКУ"
+                text = (f"РЕАЛЬНАЯ ОПЕРАЦИЯ МойСклад · заказ №{state['order_id']}\n"
+                    f"Будет создан документ: {verb}.\n"
+                    "Это изменит складской учёт. Если результат неизвестен, не повторяйте команду.")
+                rows.append(button("✅ Создать реальный документ",
+                    dict(state, step="plan_doc_execute")))
+                rows.append(button("Отмена", dict(state, step="source_home")))
+            elif step == "plan_doc_execute":
+                from app.services.x_warehouse_preview import plan_document_preflight
+                report = await plan_document_preflight(
+                    state["order_id"], state["plan_id"], state["doc_action"],
+                    state["actor"], state["chat"])
+                if not report["ready"] or report["revision"] != state["revision"]:
+                    raise DeskError("Складской план устарел. Начните проверку заново.")
+                from app.services.warehouse_documents import WarehouseDocumentService
+                try:
+                    record = await WarehouseDocumentService().act(
+                        state["order_id"], state["actor"], state["chat"],
+                        state["revision"], state["doc_action"], state["plan_id"])
+                except DeskError as error:
+                    raise DeskError(str(error)) from error
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception("warehouse_plan_outcome_uncertain")
+                    await replace_screen(callback.message,
+                        "Результат МойСклад неизвестен. Не повторяйте операцию; "
+                        "проверьте журнал и документ в МойСклад.",
+                        [[{"text": "К заказу", "callback_data":
+                            f"order:refresh:{state['order_id']}:0"}]])
+                    return
+                await replace_screen(callback.message,
+                    f"МойСклад подтвердил документ: {record['id']}. "
+                    + ("Теперь можно начать сборку." if state["doc_action"] == "reserve"
+                       else "Отгрузка создана. Проверьте доставку и оплату."),
+                    [[{"text": "К заказу", "callback_data":
+                        f"order:refresh:{state['order_id']}:{record['revision']}"}]])
                 return
             elif step == "confirm_receive":
                 text = ("Подтвердить, что товар со склада Х фактически получен? "
