@@ -149,6 +149,7 @@ class DeskService:
             if not desk or not draft or desk.order_id or draft.status == "rejected":
                 raise DeskError("Заявка закрыта для поиска.")
             require_owner(desk, actor)
+            revision = draft.revision
         from app.services.product_matching_service import ProductMatchingService
         matcher = ProductMatchingService()
         catalog = await matcher.products_async()
@@ -173,8 +174,8 @@ class DeskService:
             if score:
                 scored.append((score, product))
         scored.sort(key=lambda item: (-item[0], str(item[1].get("name") or "").casefold()))
-        return [dict(id=p["id"], name=str(p.get("name") or "")[:120],
-                     article=str(p.get("article") or "")[:80]) for _, p in scored[:8]]
+        return dict(revision=revision, products=[dict(id=p["id"], name=str(p.get("name") or "")[:120],
+                     article=str(p.get("article") or "")[:80]) for _, p in scored[:8]])
 
     async def bind_site_product(self, draft_id, actor, chat_id, position, expected_revision, product_id):
         """Explicit, audited manual SKU binding. Never adjusts source price/quantity."""
