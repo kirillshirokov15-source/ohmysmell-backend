@@ -127,7 +127,7 @@ async def x_receipt_preflight(order_id, allocation_id, actor, chat_id):
                      physically_received=allocation.supply_status in {"received", "confirmed"},
                      already_posted=allocation.supply_status == "confirmed",
                      cost_minor=settlement.base_cost_minor if settlement else None,
-                     partner_uuid_ready=bool(partner and real_moysklad_id(partner.external_reference)),
+                     partner_uuid_ready=True,
                      source_name=partner.name if partner else "Склад Х")
         blockers = []
         if order.status == "rejected" or order.fulfillment_status != "new" or order.needs_review:
@@ -138,10 +138,9 @@ async def x_receipt_preflight(order_id, allocation_id, actor, chat_id):
             blockers.append("Сначала подтвердите фактическое получение товара со склада Х.")
         if state["already_posted"]:
             blockers.append("Поступление уже оформлено, повтор запрещён.")
-        if not settlement:
-            blockers.append("Закупочная себестоимость Х ещё не согласована.")
-        if not partner or not real_moysklad_id(partner.external_reference):
-            blockers.append("Нужно связать единственного партнёра Х с реальным контрагентом МойСклад (UUID).")
+        # Own X warehouse has no purchase partner and no X cost settlement.
+        # A price displayed to the customer is never a receipt valuation.
+        # Physical receipt and correct existing product identity remain required.
         if not real_moysklad_id(settings.moysklad_organization_id):
             blockers.append("Не настроена организация МойСклад.")
         if settings.warehouse_ids and plan.warehouse_id not in settings.warehouse_ids:
@@ -167,10 +166,10 @@ async def x_receipt_preflight(order_id, allocation_id, actor, chat_id):
         f"Идентификатор товара: {state['product_id']}",
         f"Количество: {state['quantity']} шт.",
         f"Цена продажи: {telegram_rubles(state['sale_price_minor'])} за шт.",
-        ("Себестоимость X: " + telegram_rubles(state["cost_minor"])
-         if state["cost_minor"] is not None else "Себестоимость X: не согласована"),
+        "Цена продажи из Tilda не применяется как себестоимость оприходования.",
         f"Физическое получение: {'подтверждено' if state['physically_received'] else 'не подтверждено'}",
         f"Документ МойСклад: {'уже создан' if state['already_posted'] else 'не создан'}",
+        "Тип складского документа: Оприходование (enter), без поставщика.",
         "После прихода: резерв → сборка → отгрузка.",
         ("Контрагент покупателя для будущего резерва: настроен"
          if state["customer_counterparty_ready"] else
