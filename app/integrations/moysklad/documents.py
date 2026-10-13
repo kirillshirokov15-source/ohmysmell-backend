@@ -22,8 +22,13 @@ def verified_document(intent, document):
             return False
         positions = positions.get('rows', [])
     def signature(row):
+        # The provider may return a default 0 for omitted enter position
+        # valuation. That default is NOT the website's retail sale price.
+        price = row.get('price')
+        if intent['entity'] == 'enter' and price is None:
+            price = 0
         return (row.get('assortment', {}).get('meta', {}).get('href'), row.get('quantity'),
-                row.get('price'), row.get('reserve', 0))
+                price, row.get('reserve', 0))
     return Counter(map(signature, expected['positions'])) == Counter(map(signature, positions))
 
 
