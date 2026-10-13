@@ -116,6 +116,33 @@ def register(dp, check_access, safe_callback_answer):
                     rows.append(button(label, dict(state, step="x_warehouse" if value == "partner_x" else "warehouse", source_type=value)))
                 rows.append(button(f"Количество: {state['qty']} шт. · изменить", dict(state,
                     step="quantity", quantity_next="type")))
+            elif step == "x_warehouse":
+                from app.services.product_service import ProductService
+                from app.config.settings import settings
+                async with async_session() as session:
+                    item = await session.get(OrderItem, state["item_id"])
+                if not item:
+                    raise DeskError("Позиция заказа не найдена.")
+                catalog = await ProductService().get_catalog_async(include_supply=False)
+                product = next((p for p in catalog if p["id"] == item.product_id), {})
+                warehouses = [stock for stock in product.get("stocks", [])
+                    if (not settings.warehouse_ids or stock["id"] in settings.warehouse_ids)
+                    and (stock.get("name") or "").replace(" ", "").casefold()
+                        in {"складх", "складx"}]
+                if len(warehouses) != 1:
+                    empty_reason = ("Склад Х не найден однозначно среди разрешённых складов "
+                                    "МойСклад. Проверьте его название и привязку товара.")
+                else:
+                    from app.bot.manager_inputs import prompt_input
+                    state = dict(state, warehouse_id=warehouses[0]["id"],
+                                 origin_message_id=callback.message.message_id)
+                    await replace_screen(callback.message,
+                        "Склад Х · заказ №" + str(state["order_id"])
+                        + "\nВведите закупочную стоимость за штуку ответом на сообщение.",
+                        [button("← Другой источник", dict(state, step="type"))])
+                    await prompt_input(message, "source_cost", state,
+                        "Введите закупочную цену склада Х за штуку в рублях.")
+                    return
             elif step == "warehouse":
                 from app.services.product_service import ProductService
                 from app.config.settings import settings
