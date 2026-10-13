@@ -133,32 +133,16 @@ async def show_sources(message, actor, order_id, *, edit=False):
         label = {"own": "Свой склад", "partner_x": "X", "external": "Поставщик"}[allocation["source_type"]]
         lines.append(f"{label}: {allocation['qty']} шт. · " + ("готово" if allocation["ready"] else "ожидаем поступления"))
         if allocation["source_type"] == "partner_x":
-            lines.append("  Этапы Х: получить товар → оприходовать в МойСклад → резерв → отгрузка.")
-            rows.append(button("Проверить оприходование Х",
-                dict(state, step="x_receipt_preview", allocation_id=allocation["id"])))
-            if allocation.get("x_cost_pending"):
-                lines.append("  Себестоимость Х: ожидает отдельного подтверждения. Расчёт выплат и поступление заблокированы.")
-            else:
-                from app.services.telegram_display import telegram_rubles
-                cost_minor = allocation.get("x_total_cost_minor")
-                lines.append("  Себестоимость Х подтверждена: " +
-                    (telegram_rubles(cost_minor) if cost_minor is not None else "не определена"))
-            # Physical receipt is a factual assertion, not a financial write:
-            # confirm only on explicit manager click; never infer from cost.
-            if (editable and not frozen and allocation["status"] == "awaiting_receipt"):
-                rows.append(button("Физически получено со склада Х",
-                    dict(state, step="confirm_receive", allocation_id=allocation["id"])))
+            lines.append("  Склад Х — наш товар: оприходование → отгрузка, без поставщика и себестоимости.")
+            rows.append(button("Состояние оформления склада Х",
+                dict(state, step="x_auto_preview", allocation_id=allocation["id"])))
         if not editable or allocation["plan_status"] != "planned":
             continue
-        if (allocation["source_type"] == "partner_x" and allocation.get("x_cost_pending")
-                and allocation["status"] in {"awaiting_receipt", "received"} and not frozen):
-            rows.append(button("Дополнительно: себестоимость Х",
-                dict(state, step="cost", allocation_id=allocation["id"], qty=allocation["qty"])))
-        if simulation_allowed() and allocation["status"] == "awaiting_receipt" and (
-                allocation["source_type"] == "partner_x" or allocation["purchase_status"] == "received"):
+
+        if simulation_allowed() and allocation["source_type"] == "external" and allocation["status"] == "awaiting_receipt" and allocation["purchase_status"] == "received":
             rows.append(button(f"Получено: {label} · {allocation['qty']} шт.", dict(state, step="apply",
                 action="receive", allocation_id=allocation["id"])))
-        if simulation_allowed() and allocation["status"] == "received":
+        if simulation_allowed() and allocation["source_type"] == "external" and allocation["status"] == "received":
             rows.append(button(f"Оприходовать: {label} (симуляция)", dict(state, step="apply",
                 action="post_receipt", allocation_id=allocation["id"])))
         if not frozen:
@@ -248,8 +232,10 @@ def register(dp, check_access, safe_callback_answer):
                     text = (f"Склад Х · заказ №{state['order_id']}\n"
                         f"Количество: {state['qty']} шт.\n"
                         f"Цена продажи по Tilda: {telegram_rubles(item_view['sale_unit_minor'])} за шт.\n"
-                        "Закупочная себестоимость Х: не указана (вносится отдельно).\n"
-                        "Назначить склад Х без закупки, резерва или финансового расчёта?")
+                        "Наш склад Х. Поставщик и закупочная цена не требуются.\n"
+                        "После назначения заявка будет ожидать автоматического "
+                        "оприходования на Х и отгрузки покупателю.\n"
+                        "Операции защищены от дублей; тестовые заказы не отправляются.")
                     rows.append(button("✅ Назначить склад Х",
                                        dict(state, step="apply", action="assign")))
                     rows.append(button("← Другой источник", dict(state, step="type")))
