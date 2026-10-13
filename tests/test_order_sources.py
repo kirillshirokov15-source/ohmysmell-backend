@@ -358,7 +358,8 @@ def test_x_assignment_uses_final_tilda_sale_price_without_faking_cost(source_db)
         assert allocation["x_total_cost_minor"] is None
         assert view["items"][0]["sale_unit_minor"] == 168000
         async with source_db() as session:
-            unchanged = await session.get(Order, order.id)
+            unchanged = await session.scalar(select(Order).where(Order.id == order.id)
+                .options(selectinload(Order.items)))
             assert unchanged.total == 8 * 168000
             assert unchanged.items[0].price == 168000
             assert await session.scalar(select(func.count()).select_from(XSettlement).where(
