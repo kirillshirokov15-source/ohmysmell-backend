@@ -257,7 +257,7 @@ def register(dp, check_access, safe_callback_answer):
                     + " · закупочная себестоимость Х\n"
                     "Введите закупочную цену Х за штуку. Розничная цена с Tilda не изменится.",
                     [[{"text": "← К обеспечению", "callback_data":
-                        f"order:sources:{state['order_id']}:0"}]])
+                        f"order:sources:{state['order_id']}:{state['revision']}"}]])
                 await prompt_input(message, "source_cost", state,
                     "Введите закупочную себестоимость Х за штуку в рублях (не цену для покупателя).")
                 return
