@@ -17,6 +17,28 @@ from app.services.telegram_display import (
 )
 
 
+def inquiry_original_body(draft) -> str:
+    """Read the full original email from its persisted inbound message."""
+    inbound = getattr(draft, "inbound_message", None)
+    raw = (getattr(inbound, "body_text", None)
+           or getattr(draft, "body_text", None) or "")
+    return raw.replace("\x00", "").strip()
+
+
+def build_inquiry_message(draft) -> str:
+    """Dedicated manager Telegram message, independent of editMessageText."""
+    body = inquiry_original_body(draft)
+    subject = (getattr(draft, "subject", None) or "Без темы").strip()[:250]
+    sender = (getattr(draft, "sender_email", None) or "Не указан").strip()[:320]
+    if not body:
+        body = "Текст письма не найден в CRM. Проверьте исходное письмо в Gmail."
+    return (f"📩 Вопрос клиента · обращение №{draft.id}\n"
+            f"От: {sender}\n"
+            f"Тема: {subject}\n\n"
+            f"{body[:3000]}\n\n"
+            "Не заказ. Ответьте клиенту в переписке Gmail.")[:3850]
+
+
 def build_draft_card(draft: DraftOrder) -> str:
     inquiry = (getattr(draft, "contact_details", None) or {}).get("mail_intent") == "inquiry"
     email_heading = ("📩 Письмо-уточнение · НЕ заказ" if inquiry
@@ -38,7 +60,7 @@ def build_draft_card(draft: DraftOrder) -> str:
         "Позиции:" if not inquiry else "Письмо клиента (требуется ответ):",
     ]
     if inquiry:
-        excerpt = " ".join((getattr(draft, "body_text", "") or "").split())[:650]
+        excerpt = " ".join(inquiry_original_body(draft).split())[:650]
         lines.append(excerpt or "(письмо без текста; посмотрите исходное письмо в Gmail)")
         lines.append("⚠ Это письмо не является оформленным заказом.")
     for item in draft.items:
@@ -216,7 +238,7 @@ def compact_draft_card(draft, *, expanded=False):
         lines.append("Клиент: " + (draft.customer_name or draft.sender_email or "Не указан")[:120])
         if inquiry:
             lines.append("Тема: " + (draft.subject or "Без темы")[:170])
-            lines.append("Вопрос: " + " ".join((getattr(draft, "body_text", "") or "").split())[:220])
+            lines.append("Вопрос: " + " ".join(inquiry_original_body(draft).split())[:220])
         for item in (draft.items or [])[:3]:
             title = " ".join((item.raw_product_text or "Товар").split())[:90]
             lines.append(f"• {title} — {max(item.qty, 0)} шт.")
