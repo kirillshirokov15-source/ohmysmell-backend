@@ -41,9 +41,9 @@ class EmailParser:
     # Short wholesale line: SKU, quantity, then customer-supplied price.
     # The trailing number is money, NEVER part of quantity or SKU.
     _sku_qty_price = re.compile(
-        r"^(?P<product>[a-zа-яё0-9][a-zа-яё0-9._/\\-]{1,40})\\s+"
-        r"(?P<qty>\\d{1,4})\\s*(?:шт\\.?|штук(?:а|и)?|pcs?\\.?)\\s+"
-        r"(?P<quoted>\\d{1,9}(?:[.,]\\d{1,2})?)\\s*(?:₽|руб\\.?|р\\.?)?\\s*$", re.I,
+        r"^(?P<product>[a-zа-яё0-9][a-zа-яё0-9._/\-]{1,40})\s+"
+        r"(?P<qty>\d{1,4})\s*(?:шт\.?|штук(?:а|и)?|pcs?\.?)\s+"
+        r"(?P<quoted>\d{1,9}(?:[.,]\d{1,2})?)\s*(?:₽|руб\.?|р\.?)?\s*$", re.I,
     )
     _table_price_header = frozenset({"цена", "цена, $", "цена,₽", "цена, ₽", "цена, р", "цена, руб", "price", "price, $", "unit price"})
     _table_article_header = frozenset({"артикул", "sku", "код", "article"})
@@ -199,7 +199,7 @@ class EmailParser:
                 if qty_column is not None:
                     product = cells[product_column] if product_column < len(cells) else ""
                     quant = cells[qty_column] if qty_column < len(cells) else ""
-                    match = re.fullmatch(r"(\\d{1,5})\\s*(?:шт\\.?|pcs?\\.?)?", quant, re.I)
+                    match = re.fullmatch(r"(\d{1,5})\s*(?:шт\.?|pcs?\.?)?", quant, re.I)
                     if product and match and (name := self._safe_product(product, sender_name=sender_name)):
                         qty = int(match.group(1))
                         if 1 <= qty <= 100000:
@@ -214,7 +214,7 @@ class EmailParser:
                     continue
                 product = cells[0]
                 quant = cells[1] if len(cells) == 2 else ""
-                match = re.fullmatch(r"(\\d{1,5})\\s*(?:шт\\.?|pcs?\\.?)?", quant, re.I)
+                match = re.fullmatch(r"(\d{1,5})\s*(?:шт\.?|pcs?\.?)?", quant, re.I)
                 if product and match and (name := self._safe_product(product, sender_name=sender_name)):
                     qty = int(match.group(1))
                     if 1 <= qty <= 100000:
@@ -271,7 +271,7 @@ class EmailParser:
         # An inquiry wins unless there is an explicit commitment to buy.
         # Parse structured order rows before checking inquiry words:
         # table headings such as "Цена" are not customer questions.
-        table_order = bool(re.search(r"(?:^|[\\n\\t|])\\s*(?:наименование|product)\\s*[\\t|]", body, re.I)
+        table_order = bool(re.search(r"(?:^|[\n\t|])\s*(?:наименование|product)\s*[\t|]", body, re.I)
                            and re.search(r"количество|quantity|qty", body, re.I))
         if (question or "?" in subj or "?" in body) and not order_command and not table_order:
             return ClassifiedEmail("inquiry", ())
