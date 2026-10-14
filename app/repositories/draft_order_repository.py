@@ -58,6 +58,37 @@ class DraftOrderRepository:
             draft.items.append(DraftOrderItem(**item_data))
             return draft
 
+    async def reconsider_email_table(self, draft_id, item_data, actor):
+        """Recover order lines from a stored table email without duplicate rows."""
+        from app.models.manager import Manager
+        from app.services.email_parser import EmailParser
+        async with async_session() as session, session.begin():
+            if not await session.scalar(select(Manager.id).where(
+                    Manager.telegram_id == actor, Manager.is_active.is_(True))):
+                raise InvalidOrderTransitionError("Нет доступа менеджера")
+            draft = await self._locked(session, draft_id)
+            if not draft:
+                raise InvalidOrderTransitionError("Заявка не найдена")
+            self._ensure_editable(draft)
+            if draft.source != "email" or (draft.contact_details or {}).get("mail_intent") != "inquiry":
+                raise InvalidOrderTransitionError("Только неоформленное письмо можно разобрать повторно")
+            if draft.items:
+                raise InvalidOrderTransitionError("В заявке уже есть позиции; повторное добавление запрещено")
+            raw = getattr(draft.inbound_message, "body_text", "") or ""
+            parsed = EmailParser().parse_message(draft.subject, raw, sender_name=draft.customer_name)
+            if parsed.intent != "order" or not parsed.items:
+                raise InvalidOrderTransitionError("Не удалось подтвердить товарные строки")
+            if [(x.raw_product_text, x.qty) for x in parsed.items] != [
+                    (x["raw_product_text"], x["qty"]) for x in item_data]:
+                raise InvalidOrderTransitionError("Позиции изменились; повторите проверку")
+            self._invalidate(draft)
+            draft.contact_details = {**(draft.contact_details or {}),
+                "mail_intent": "order", "reconsidered_by_telegram_id": actor}
+            draft.review_notes = "Заказ восстановлен из исходного письма; проверить товары, цены и контрагента"
+            for item in item_data:
+                draft.items.append(DraftOrderItem(**item))
+            return draft
+
     async def classify_possible_email(self, draft_id, intent, actor):
         """Manager explicitly confirms the intent of a bare-product subject.
 
