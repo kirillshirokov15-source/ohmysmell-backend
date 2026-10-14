@@ -22,4 +22,4 @@ jobs:
           APP_ENV: staging
           EXTERNAL_WRITES_ENABLED: 'false'
           TELEGRAM_BOT_TOKEN: '123456:TEST_CI_TOKEN_NO_NETWORK'
-        run: python -m pytest -q tests/test_gmail_bare_subject_order.py tests/test_email_intent_safety.py tests/test_email_inquiry_read_button.py tests/test_email_pipeline.py tests/test_manager_email_orders_navigation.py tests/test_gmail_acceptance.py
+        run: python -m pytest -q tests/test_gmail_bare_subject_order.py tests/test_gmail_subject_reconsider_existing.py tests/test_email_intent_safety.py tests/test_email_inquiry_read_button.py tests/test_email_pipeline.py tests/test_manager_email_orders_navigation.py tests/test_gmail_acceptance.py
