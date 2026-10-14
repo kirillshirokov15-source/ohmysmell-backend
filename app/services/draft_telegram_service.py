@@ -40,8 +40,11 @@ def build_inquiry_message(draft) -> str:
 
 
 def build_draft_card(draft: DraftOrder) -> str:
-    inquiry = (getattr(draft, "contact_details", None) or {}).get("mail_intent") == "inquiry"
+    mail_intent = (getattr(draft, "contact_details", None) or {}).get("mail_intent")
+    inquiry = mail_intent == "inquiry"
+    tentative = mail_intent == "possible_order"
     email_heading = ("📩 Письмо-уточнение · НЕ заказ" if inquiry
+                     else "⚠️ Возможный заказ · товар в теме" if tentative
                      else "📨 Новый заказ из почты" if draft.items
                      else "📨 Возможный заказ · нужны товары")
     lines = [
@@ -63,6 +66,8 @@ def build_draft_card(draft: DraftOrder) -> str:
         excerpt = " ".join(inquiry_original_body(draft).split())[:650]
         lines.append(excerpt or "(письмо без текста; посмотрите исходное письмо в Gmail)")
         lines.append("⚠ Это письмо не является оформленным заказом.")
+    if tentative:
+        lines.append("⚠ Тема похожа на товар. Подтвердите, что это заказ, и уточните количество.")
     for item in draft.items:
         reference = f" (позиция {item.id})" if getattr(item, "id", None) else ""
         lines.extend(["", f"• {item.raw_product_text}{reference}"])
@@ -125,7 +130,13 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
             [{"text": "Закрыть обращение", "callback_data": f"draft:reject:{draft.id}"}],
             [{"text": "Обновить", "callback_data": f"draft:refresh:{draft.id}"}],
         ]}
-    rows = [] if channel_customer_type(getattr(draft, "source", "email")) else [[
+    rows = []
+    if (getattr(draft, "contact_details", None) or {}).get("mail_intent") == "possible_order":
+        rows.append([
+            {"text": "✅ Это заказ", "callback_data": f"draft:confirmorder:{draft.id}"},
+            {"text": "💬 Это вопрос", "callback_data": f"draft:classifyinquiry:{draft.id}"},
+        ])
+    rows += [] if channel_customer_type(getattr(draft, "source", "email")) else [[
         {
             "text": "Подтвердить: опт",
             "callback_data": f"draft:type:wholesale:{draft.id}",
@@ -188,7 +199,9 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
         }])
 
     final_actions = []
-    if str(draft.status) == "ready":
+    if str(draft.status) == "ready" and (
+            (getattr(draft, "contact_details", None) or {}).get("mail_intent")
+            not in {"possible_order", "inquiry"}):
         final_actions.append({
             "text": "Подтвердить заказ",
             "callback_data": f"draft:finalize:{draft.id}",
@@ -230,8 +243,11 @@ def compact_draft_card(draft, *, expanded=False):
     rows = compact_draft_keyboard(draft)["inline_keyboard"]
     next_step = rows[0][0]["text"] if len(rows) > 2 else "Действий не требуется"
     email = getattr(draft, "source", "email") == "email"
-    inquiry = (getattr(draft, "contact_details", None) or {}).get("mail_intent") == "inquiry"
+    mail_intent = (getattr(draft, "contact_details", None) or {}).get("mail_intent")
+    inquiry = mail_intent == "inquiry"
+    tentative = mail_intent == "possible_order"
     lines = (["📩 Уточнение по почте · не заказ"] if inquiry else
+             ["⚠️ Возможный заказ · товар в теме"] if tentative else
              ["📨 Новый оптовый заказ из почты"] if email else []) + [
         f"Заявка №{draft.id}", f"Статус: {draft_status_label(draft.status)}"]
     if email:
@@ -241,10 +257,14 @@ def compact_draft_card(draft, *, expanded=False):
             lines.append("Вопрос: " + " ".join(inquiry_original_body(draft).split())[:220])
         for item in (draft.items or [])[:3]:
             title = " ".join((item.raw_product_text or "Товар").split())[:90]
-            lines.append(f"• {title} — {max(item.qty, 0)} шт.")
+            lines.append(f"• {title} — " + (
+                f"{item.qty} шт." if getattr(item, "quantity_confidence", "confirmed") == "confirmed" and item.qty > 0
+                else "количество не указано"))
         if len(draft.items or []) > 3:
             lines.append(f"…ещё {len(draft.items) - 3} позиций")
     if not inquiry:
+        if tentative:
+            lines.append("Сначала подтвердите: это заказ или вопрос.")
         lines += [f"Товаров: {sum(max(i.qty, 0) for i in draft.items)} шт.",
             "Сумма: " + (telegram_rubles(draft.total) if draft.total is not None else "требует проверки"),
             "Оплата: после подтверждения заказа",
