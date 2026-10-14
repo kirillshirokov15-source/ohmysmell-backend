@@ -1,14 +1,13 @@
-"""Pure Hatuna purchase/receipt planning; no MoySklad or database calls.
+"""Pure internal Hatuna/X stock-entry accounting, no external calls.
 
-CRM must only execute these intents AFTER trusted physical-picking confirmation.
-A single X warehouse plan groups many Tilda lines into one supplier order
-and one linked receipt. The existing external-operation journal executes each
-step exactly once, and reserves/shipments are separate per physical store.
+After confirmed physical picking, make ONE priced enter document per X
+warehouse plan. Hatuna is an internal label, never the agent of this document.
+The retail price is frozen in CRM; entry uses only estimated acquisition costs.
 """
 from dataclasses import dataclass
 from uuid import UUID
 
-from app.integrations.moysklad.payloads import purchaseorder, supply
+from app.integrations.moysklad.payloads import hatuna_enter
 
 
 class HatunaPreflightError(ValueError):
@@ -69,51 +68,22 @@ def hatuna_lines(items):
 def hatuna_operation_keys(order_id, x_plan_id):
     if any(type(i) is not int or i <= 0 for i in (order_id, x_plan_id)):
         raise HatunaPreflightError("Заказ клиента и складской план должны существовать в CRM")
-    prefix = f"oms:hatuna:order:{order_id}:x-plan:{x_plan_id}"
-    return {"purchase": prefix + ":purchase",
-            "receipt": prefix + ":receipt"}
+    # :enter differs from the abandoned supplier-order/supply ledger keys.
+    # Do not reuse a previously posted supply operation.
+    return {"receipt": f"oms:hatuna:order:{order_id}:x-plan:{x_plan_id}:enter"}
 
 
-def purchase_intent(*, order_id, x_plan_id, organization_id, hatuna_id,
-                    x_store_id, items, picker_confirmed):
-    """Plan accounting only if a trusted picker confirmed every X line."""
+def stock_entry_intent(*, order_id, x_plan_id, organization_id,
+                       x_store_id, items, picker_confirmed):
+    """Produce a *single* X entry with cost only after physical picking."""
     if picker_confirmed is not True:
-        raise HatunaPreflightError("Сборщик ещё не подтвердил фактическое наличие всех позиций Х")
+        raise HatunaPreflightError("Сборщик ещё не подтвердил наличие товаров склада Х")
     _uuid(organization_id, "Организация")
-    _uuid(hatuna_id, "Контрагент Хатуна")
     _uuid(x_store_id, "Склад Х")
-    rows = hatuna_lines(items)
-    key = hatuna_operation_keys(order_id, x_plan_id)["purchase"]
-    payload = purchaseorder(organization_id, hatuna_id, x_store_id, rows, key)
-    return {"entity": "purchaseorder", "document": payload}
-
-
-def receipt_intent(*, order_id, x_plan_id, organization_id, hatuna_id,
-                   x_store_id, items, picker_confirmed, purchase_id, simulation=False):
-    """Always connect posted purchase receipt to the already verified PO."""
-    if picker_confirmed is not True:
-        raise HatunaPreflightError("Сборка не подтверждена")
-    _uuid(organization_id, "Организация")
-    _uuid(hatuna_id, "Контрагент Хатуна")
-    _uuid(x_store_id, "Склад Х")
-    if simulation:
-        # FakeDocumentAdapter uses fake-<uuid>; this exception is strictly
-        # test-only. The production executor never supplies simulation=True.
-        if (not isinstance(purchase_id, str)
-                or not purchase_id.startswith("fake-")):
-            raise HatunaPreflightError("Неизвестный тестовый номер заказа поставщику")
-        _uuid(purchase_id[5:], "Тестовый заказ поставщику")
-    else:
-        _uuid(purchase_id, "Созданный заказ поставщику")
     rows = hatuna_lines(items)
     key = hatuna_operation_keys(order_id, x_plan_id)["receipt"]
-    payload = supply(organization_id, hatuna_id, x_store_id, rows, key,
-                     purchase_order_id=purchase_id)
-    payload["description"] = (
-        "Приёмка Хатуна по подтверждённой сборке; "
-        "расчётные цены требуют ежемесячной сверки"
-    )
-    return {"entity": "supply", "document": payload}
+    payload = hatuna_enter(organization_id, x_store_id, rows, key, order_id)
+    return {"entity": "enter", "document": payload}
 
 
 async def verify_hatuna_counterparty(counterparty_id, *, client=None):
