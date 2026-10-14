@@ -8,6 +8,7 @@ from app.integrations.tilda import normalize
 from app.services.desk_status import public_summary, tilda_product_lines
 from app.services import order_desk
 from tests.test_tilda_sku_review import database, catalog
+from tests.test_tilda_orders import tilda_config
 
 
 def _desk():
