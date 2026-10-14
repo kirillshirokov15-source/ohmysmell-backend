@@ -21,6 +21,34 @@ class DuplicateInboundMessageError(Exception):
 class DraftOrderRepository:
     expected_revision = None
 
+    async def classify_possible_email(self, draft_id, intent, actor):
+        """Manager explicitly confirms the intent of a bare-product subject.
+
+        Classification is revisioned and persists in the same draft. The
+        original inbound email and suggested item remain available for audit.
+        """
+        from app.models.manager import Manager
+        if intent not in {"order", "inquiry"}:
+            raise InvalidOrderTransitionError("Недопустимый тип письма")
+        async with async_session() as session, session.begin():
+            if not await session.scalar(select(Manager.id).where(
+                    Manager.telegram_id == actor, Manager.is_active.is_(True))):
+                raise InvalidOrderTransitionError("Нет доступа менеджера")
+            draft = await self._locked(session, draft_id)
+            if not draft:
+                raise InvalidOrderTransitionError("Заявка не найдена")
+            self._ensure_editable(draft)
+            if draft.source != "email" or (draft.contact_details or {}).get("mail_intent") != "possible_order":
+                raise InvalidOrderTransitionError("Письмо уже классифицировано; обновите карточку")
+            self._invalidate(draft)
+            draft.contact_details = {**(draft.contact_details or {}),
+                "mail_intent": intent, "intent_confirmed_by_telegram_id": actor}
+            draft.review_notes = (
+                "Менеджер признал письмо обращением, не заказом" if intent == "inquiry"
+                else "Менеджер подтвердил намерение клиента заказать; сверить количество и товар"
+            )
+            return draft
+
     async def correct_quantity(self, draft_id, item_id, quantity, actor):
         from app.models.manager import Manager
         from app.models.draft_order import DraftQuantityEvent
@@ -314,6 +342,9 @@ class DraftOrderRepository:
         if self.expected_revision is not None and draft.revision != self.expected_revision:
             raise InvalidOrderTransitionError("Карточка устарела; обновите черновик")
         ensure_order_transition(draft.status, OrderStatus.NEW)
+        if (draft.source == "email"
+                and (draft.contact_details or {}).get("mail_intent") in {"inquiry", "possible_order"}):
+            raise InvalidOrderTransitionError("Письмо-вопрос или возможный заказ нельзя подтверждать без классификации")
         if (draft.customer_type != order_customer_type(draft.source, draft.customer_type)
                 or draft.customer_type == "unknown" or (not draft.counterparty_id and not (draft.contact_details or {}).get("tilda_review_approved"))
                 or not draft.items or draft.total is None
