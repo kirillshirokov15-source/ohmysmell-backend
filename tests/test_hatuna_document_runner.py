@@ -105,7 +105,7 @@ def test_live_executor_fails_closed_even_if_global_writes_enabled(database, monk
     monkeypatch.delenv("OMS_HATUNA_AUTO_WRITES_ENABLED", raising=False)
     # Adapter constructor creates no HTTP requests.
     async def run():
-        with pytest.raises(HatunaPreflightError, match="не активирована"):
+        with pytest.raises(HatunaPreflightError, match="не активировано"):
             await HatunaDocumentRunner().apply(**kwargs())
     asyncio.run(run())
 
