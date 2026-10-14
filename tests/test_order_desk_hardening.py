@@ -28,7 +28,8 @@ def test_order_is_authoritative_for_every_old_desk_stage(old_stage,payment,fulfi
     if payment=='paid': assert 'Ожидает оплаты' not in summary
 
 
-@pytest.mark.parametrize('stage,label', [('new','Получен'),('working','В работе'),
+@pytest.mark.parametrize('stage,label', [('new','Ожидает подтверждения'),
+    ('working','Ожидает подтверждения'),
     ('awaiting_confirmation','Ожидает подтверждения'),('awaiting_payment','Ожидает подтверждения')])
 def test_unconfirmed_draft_never_claims_payment_is_due(stage,label):
     desk=SimpleNamespace(draft_id=1,order_id=None,stage=stage)
