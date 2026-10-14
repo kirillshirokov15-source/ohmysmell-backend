@@ -83,3 +83,16 @@ def test_question_with_fake_table_headers_is_not_order():
     result=EmailParser().parse_message("Вопрос о наличии",question)
     assert result.intent=="inquiry"
     assert not result.items
+
+
+def test_inline_html_words_keep_spaces_and_formatting_does_not_split_cells():
+    body=html_render('''
+      <table><tr><th>Артикул</th><th>Наименование</th><th>Цена, ₽</th><th>Количество</th></tr>
+      <tr><td>SK123</td><td><span>Chanel</span> <strong>Coco</strong> Mademoiselle</td><td>6800</td><td>1</td></tr>
+      </table>
+    ''')
+    classified=EmailParser().parse_message("Заказ",body)
+    assert classified.intent=="order"
+    assert len(classified.items)==1
+    assert classified.items[0].raw_product_text=="Chanel Coco Mademoiselle"
+    assert classified.items[0].qty==1
