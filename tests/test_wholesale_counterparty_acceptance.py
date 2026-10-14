@@ -202,3 +202,78 @@ def test_manual_counterparty_selection_reads_current_moysklad(database,monkeypat
         assert result.counterparty_id=="legal-uuid-1"
         assert result.contact_details["counterparty_reconciliation"]["actor"]==111
     asyncio.run(run())
+
+
+def test_active_archive_duplicate_cannot_be_recreated():
+    provider=Provider([{"id":"archived-uuid","name":"ООО ОМЕГА",
+                        "email":"buyer@example.com","archived":True}])
+    matcher=CounterpartyMatchingService(provider)
+    async def run():
+        results=await matcher.duplicate_candidates(name="ООО ОМЕГА",
+                                                   email="buyer@example.com")
+        assert results
+        assert "Архивная" in results[0]["reason"]
+    asyncio.run(run())
+
+
+def test_manager_business_name_search_and_counterparty_reconciliation(database,monkeypatch):
+    monkeypatch.setattr("app.repositories.draft_order_repository.async_session",database)
+    repo=DraftOrderRepository()
+    provider=Provider([{"id":"cp-verify","name":"ООО Золотая Роза",
+                        "email":"other@example.com","inn":"7812345678",
+                        "phone":"+7 999 111-22-33"}])
+    matcher=CounterpartyMatchingService(provider)
+    from types import SimpleNamespace as SN
+    service=DraftOrderService(repository=repo,counterparty_service=matcher,
+        matching_service=ProductMatchingService(provider=SN(get_products=lambda:[])))
+    async def run():
+        async with database() as s,s.begin():
+            customer=Customer(customer_type=CustomerType.WHOLESALE)
+            s.add(customer);await s.flush()
+            cid=customer.id
+        draft=await repo.create(message(cid,name="Buyer Person"))
+        candidates=await service.search_counterparties(draft.id,"Золотая Роза")
+        assert len(candidates.counterparty_candidates)==1
+        assert "Поиск менеджера" in candidates.counterparty_candidates[0]["reason"]
+        fresh=await service.counterparty_reconciliation(draft.id)
+        assert "Контрагент CRM: пока не выбран" in fresh
+        assert "cpsearch" in fresh
+        selected=await service.link_counterparty(
+            draft.id,"cp-verify","ООО Золотая Роза",actor=111)
+        assert selected.counterparty_id=="cp-verify"
+        report=await service.counterparty_reconciliation(draft.id)
+        assert "ИНН МойСклад: 7812345678" in report
+        assert "Email: ⚠ отличается" in report
+        assert "Поиск менеджера" in report
+    asyncio.run(run())
+
+
+def test_counterparty_transport_rejects_disabled_creation(monkeypatch):
+    from app.integrations.moysklad.client import MoySkladClient
+    from unittest.mock import Mock
+    monkeypatch.setattr(settings,"environment","production")
+    monkeypatch.setenv("OMS_COUNTERPARTY_CREATION_ENABLED","false")
+    session=Mock()
+    client=MoySkladClient(session=session)
+    with pytest.raises(ExternalWritesDisabled):
+        client.create_counterparty({"name":"ООО ОМЕГА","email":"person@example.com",
+            "externalCode":"oms:counterparty:customer:4"})
+    session.post.assert_not_called()
+
+
+def test_preview_does_not_allow_duplication(database,monkeypatch):
+    monkeypatch.setattr("app.repositories.draft_order_repository.async_session",database)
+    repo=DraftOrderRepository()
+    provider=Provider([{"id":"existing","name":"ООО ОМЕГА","email":"someone@example.com"}])
+    service=CounterpartyCreationService(CounterpartyMatchingService(provider),
+                                        FakeOperations(provider),repo)
+    async def run():
+        async with database() as s,s.begin():
+            customer=Customer(customer_type=CustomerType.WHOLESALE)
+            s.add(customer);await s.flush()
+            cid=customer.id
+        draft=await repo.create(message(cid))
+        with pytest.raises(CounterpartyCreationError,match="Существующие|Похожие|существующие"):
+            await service.preview(draft.id,"ООО ОМЕГА",111)
+        assert provider.create_calls==0
+    asyncio.run(run())
