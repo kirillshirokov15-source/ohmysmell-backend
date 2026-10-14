@@ -1,0 +1,24 @@
+name: Gmail Manager Telegram Release
+on:
+  push:
+    branches:
+      - feature/manager-wholesale-email-menu-20261014
+  workflow_dispatch:
+jobs:
+  gmail-manager:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install -r requirements.txt pytest aiosqlite
+      - run: python -m compileall -q app tests
+      - name: Gmail manager cards, mailbox safety, existing manager menu
+        env:
+          APP_ENV: staging
+          EXTERNAL_WRITES_ENABLED: 'false'
+          TELEGRAM_BOT_TOKEN: '123456:TEST_CI_TOKEN_NO_NETWORK'
+        run: python -m pytest -q tests/test_manager_email_orders_navigation.py tests/test_email_pipeline.py tests/test_gmail_acceptance.py tests/test_telegram_menu_regressions.py
