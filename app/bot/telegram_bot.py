@@ -330,6 +330,10 @@ async def draft_callback_handler(callback: CallbackQuery):
                         build_inquiry_message(draft), parse_mode=None)
                 outcome = "success"
                 return
+        elif action in {"confirmorder", "classifyinquiry"}:
+            intent = "order" if action == "confirmorder" else "inquiry"
+            draft = await service.classify_possible_email(
+                draft_id, intent, callback.from_user.id)
         elif action == "type":
             customer_type = CustomerType(parts[2])
             draft = await service.set_customer_type(draft_id, customer_type)
@@ -571,6 +575,7 @@ async def show_email_order_list(message, offset):
         limit=10, offset=offset, source="email", active_only=False)
     rows = [[{"text": (
                 ("📩 Вопрос" if (getattr(d, "contact_details", None) or {}).get("mail_intent") == "inquiry"
+                 else "⚠️ Возможный заказ" if (getattr(d, "contact_details", None) or {}).get("mail_intent") == "possible_order"
                  else "📨 Заказ") + f" №{d.id} · {(d.customer_name or 'Клиент')[:22]} · "
                 + (telegram_rubles(d.total) if d.total is not None else "проверка")
             )[:60],
