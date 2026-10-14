@@ -40,6 +40,21 @@ def source_lines(view):
 
 
 def register(dp, check_access):
+    @dp.message(Command('hatuna'))
+    async def hatuna_accounting_report(message):
+        if not await check_access(message):
+            return
+        from app.services.hatuna_reporting import order_hatuna_report
+        try:
+            parts = (message.text or "").split()
+            if len(parts) != 2:
+                raise ValueError()
+            order_id = int(parts[1])
+            text = await order_hatuna_report(order_id, message.from_user.id, message.chat.id)
+            await message.answer(text, parse_mode=None)
+        except (ValueError, DeskError):
+            await message.answer("Формат: /hatuna НОМЕР_ЗАКАЗА (только ответственный менеджер)", parse_mode=None)
+
     @dp.message(Command('warehousedoc'))
     async def warehouse_document(message):
         if not await check_access(message):
