@@ -8,7 +8,7 @@ from app.schemas.order_sources import SourceAction
 
 HELP = ("/sources ЗАКАЗ — позиции, назначения и ревизия\n"
         "/sourceadd ЗАКАЗ РЕВИЗИЯ ПОЗИЦИЯ КОЛИЧЕСТВО own СКЛАД\n"
-        "/sourceadd ЗАКАЗ РЕВИЗИЯ ПОЗИЦИЯ КОЛИЧЕСТВО partner_x СКЛАД ПОСТАВЩИК БАЗА_КОП\n"
+        "/sourceadd ЗАКАЗ РЕВИЗИЯ ПОЗИЦИЯ КОЛИЧЕСТВО partner_x СКЛАД\n"
         "/sourceaction ЗАКАЗ РЕВИЗИЯ НАЗНАЧЕНИЕ receive|post_receipt|cancel\n"
         "Заказ Tilda: только свой склад или склад Х. Внешние закупки — отдельно в Buying. "
         "После receive: /warehousedoc ЗАКАЗ РЕВИЗИЯ receipt НАЗНАЧЕНИЕ. "
@@ -94,15 +94,9 @@ def register(dp, check_access):
                     if source == "external":
                         raise DeskError("В заказах Tilda используются только свой склад и склад Х. Buying работает отдельно.")
                     row = dict(item_id=item, qty=qty, source_type=source, warehouse_id=warehouse)
-                    if source == "partner_x":
-                        row.update(supplier_id=int(parts[7]), base_cost_minor=int(parts[8]))
-                    elif source == "external":
-                        row["offer_id"] = int(parts[7])
-                        if len(parts)==9:
-                            row['purchase_id']=int(parts[8])
-                    expected = {"own": 7, "partner_x": 9, "external": 8}.get(source)
-                    if source=='external' and 'purchase_id' in row:
-                        expected=9
+                    # X is our own physical warehouse: no supplier, no Buying,
+                    # and no fabricated cost from a Tilda retail price.
+                    expected = {"own": 7, "partner_x": 7}.get(source)
                     if len(parts) != expected:
                         raise ValueError()
                     payload = dict(action="assign", parts=[row])
