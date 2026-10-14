@@ -1,0 +1,25 @@
+name: Manager Gmail Inquiry Read Button
+on:
+  push:
+    branches:
+      - feature/email-inquiry-readable-20261014
+  workflow_dispatch:
+jobs:
+  inquiry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install -r requirements.txt pytest aiosqlite
+      - name: Syntax validation
+        run: python -m compileall -q app tests
+      - name: Inquiry storage, Telegram callback, other email regressions
+        env:
+          APP_ENV: staging
+          EXTERNAL_WRITES_ENABLED: 'false'
+          TELEGRAM_BOT_TOKEN: '123456:TEST_CI_TOKEN_NO_NETWORK'
+        run: python -m pytest -q tests/test_email_inquiry_read_button.py tests/test_email_intent_safety.py tests/test_email_pipeline.py tests/test_manager_email_orders_navigation.py tests/test_telegram_menu_regressions.py
