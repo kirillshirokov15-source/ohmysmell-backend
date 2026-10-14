@@ -437,6 +437,36 @@ class DraftOrderService:
             raise DraftOrderError("Черновик не найден")
         return draft
 
+    async def reconsider_inquiry_subject(self, draft_id, actor):
+        """Read original email; suggest product but never infer purchased quantity."""
+        from app.services.email_parser import EmailParser
+        draft = await self._get_required(draft_id)
+        if (draft.source != "email"
+                or (draft.contact_details or {}).get("mail_intent") != "inquiry"):
+            raise DraftOrderError("Обращение уже изменено")
+        result = EmailParser().parse_message(
+            draft.subject, (getattr(draft.inbound_message, "body_text", None) or ""),
+            sender_name=draft.customer_name)
+        if result.intent != "possible_order" or len(result.items) != 1:
+            raise DraftOrderError("В письме не распознана товарная тема")
+        item = result.items[0]
+        match = await self.matching_service.match_async(item.raw_product_text, 0)
+        data = {
+            "raw_product_text": item.raw_product_text, "qty": 0,
+            "quantity_confidence": "unknown", "quantity_evidence": item.quantity_evidence,
+            "match_status": match.status,
+            "product_id": match.product["id"] if match.product else None,
+            "product_name": match.product.get("name") if match.product else None,
+            "article": match.product.get("article") if match.product else None,
+            "price": None, "item_total": None,
+            "candidates": [v.__dict__ for v in match.candidates],
+        }
+        try:
+            changed = await self.repository.reconsider_email_subject(draft_id, data, actor)
+        except InvalidOrderTransitionError as error:
+            raise DraftOrderError(str(error)) from error
+        return await self.review(draft_id)
+
     async def classify_possible_email(self, draft_id, intent, actor):
         try:
             draft = await self.repository.classify_possible_email(draft_id, intent, actor)
