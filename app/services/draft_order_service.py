@@ -171,6 +171,8 @@ class DraftOrderService:
 
         items = []
         problems = []
+        if mail_intent == "possible_order":
+            problems.append("Возможный заказ по теме письма: подтвердите намерение заказать, товар и количество.")
         if mail_intent == "inquiry":
             problems.append("Письмо-уточнение: не является заказом; менеджеру нужно ответить клиенту.")
         elif not extracted_lines:
