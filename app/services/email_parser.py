@@ -163,7 +163,9 @@ class EmailParser:
         for index, raw in enumerate(lines):
             if index in skip:
                 continue
-            line = raw.strip()
+            # Keep leading tab for tables with an EMPTY article cell.
+            # Stripping it would shift Name/Price/Quantity columns.
+            line = raw.strip(" \r")
             if self._signature_start.match(line):
                 break
             if not line:
@@ -181,7 +183,9 @@ class EmailParser:
                     output.append(ExtractedOrderLine(name, 0, "unknown", line[:500]))
                     continue
             marker = self._list_marker.match(line)
-            clean = line[marker.end():].strip() if marker else line.lstrip("*•- ").strip()
+            clean = (line[marker.end():].strip() if marker else
+                     line.strip(" \r") if "\t" in line else
+                     line.lstrip("*•- ").strip())
             if self._greeting.match(clean) or "@" in clean or len(clean) > 500:
                 continue
             cells = [part.strip() for part in re.split(r"\t|\|", clean)]
