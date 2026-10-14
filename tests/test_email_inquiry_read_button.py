@@ -13,7 +13,7 @@ from app.repositories.draft_order_repository import DraftOrderRepository
 from app.services.draft_telegram_service import (
     build_draft_card, build_inquiry_message, compact_draft_card)
 from app.bot import telegram_bot
-from tests.test_tilda_sku_review import database, catalog
+from tests.test_tilda_sku_review import database, catalog, tilda_config
 
 
 INQUIRY = ("Здравствуйте! Подскажите, есть ли Marvis Classic Strong Mint "
@@ -84,6 +84,9 @@ def test_click_read_question_sends_new_message_instead_of_edit(monkeypatch):
                         AsyncMock(return_value=True))
     monkeypatch.setattr(telegram_bot.DraftOrderRepository, "get",
                         AsyncMock(return_value=draft))
+    # No MoySklad client is needed to read an inquiry.
+    monkeypatch.setattr(telegram_bot, "DraftOrderService",
+                        lambda: SimpleNamespace())
     reply = AsyncMock()
     cb = SimpleNamespace(
         data="draft:details:7",
