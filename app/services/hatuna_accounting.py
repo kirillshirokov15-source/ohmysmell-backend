@@ -114,3 +114,30 @@ def receipt_intent(*, order_id, x_plan_id, organization_id, hatuna_id,
         "расчётные цены требуют ежемесячной сверки"
     )
     return {"entity": "supply", "document": payload}
+
+
+async def verify_hatuna_counterparty(counterparty_id, *, client=None):
+    """Read-only MoySklad identity check, never a posting or supplier confirmation.
+
+    The accounting counterparty must be the specific, unarchived Hatuna record;
+    a valid UUID alone does not prove that the selected entity is correct.
+    """
+    import asyncio
+    _uuid(counterparty_id, "Контрагент Хатуна")
+    if client is None:
+        from app.integrations.moysklad.client import MoySkladClient
+        client = MoySkladClient()
+    try:
+        record = await asyncio.to_thread(client.get_counterparty, counterparty_id)
+    except Exception as exc:
+        raise HatunaPreflightError(
+            "Не удалось проверить контрагента Хатуна в МойСклад"
+        ) from exc
+    name = (record.get("name") or "").casefold()
+    if (record.get("id") != counterparty_id
+            or record.get("archived") is True
+            or not any(fragment in name for fragment in ("хатун", "hatun"))):
+        raise HatunaPreflightError(
+            "ID относится не к действующему контрагенту Хатуна; проводки остановлены"
+        )
+    return True
