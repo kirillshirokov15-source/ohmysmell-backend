@@ -20,14 +20,19 @@ class _HTMLTextExtractor(HTMLParser):
         super().__init__()
         self.parts: list[str] = []
         self._ignored_depth = 0
+        self._cell_index = 0
 
     def handle_starttag(self, tag, attrs):
         if tag in {"script", "style"}:
             self._ignored_depth += 1
         elif tag in {"br", "p", "div", "li", "tr"}:
             self.parts.append("\n")
-        elif tag in {"td", "th"} and self.parts and not self.parts[-1].endswith("\n"):
-            self.parts.append("\t")
+            if tag == "tr":
+                self._cell_index = 0
+        elif tag in {"td", "th"}:
+            if self._cell_index:
+                self.parts.append("\t")
+            self._cell_index += 1
 
     def handle_endtag(self, tag):
         if tag in {"script", "style"} and self._ignored_depth:
@@ -41,7 +46,7 @@ class _HTMLTextExtractor(HTMLParser):
 
     def text(self) -> str:
         return "\n".join(
-            line.strip()
+            line.strip(" \r")
             for line in "".join(self.parts).splitlines()
             if line.strip()
         )
