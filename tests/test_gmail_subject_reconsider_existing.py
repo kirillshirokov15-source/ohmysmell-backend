@@ -39,6 +39,7 @@ def test_existing_dsd_inquiry_recovered_without_second_message(database, monkeyp
             "total":None, "problems":["Письмо-уточнение"], "items":[],
         })
         draft_id=draft.id
+        draft=await repo.get(draft_id)
         assert not draft.items
         buttons=build_draft_keyboard(draft)["inline_keyboard"]
         labels=[b["text"] for row in buttons for b in row]
