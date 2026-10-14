@@ -401,30 +401,87 @@ class DraftOrderService:
         return await self.review(draft_id, draft)
 
     async def link_counterparty(
-        self, draft_id: int, counterparty_id: str, counterparty_name: str
-    ) -> DraftOrder:
-        draft = await self.repository.set_counterparty(
-            draft_id, counterparty_id, counterparty_name
-        )
-        if draft is None:
-            raise DraftOrderError("Draft не найден")
-        return await self.review(draft_id, draft)
-
-    async def load_counterparty_candidates(
-        self, draft_id: int
+        self, draft_id: int, counterparty_id: str, counterparty_name: str,
+        *, actor=None,
     ) -> DraftOrder:
         draft = await self._get_required(draft_id)
         self._ensure_reviewable(draft)
-        candidates = await self.counterparty_service.fallback_candidates_async(
-            draft.sender_email,
-            draft.customer_name,
-        )
-        updated = await self.repository.set_counterparty_candidates(
-            draft_id, candidates
-        )
+        candidate = next((row for row in draft.counterparty_candidates
+                          if row.get("id") == counterparty_id), None)
+        if not candidate:
+            raise DraftOrderError("Выберите контрагента из актуального списка поиска")
+        proof = candidate.get("reason") or "Сверка менеджером"
+        if hasattr(self.counterparty_service, "async_gateway"):
+            # Read-back from MoySklad prevents stale/archived ID and stale
+            # Telegram suggestion from linking to the wrong legal entity.
+            try:
+                record = await self.counterparty_service.async_gateway.get_counterparty(
+                    counterparty_id)
+            except Exception as exc:
+                raise DraftOrderError("МойСклад недоступен; контрагент не привязан") from exc
+            if (record.get("id") != counterparty_id or record.get("archived")
+                    or not record.get("name")
+                    or record.get("name").strip() != (candidate.get("name") or "").strip()):
+                raise DraftOrderError("Контрагент изменился в МойСклад; повторите поиск")
+            if not proof.startswith("Поиск менеджера"):
+                from app.services.counterparty_matching_service import CounterpartyMatchingService
+                if not CounterpartyMatchingService.evidence(
+                        record, email=draft.sender_email, name=draft.customer_name):
+                    raise DraftOrderError("Нет совпадающих реквизитов; выполните ручной поиск")
+            counterparty_name = record["name"]
+        try:
+            kwargs = {"actor": actor, "evidence": proof} if actor is not None else {}
+            chosen = await self.repository.set_counterparty(
+                draft_id, counterparty_id, counterparty_name, **kwargs)
+        except InvalidOrderTransitionError as exc:
+            raise DraftOrderError(str(exc)) from exc
+        if chosen is None:
+            raise DraftOrderError("Draft не найден")
+        return await self.review(draft_id, chosen)
+
+    async def load_counterparty_candidates(self, draft_id: int) -> DraftOrder:
+        draft = await self._get_required(draft_id)
+        self._ensure_reviewable(draft)
+        try:
+            candidates = await self.counterparty_service.candidates_async(
+                draft.sender_email, draft.customer_name)
+        except Exception as exc:
+            raise DraftOrderError("Не удалось сверить контрагентов с МойСклад") from exc
+        updated = await self.repository.set_counterparty_candidates(draft_id, candidates)
         if updated is None:
             raise DraftOrderError("Draft not found")
         return updated
+
+    async def search_counterparties(self, draft_id, query):
+        draft = await self._get_required(draft_id)
+        self._ensure_reviewable(draft)
+        if draft.counterparty_id:
+            raise DraftOrderError("Контрагент уже привязан к заявке")
+        if not hasattr(self.counterparty_service, "manual_search_async"):
+            raise DraftOrderError("Ручной поиск не настроен")
+        matches = await self.counterparty_service.manual_search_async(query)
+        updated = await self.repository.set_counterparty_candidates(draft_id, matches)
+        if updated is None:
+            raise DraftOrderError("Заявка не найдена")
+        return updated
+
+    async def validate_linked_counterparty(self, draft):
+        """Provider read-back required before finalizing any wholesale email."""
+        if draft.source != "email" or not draft.counterparty_id:
+            return
+        if not hasattr(self.counterparty_service, "async_gateway"):
+            return  # Synthetic adapters exercised separately.
+        try:
+            cp = await self.counterparty_service.async_gateway.get_counterparty(
+                draft.counterparty_id)
+        except Exception as error:
+            raise DraftOrderError("Не удалось проверить привязанного контрагента") from error
+        if (cp.get("id") != draft.counterparty_id or cp.get("archived")
+                or not cp.get("name")):
+            raise DraftOrderError("Контрагент отсутствует или архивирован в МойСклад")
+        proof = (draft.contact_details or {}).get("counterparty_reconciliation") or {}
+        if proof and proof.get("provider_id") != draft.counterparty_id:
+            raise DraftOrderError("Контрагент изменился после сверки")
 
     async def search_item(self, draft_id, item_id, query):
         match = await self.matching_service.match_async(query[:500], 1)
@@ -495,6 +552,7 @@ class DraftOrderService:
                 raise DraftOrderError("Связанный заказ не найден")
             return order
         draft = await self.review(draft_id, existing)
+        await self.validate_linked_counterparty(draft)
         if getattr(draft, "finalized_order_id", None):
             return await self.repository.finalize(draft_id)
         problems = self._finalize_problems(draft)
