@@ -330,6 +330,9 @@ async def draft_callback_handler(callback: CallbackQuery):
                         build_inquiry_message(draft), parse_mode=None)
                 outcome = "success"
                 return
+        elif action == "reconsider":
+            draft = await service.reconsider_inquiry_subject(
+                draft_id, callback.from_user.id)
         elif action in {"confirmorder", "classifyinquiry"}:
             intent = "order" if action == "confirmorder" else "inquiry"
             draft = await service.classify_possible_email(
