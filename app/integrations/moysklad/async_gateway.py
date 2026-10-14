@@ -143,6 +143,19 @@ class AsyncMoySkladGateway:
             "get_counterparty", self.client.get_counterparty, counterparty_id
         )
 
+    async def find_counterparties_exact(self, field: str, value: str) -> list[dict]:
+        return await self._call(
+            "find_counterparties_exact", self.client.find_counterparties_exact,
+            field, value,
+        )
+
+    async def create_counterparty(self, payload: dict) -> dict:
+        from app.integrations.write_guard import require_counterparty_creation
+        require_counterparty_creation()
+        return await self._call(
+            "create_counterparty", self.client.create_counterparty, payload,
+        )
+
     async def get_stores(self, *, fresh=False) -> list[dict]:
         cache = stores_cache if self.product_cache is catalog_cache else OperationTTLCache(60)
         return await cache.load(
