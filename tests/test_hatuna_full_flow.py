@@ -92,7 +92,7 @@ def test_complete_mixed_owned_and_hatuna_order_after_picker_confirmation(source_
         assert result == {
             "order_id": order_id, "shipped": True, "warehouses": 2,
             "hatuna_receipts": 1, "simulated": True}
-        assert adapter.calls == 6
+        assert adapter.calls == 5
         async with source_db() as session:
             final = await session.scalar(select(Order).where(Order.id == order_id).options(selectinload(Order.items)))
             assert final.fulfillment_status == "shipped"
@@ -104,11 +104,13 @@ def test_complete_mixed_owned_and_hatuna_order_after_picker_confirmation(source_
             operations = (await session.scalars(select(ExternalOperation))).all()
             entities = [op.payload["entity"] for op in operations]
             assert sorted(entities) == sorted([
-                "purchaseorder", "supply", "customerorder",
-                "customerorder", "demand", "demand"
+                "enter", "customerorder", "customerorder", "demand", "demand"
             ])
-            po = next(op.payload["document"] for op in operations
-                      if op.payload["entity"] == "purchaseorder")
-            assert po["positions"][0]["price"] == 68_000
-            assert po["positions"][0]["quantity"] == 6
+            entry = next(op.payload["document"] for op in operations
+                         if op.payload["entity"] == "enter")
+            assert entry["positions"][0]["price"] == 68_000
+            assert entry["positions"][0]["quantity"] == 6
+            assert "Хатуна" in entry["description"]
+            assert "agent" not in entry and "purchaseOrder" not in entry
+            assert all(op.status == "succeeded" for op in operations)
     asyncio.run(run())
