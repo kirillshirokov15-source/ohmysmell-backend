@@ -331,6 +331,20 @@ async def draft_callback_handler(callback: CallbackQuery):
             if callback.message:
                 await callback.message.answer(f"Введите: /quantity {draft_id} {int(parts[3])} КОЛИЧЕСТВО {int(parts[-1][1:])}")
             return
+        elif action == "searchhint":
+            current = await DraftOrderRepository().get(draft_id)
+            item_id = int(parts[3])
+            if not current or not any(item.id == item_id for item in current.items):
+                raise DraftOrderError("Позиция уже изменена; обновите карточку")
+            if callback.message:
+                await callback.message.answer(
+                    f"Найти другой товар в МойСклад: /match {draft_id} {item_id} НАЗВАНИЕ_ИЛИ_АРТИКУЛ\n"
+                    "Если подходящего товара нет даже после поиска, проверьте наличие "
+                    "на складе Х и создайте карточку в МойСклад после проверки дублей. "
+                    "До сопоставления подтверждение заказа заблокировано.",
+                    parse_mode=None,
+                )
+            return
         elif action == "ambiguous":
             draft = await DraftOrderRepository().get(draft_id)
             if draft is None:
@@ -544,8 +558,11 @@ async def show_email_order_list(message, offset):
     from app.services.telegram_display import telegram_rubles
     drafts = await DraftOrderRepository().list(
         limit=10, offset=offset, source="email", active_only=False)
-    rows = [[{"text": f"📨 №{d.id} · {(d.customer_name or 'Клиент')[:26]} · "
-                         + (telegram_rubles(d.total) if d.total is not None else "проверка"),
+    rows = [[{"text": (
+                ("📩 Вопрос" if (getattr(d, "contact_details", None) or {}).get("mail_intent") == "inquiry"
+                 else "📨 Заказ") + f" №{d.id} · {(d.customer_name or 'Клиент')[:22]} · "
+                + (telegram_rubles(d.total) if d.total is not None else "проверка")
+            )[:60],
               "callback_data": f"draft:refresh:{d.id}"}] for d in drafts]
     if offset:
         rows.append([{"text": "← Ранее", "callback_data": f"draftpage:email:{max(0,offset-10)}"}])
