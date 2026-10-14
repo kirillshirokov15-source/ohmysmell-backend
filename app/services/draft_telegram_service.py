@@ -125,11 +125,29 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
     if str(draft.status) in {"new", "rejected"}:
         return {"inline_keyboard": []}
     if (getattr(draft, "contact_details", None) or {}).get("mail_intent") == "inquiry":
-        return {"inline_keyboard": [
+        rows = [
             [{"text": "📄 Прочитать вопрос", "callback_data": f"draft:details:{draft.id}"}],
+        ]
+        # Also works with previously ingested inquiries: an apparent product
+        # in the original subject can be reviewed without a second email.
+        from app.services.email_parser import EmailParser
+        classification = EmailParser().parse_message(
+            getattr(draft, "subject", None),
+            inquiry_original_body(draft),
+            sender_name=getattr(draft, "customer_name", None),
+        )
+        if classification.intent == "possible_order":
+            rows.append([{"text": "📦 Проверить как возможный заказ",
+                          "callback_data": f"draft:reconsider:{draft.id}"}])
+        rows.extend([
             [{"text": "Закрыть обращение", "callback_data": f"draft:reject:{draft.id}"}],
             [{"text": "Обновить", "callback_data": f"draft:refresh:{draft.id}"}],
-        ]}
+        ])
+        if isinstance(getattr(draft, "revision", None), int):
+            for row in rows:
+                for button in row:
+                    button["callback_data"] += f":v{draft.revision}"
+        return {"inline_keyboard": rows}
     rows = []
     if (getattr(draft, "contact_details", None) or {}).get("mail_intent") == "possible_order":
         rows.append([
