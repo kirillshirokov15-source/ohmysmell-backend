@@ -27,9 +27,9 @@ def waiting(message):
 
 
 def fallback(actor, *, more=False):
-    rows = ((('Закупки', 'procurements'), ('Отгрузки', 'shipped')),
-            (('Заявки', 'drafts'), ('Справка', 'help')),
-            (('Назад', 'home'),)) if more else (
+    rows = ((('📨 Заказы с почты', 'email_orders'), ('Заявки', 'drafts')),
+            (('Закупки', 'procurements'), ('Отгрузки', 'shipped')),
+            (('Справка', 'help'), ('Назад', 'home'))) if more else (
             (('📦 Заказы', 'orders'), ('🔎 Найти заказ', 'order')), (('☰ Ещё', 'more'),))
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=label, callback_data=f"menu:{actor}:{action}") for label, action in row]
