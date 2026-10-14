@@ -190,10 +190,21 @@ def compact_draft_card(draft, *, expanded=False):
         return build_draft_card(draft)
     rows = compact_draft_keyboard(draft)["inline_keyboard"]
     next_step = rows[0][0]["text"] if len(rows) > 2 else "Действий не требуется"
-    return "\n".join([f"Заявка №{draft.id}", f"Статус: {draft_status_label(draft.status)}",
-        f"Товаров: {sum(max(i.qty, 0) for i in draft.items)} шт.",
+    email = getattr(draft, "source", "email") == "email"
+    lines = (["📨 Новый оптовый заказ из почты"] if email else []) + [
+        f"Заявка №{draft.id}", f"Статус: {draft_status_label(draft.status)}"]
+    if email:
+        lines.append("Клиент: " + (draft.customer_name or draft.sender_email or "Не указан")[:120])
+        for item in (draft.items or [])[:3]:
+            title = " ".join((item.raw_product_text or "Товар").split())[:90]
+            lines.append(f"• {title} — {max(item.qty, 0)} шт.")
+        if len(draft.items or []) > 3:
+            lines.append(f"…ещё {len(draft.items) - 3} позиций")
+    lines += [f"Товаров: {sum(max(i.qty, 0) for i in draft.items)} шт.",
         "Сумма: " + (telegram_rubles(draft.total) if draft.total is not None else "требует проверки"),
-        "Оплата: после подтверждения заказа", "Наличие: требует согласования", f"Сейчас: {next_step}"])
+        "Оплата: после подтверждения заказа",
+        "Наличие: требует согласования", f"Сейчас: {next_step}"]
+    return "\n".join(lines)[:3900]
 
 
 async def notify_managers_about_draft(draft: DraftOrder) -> int:
