@@ -256,6 +256,47 @@ async def search_product_for_draft(message: Message):
         await message.answer("Формат: /match НОМЕР_ЧЕРНОВИКА НОМЕР_ПОЗИЦИИ название или артикул")
 
 
+@dp.message(Command("cpsearch"))
+async def manager_counterparty_search(message: Message):
+    if not await check_access(message):
+        return
+    try:
+        _, raw_id, query = (message.text or "").split(maxsplit=2)
+        draft = await DraftOrderService().search_counterparties(int(raw_id), query)
+        await message.answer(build_draft_card(draft),
+            reply_markup=InlineKeyboardMarkup.model_validate(build_draft_keyboard(draft)),
+            parse_mode=None)
+    except (ValueError, DraftOrderError, InvalidOrderTransitionError) as error:
+        await message.answer("Поиск: /cpsearch НОМЕР_ЗАЯВКИ название, email или ИНН. " +
+            (str(error)[:180] if isinstance(error, DraftOrderError) else ""), parse_mode=None)
+
+
+@dp.message(Command("newcp"))
+async def manager_new_counterparty_preview(message: Message):
+    if not await check_access(message):
+        return
+    from app.services.counterparty_creation_service import (
+        CounterpartyCreationService, CounterpartyCreationError)
+    try:
+        _, raw_id, name = (message.text or "").split(maxsplit=2)
+        service = CounterpartyCreationService()
+        prepared = await service.preview(int(raw_id), name, message.from_user.id)
+        await message.answer(
+            f"Создание контрагента в МойСклад (пока БЕЗ записи)\n"
+            f"Заявка №{prepared.id}\nНазвание: {name.strip()}\n"
+            f"Email: {prepared.sender_email}\n"
+            "Дубли проверены. Проверьте название и адрес перед подтверждением.",
+            parse_mode=None,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[{
+                "text":"✅ Создать контрагента в МойСклад",
+                "callback_data":f"draft:cpcreate:{prepared.id}:v{prepared.revision}",
+            }]]))
+    except (ValueError, CounterpartyCreationError) as error:
+        await message.answer(
+            "Формат: /newcp НОМЕР_ЗАЯВКИ ПОЛНОЕ_НАЗВАНИЕ\n" + str(error)[:380],
+            parse_mode=None)
+
+
 @dp.callback_query(F.data.startswith("draft:"))
 async def draft_callback_handler(callback: CallbackQuery):
     handler_started_at = perf_counter()
@@ -389,13 +430,25 @@ async def draft_callback_handler(callback: CallbackQuery):
             if not item or candidate_index < 0 or candidate_index >= len(item.candidates):
                 raise DraftOrderError("Вариант товара устарел")
             draft = await service.resolve_product(draft_id, item.id, item.candidates[candidate_index]["id"])
+        elif action == "cpcreate":
+            from app.services.counterparty_creation_service import (
+                CounterpartyCreationService, CounterpartyCreationError)
+            try:
+                draft = await CounterpartyCreationService(
+                    repository=service.repository).create_confirmed(
+                        draft_id, callback.from_user.id)
+                draft = await service.review(draft_id, draft)
+            except CounterpartyCreationError as error:
+                raise DraftOrderError(str(error)) from error
         elif action == "cp":
             current = await service._get_required(draft_id)
             candidate_index = int(parts[3])
             if candidate_index < 0 or candidate_index >= len(current.counterparty_candidates):
                 raise DraftOrderError("Вариант контрагента устарел")
             candidate = current.counterparty_candidates[candidate_index]
-            draft = await service.link_counterparty(draft_id, candidate["id"], candidate.get("name") or candidate["id"])
+            draft = await service.link_counterparty(
+                draft_id, candidate["id"], candidate.get("name") or candidate["id"],
+                actor=callback.from_user.id)
         elif action == "product":
             item_id = int(parts[3])
             product_id = parts[4]
@@ -419,6 +472,7 @@ async def draft_callback_handler(callback: CallbackQuery):
                 draft_id,
                 counterparty_id,
                 candidate.get("name") or counterparty_id,
+                actor=callback.from_user.id,
             )
         elif action == "counterparty_select":
             draft = await service.load_counterparty_candidates(draft_id)
