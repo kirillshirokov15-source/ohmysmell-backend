@@ -256,6 +256,19 @@ async def search_product_for_draft(message: Message):
         await message.answer("Формат: /match НОМЕР_ЧЕРНОВИКА НОМЕР_ПОЗИЦИИ название или артикул")
 
 
+@dp.message(Command("cpcheck"))
+async def manager_counterparty_check(message: Message):
+    if not await check_access(message):
+        return
+    try:
+        _, raw_id = (message.text or "").split(maxsplit=1)
+        reply = await DraftOrderService().counterparty_reconciliation(int(raw_id))
+        await message.answer(reply, parse_mode=None)
+    except (ValueError, DraftOrderError, InvalidOrderTransitionError) as error:
+        await message.answer("Сверка: /cpcheck НОМЕР_ЗАЯВКИ. " + str(error)[:250],
+                             parse_mode=None)
+
+
 @dp.message(Command("cpsearch"))
 async def manager_counterparty_search(message: Message):
     if not await check_access(message):
