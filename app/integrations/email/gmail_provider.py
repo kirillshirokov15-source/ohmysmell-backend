@@ -41,8 +41,10 @@ class _HTMLTextExtractor(HTMLParser):
             self.parts.append("\n")
 
     def handle_data(self, data):
-        if not self._ignored_depth:
-            self.parts.append(data)
+        if not self._ignored_depth and data.strip():
+            # Indented HTML often contains formatting newlines BETWEEN
+            # table cells. They must never split a logical product row.
+            self.parts.append(data.strip())
 
     def text(self) -> str:
         return "\n".join(
