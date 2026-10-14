@@ -108,11 +108,20 @@ def build_draft_card(draft: DraftOrder) -> str:
     ])
     problems = review_problem_lines(draft)
     if draft.counterparty_candidates:
-        lines.extend(["", "Возможные контрагенты:"])
+        lines.extend(["", "Возможные контрагенты (проверьте перед привязкой):"])
         lines.extend(
-            f"• {candidate.get('name') or 'Без имени'}"
+            f"• {candidate.get('name') or 'Без имени'} · "
+            f"{candidate.get('reason') or 'ручная проверка'}"
             for candidate in draft.counterparty_candidates[:5]
         )
+    if getattr(draft, "source", None) == "email" and not draft.counterparty_id:
+        lines.extend(["", "Поиск юрлица/ИНН: /cpsearch "
+            + str(draft.id) + " НАЗВАНИЕ_ИЛИ_ИНН",
+            "Новый (с проверкой дублей): /newcp "
+            + str(draft.id) + " ПОЛНОЕ_НАЗВАНИЕ"])
+    audit = (getattr(draft, "contact_details", None) or {}).get("counterparty_reconciliation")
+    if audit:
+        lines.append("Сверка контрагента: " + str(audit.get("evidence") or "подтверждено")[:100])
     if problems:
         lines.extend(["", "⚠️ Требует проверки:"])
         lines.extend(f"• {problem}" for problem in problems)
@@ -195,13 +204,15 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
         rows.append([{
             "text": (
                 "Контрагент: "
-                f"{(candidate.get('name') or 'Без имени')[:25]}"
+                f"{(candidate.get('name') or 'Без имени')[:22]} "
+                + ("✓ email" if str(candidate.get("reason") or "").startswith("Email")
+                   else "⚠ сверить")
             ),
             "callback_data": f"draft:cp:{draft.id}:{candidate_index}",
         }])
-    if not draft.counterparty_id and not draft.counterparty_candidates:
+    if not draft.counterparty_id:
         rows.append([{
-            "text": "Выбрать контрагента",
+            "text": "🔎 Сверить контрагентов МойСклад",
             "callback_data": f"draft:counterparty_select:{draft.id}",
         }])
 
