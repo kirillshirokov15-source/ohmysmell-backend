@@ -159,6 +159,19 @@ async def run_worker(role="manager", *, drop_pending_updates=False):
                         failure.set()
                 log_event(logger, "worker_ownership_lost", role=role, result="stopping")
             await bot.get_me()
+            if (role == "manager"
+                    and os.getenv("OMS_HATUNA_READONLY_VERIFY", "false").lower() == "true"):
+                from app.services.hatuna_accounting import verify_hatuna_counterparty
+                try:
+                    verified = await verify_hatuna_counterparty(
+                        os.getenv("OMS_HATUNA_COUNTERPARTY_ID", ""))
+                except Exception as error:
+                    log_event(logger, "hatuna_counterparty_readonly_check",
+                        level=logging.WARNING, result="failed",
+                        reason=type(error).__name__)
+                else:
+                    log_event(logger, "hatuna_counterparty_readonly_check",
+                        result="success", confirmed=verified)
             state.update(status="ready", polling=True)
             log_event(logger, "worker_ready", role=role, external_writes=settings.external_writes_enabled, polling_instances=1)
             # Client dialogue updates stay ordered, and polling offset advances
@@ -175,6 +188,9 @@ async def run_worker(role="manager", *, drop_pending_updates=False):
             if role == "manager":
                 from app.workers.notifications import main as notifications
                 tasks.append(asyncio.create_task(notifications()))
+                if os.getenv("OMS_HATUNA_AUTO_PROCESS_ENABLED", "false").lower() == "true":
+                    from app.workers.hatuna_auto import main as hatuna_auto
+                    tasks.append(asyncio.create_task(hatuna_auto()))
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
