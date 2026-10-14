@@ -242,19 +242,66 @@ class DraftOrderRepository:
             await session.commit()
             return draft
 
+    async def prepare_new_counterparty(self, draft_id, name, actor):
+        from app.models.manager import Manager
+        from datetime import datetime, timezone
+        async with async_session() as session, session.begin():
+            if not await session.scalar(select(Manager.id).where(
+                    Manager.telegram_id == actor, Manager.is_active.is_(True))):
+                raise InvalidOrderTransitionError("Менеджер не авторизован")
+            draft = await self._locked(session, draft_id)
+            if draft is None:
+                raise InvalidOrderTransitionError("Заявка не найдена")
+            self._ensure_editable(draft)
+            if draft.source != "email" or draft.counterparty_id:
+                raise InvalidOrderTransitionError("Создание доступно только для заявки с почты без контрагента")
+            self._invalidate(draft)
+            draft.contact_details = {
+                **(draft.contact_details or {}),
+                "counterparty_create_preview": {
+                    "name": name, "actor": actor,
+                    "issued_at": int(datetime.now(timezone.utc).timestamp()),
+                    "revision": draft.revision,
+                },
+            }
+            return draft
+
     async def set_counterparty(
-        self, draft_id: int, counterparty_id: str, counterparty_name: str
+        self, draft_id: int, counterparty_id: str, counterparty_name: str,
+        *, actor=None, evidence=None,
     ) -> DraftOrder | None:
-        async with async_session() as session:
+        async with async_session() as session, session.begin():
             draft = await self._locked(session, draft_id)
             if draft is None:
                 return None
+            self._ensure_editable(draft)
+            # Never link one legal counterparty to multiple independent CRM
+            # customers without a separate explicit identity merge.
+            other = await session.scalar(select(Customer.id).where(
+                Customer.moysklad_counterparty_id == counterparty_id,
+                Customer.id != draft.customer_id))
+            if other is not None:
+                raise InvalidOrderTransitionError(
+                    "Этот контрагент уже привязан к другому клиенту CRM. Требуется сверка и объединение идентичностей.")
+            current = await session.get(Customer, draft.customer_id, with_for_update=True)
+            if current is None:
+                raise InvalidOrderTransitionError("Клиент CRM не найден")
+            if current.moysklad_counterparty_id and current.moysklad_counterparty_id != counterparty_id:
+                raise InvalidOrderTransitionError(
+                    "У клиента CRM уже есть другой контрагент. Изменение требует ручной сверки.")
+            if draft.counterparty_id and draft.counterparty_id != counterparty_id:
+                raise InvalidOrderTransitionError("Контрагент черновика уже выбран")
             self._invalidate(draft)
             draft.counterparty_id = counterparty_id
             draft.counterparty_name = counterparty_name
-            await session.execute(update(Customer).where(Customer.id == draft.customer_id)
-                                  .values(moysklad_counterparty_id=counterparty_id))
-            await session.commit()
+            current.moysklad_counterparty_id = counterparty_id
+            details = {**(draft.contact_details or {})}
+            details.pop("counterparty_create_preview", None)
+            details["counterparty_reconciliation"] = {
+                "provider_id": counterparty_id, "evidence": evidence or "manager_approved",
+                "actor": actor,
+            }
+            draft.contact_details = details
             return draft
 
     async def set_counterparty_candidates(
