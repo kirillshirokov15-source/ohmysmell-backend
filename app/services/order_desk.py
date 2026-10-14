@@ -113,7 +113,9 @@ class TildaIntake:
                 received_at=now(), processing_status="processed", customer_id=customer.id)
             session.add(inbound)
             await session.flush()
-            rows, total, problems = await review(payload, manual_matches=(draft.contact_details or {}).get("tilda_manual_matches"))
+            # No draft exists during initial Tilda intake. Manual matches are
+            # only available on subsequent manager review, not on creation.
+            rows, total, problems = await review(payload)
             draft = DraftOrder(inbound_message_id=inbound.id, customer_id=customer.id, source="website",
                 customer_type="retail", customer_name=payload["name"] or "Клиент сайта", sender_email=email,
                 subject="Заказ Tilda", status="needs_review", counterparty_candidates=[],
