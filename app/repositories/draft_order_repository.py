@@ -21,6 +21,43 @@ class DuplicateInboundMessageError(Exception):
 class DraftOrderRepository:
     expected_revision = None
 
+    async def reconsider_email_subject(self, draft_id, item_data, actor):
+        """Turn a previously misclassified inquiry into a tentative item.
+
+        Manager-authorized, revisioned and idempotent: an old callback cannot
+        add the same original subject line twice.
+        """
+        from app.models.manager import Manager
+        from app.services.email_parser import EmailParser
+        async with async_session() as session, session.begin():
+            if not await session.scalar(select(Manager.id).where(
+                    Manager.telegram_id == actor, Manager.is_active.is_(True))):
+                raise InvalidOrderTransitionError("Нет доступа менеджера")
+            draft = await self._locked(session, draft_id)
+            if not draft:
+                raise InvalidOrderTransitionError("Заявка не найдена")
+            self._ensure_editable(draft)
+            if draft.source != "email" or (draft.contact_details or {}).get("mail_intent") != "inquiry":
+                raise InvalidOrderTransitionError("Письмо уже обработано; обновите карточку")
+            inbound = draft.inbound_message
+            result = EmailParser().parse_message(
+                draft.subject, getattr(inbound, "body_text", "") or "",
+                sender_name=draft.customer_name)
+            if result.intent != "possible_order" or len(result.items) != 1:
+                raise InvalidOrderTransitionError("В теме не найден однозначный кандидат товара")
+            expected_name = result.items[0].raw_product_text
+            if item_data.get("raw_product_text") != expected_name:
+                raise InvalidOrderTransitionError("Тема письма изменилась, повторите поиск")
+            if draft.items:
+                raise InvalidOrderTransitionError("В заявке уже есть позиции")
+            self._invalidate(draft)
+            draft.contact_details = {**(draft.contact_details or {}),
+                "mail_intent": "possible_order",
+                "reconsidered_by_telegram_id": actor}
+            draft.review_notes = "Возможный заказ по теме; требуется подтвердить намерение и количество"
+            draft.items.append(DraftOrderItem(**item_data))
+            return draft
+
     async def classify_possible_email(self, draft_id, intent, actor):
         """Manager explicitly confirms the intent of a bare-product subject.
 
