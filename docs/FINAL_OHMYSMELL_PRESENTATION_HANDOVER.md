@@ -26,8 +26,8 @@
 
 1. Создать закрытую Telegram-супергруппу и добавить туда **существующего менеджерского** Telegram-бота (не клиентского); отключить анонимность администраторов, которые должны управлять заказами.
 2. Получить реальный ID группы (отрицательное число вида `-100...`) и положительные Telegram user ID сотрудников. Нельзя брать username вместо числового ID.
-3. В Railway Manager Bot production установить `MANAGER_TELEGRAM_MODE=group`, `MANAGER_TELEGRAM_CHAT_ID=-100...`, `MANAGER_TELEGRAM_USER_IDS=111,222,...`. Список IDs – только подтверждённые сотрудники.
-4. Добавить каждому сотруднику запись `managers` (поле `telegram_id`, `is_active=true`) безопасной командой из backend-контейнера: `python scripts/manage_manager_access.py --telegram-id 111 --name "Фамилия Имя" --production --confirm`. CLI дополнительно сверяет ID с разрешённым списком Railway. Без записи в CRM доступ не откроется.
+3. В Railway **Manager Bot** production установить `MANAGER_TELEGRAM_MODE=group`, `MANAGER_TELEGRAM_CHAT_ID=-100...`, `MANAGER_TELEGRAM_USER_IDS=111,222,...`. Совпадающие `MANAGER_TELEGRAM_CHAT_ID` и `MANAGER_TELEGRAM_USER_IDS` установить также у **Backend, Client Bot и Customer Gmail Worker**, иначе часть клиентских/почтовых уведомлений уйдёт не в ту группу. Список IDs – только подтверждённые сотрудники.
+4. Добавить каждому сотруднику запись `managers` (поле `telegram_id`, `is_active=true`) через авторизованную сессию Railway менеджерского сервиса: `python -m scripts.manage_manager_access --telegram-id 111 --name "Фамилия Имя" --production --confirm`. CLI дополнительно сверяет ID со списком Railway. Без записи в CRM доступ не откроется. Убедитесь, что production-сервис имеет доступ к реальной БД и скрипт запускается в его окружении, а не на локальном ПК.
 5. Убедиться, что бот имеет право публиковать сообщения в группе. Отправить `/menu` и проверить заказ, кнопки и личные ID двух менеджеров.
 6. При увольнении: деактивировать сотрудника `--disable`, удалить его ID из `MANAGER_TELEGRAM_USER_IDS`, затем удалить из группы.
 
