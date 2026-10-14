@@ -16,9 +16,13 @@ from app.services.hatuna_accounting import (
 
 
 class HatunaDocumentRunner:
-    def __init__(self, *, adapter=None, operations=None):
+    def __init__(self, *, adapter=None, operations=None, live_preflight=None):
         self.adapter = adapter if adapter is not None else MoySkladDocumentAdapter()
         self.operations = operations if operations is not None else ExternalOperationService()
+        # Trusted persistence-backed verifier must recheck source item prices,
+        # picker confirmation and already-accounted stock at execution time.
+        # No verifier is wired yet, so production remains fail-closed.
+        self.live_preflight = live_preflight
 
     async def apply(self, *, order_id, x_plan_id, organization_id, hatuna_id,
                     x_store_id, items, picker_confirmed):
@@ -35,12 +39,22 @@ class HatunaDocumentRunner:
                 raise HatunaPreflightError(
                     "Реальная автоматизация Хатуны ещё не активирована"
                 )
+            if self.live_preflight is None:
+                raise HatunaPreflightError(
+                    "Требуется сверка с сохранённым заказом, подтверждением "
+                    "сборщика и фактическими остатками склада Х"
+                )
         request = dict(order_id=order_id, x_plan_id=x_plan_id,
                        organization_id=organization_id, hatuna_id=hatuna_id,
                        x_store_id=x_store_id, items=items,
                        picker_confirmed=picker_confirmed)
         # Compute and validate both price and mapping before any external I/O.
         po_intent = purchase_intent(**request)
+        if not fake:
+            # This callback MUST verify DB-backed identity, inventory and
+            # the immutable Tilda sale-unit-price snapshot. It must raise on
+            # any uncertainty. No live implementation has been registered.
+            await self.live_preflight(request)
         keys = hatuna_operation_keys(order_id, x_plan_id)
         if fake:
             purchase = await self.operations.simulate_document(
