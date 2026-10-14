@@ -69,7 +69,12 @@ class DraftOrderRepository:
 
     @staticmethod
     def _query():
-        return select(DraftOrder).options(selectinload(DraftOrder.items))
+        # Always fetch original inbound email with the draft; needed for
+        # "Read question" even after DB session is closed.
+        return select(DraftOrder).options(
+            selectinload(DraftOrder.items),
+            selectinload(DraftOrder.inbound_message),
+        )
 
     async def get_by_external_message_id(self, external_id: str) -> DraftOrder | None:
         async with async_session() as session:
@@ -136,7 +141,7 @@ class DraftOrderRepository:
             except IntegrityError as error:
                 await session.rollback()
                 raise DuplicateInboundMessageError from error
-            draft.inbound_message_id = message.id
+            draft.inbound_message = message
             for item in data["items"]:
                 draft.items.append(DraftOrderItem(**item))
             session.add(draft)
