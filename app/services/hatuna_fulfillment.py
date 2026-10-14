@@ -1,4 +1,4 @@
-"""Post-pick Tilda -> Hatuna receipt -> per-warehouse reserve/shipment.
+"""Post-pick Tilda -> ONE Hatuna stock entry -> per-warehouse reserve/shipment.
 
 Only committed 'assembled' orders, full OWN/X allocations, a verified MoySklad
 catalog, and a manager-selected delivery may reach the provider. All external
@@ -166,9 +166,7 @@ class HatunaFulfillment:
         if settings.environment == "production" and fake:
             raise HatunaPreflightError("В production симуляция запрещена")
         order, plans, x_plans, items, actor, chat = await self.preflight(order_id)
-        if x_plans and not fake:
-            from app.services.hatuna_accounting import verify_hatuna_counterparty
-            await verify_hatuna_counterparty(os.getenv("OMS_HATUNA_COUNTERPARTY_ID", ""))
+        # No Hatuna counterparty is required: the internal `enter` has no agent.
         for plan in x_plans:
             aggregated = defaultdict(int)
             for a in plan.allocations:
@@ -176,15 +174,14 @@ class HatunaFulfillment:
                     aggregated[a.order_item_id] += a.qty
             hatuna_items = [HatunaItem(items[id].product_id, qty, items[id].price, id)
                             for id, qty in sorted(aggregated.items())]
-            supplier = os.getenv("OMS_HATUNA_COUNTERPARTY_ID", "")
-            # Purchase is a bookkeeping operation, never an email/Buying event.
+            # One priced accounting entry only; Hatuna is a description label.
             async def verify_again(_):
                 await self.preflight(order_id, for_x=plan.id)
             runner = HatunaDocumentRunner(adapter=self.adapter,
                 live_preflight=verify_again)
             result = await runner.apply(
                 order_id=order_id, x_plan_id=plan.id, organization_id=settings.moysklad_organization_id,
-                hatuna_id=supplier, x_store_id=plan.warehouse_id, items=hatuna_items,
+                x_store_id=plan.warehouse_id, items=hatuna_items,
                 picker_confirmed=True)
             await self.confirm_x_receipt(order_id, plan.id, result["receipt_id"],
                                          simulated=result["simulated"])
