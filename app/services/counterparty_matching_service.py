@@ -96,6 +96,9 @@ class CounterpartyMatchingService:
         # Search all identity dimensions, never stop at the first name hit.
         for query in queries[:5]:
             results.extend(await self.async_gateway.search_counterparties(query))
+            if hasattr(self.provider, "find_counterparties_exact"):
+                field = "email" if "@" in query else "name"
+                results.extend(await self.async_gateway.find_counterparties_exact(field, query))
         email = next((q for q in queries if "@" in q), None)
         phone = next((q for q in queries if normalize_phone(q) and len(normalize_phone(q)) >= 10), None)
         name = next((q for q in queries if "@" not in q and q != phone), None)
@@ -106,6 +109,9 @@ class CounterpartyMatchingService:
         results = []
         for query in queries[:5]:
             results.extend(self.provider.search_counterparties(query))
+            if hasattr(self.provider, "find_counterparties_exact"):
+                field = "email" if "@" in query else "name"
+                results.extend(self.provider.find_counterparties_exact(field, query))
         email = next((q for q in queries if "@" in q), None)
         phone = next((q for q in queries if normalize_phone(q) and len(normalize_phone(q)) >= 10), None)
         name = next((q for q in queries if "@" not in q and q != phone), None)
@@ -149,9 +155,10 @@ class CounterpartyMatchingService:
         output = []
         for item in candidates:
             i = item.get("id")
-            if not i or item.get("archived") or i in seen:
+            if not i or i in seen:
                 continue
             seen.add(i)
-            output.append(self._candidate(item, reason=self.evidence(
-                item, email=email, name=name, phone=phone, inn=inn)))
+            reason = ("Архивная карточка – восстановить, не дублировать" if item.get("archived")
+                      else self.evidence(item, email=email, name=name, phone=phone, inn=inn))
+            output.append(self._candidate(item, reason=reason))
         return output[:20]
