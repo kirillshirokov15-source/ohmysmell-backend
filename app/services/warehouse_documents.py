@@ -33,6 +33,14 @@ def plan_key(plan, action, fake):
 
 async def frozen_plan(session, plan):
     for fake in (False,True):
+        if any(a.source_type == "partner_x" and a.supply_status != "cancelled"
+               for a in plan.allocations):
+            from app.services.hatuna_accounting import hatuna_operation_keys
+            x_key = hatuna_operation_keys(plan.order_id, plan.id)["receipt"]
+            # Even an uncertain provider response freezes the plan. It may
+            # already have posted inventory and must never be reassigned.
+            if await session.get(ExternalOperation, ("simulation:" if fake else "") + x_key):
+                return True
         for a in plan.allocations:
             receipt=await session.get(ExternalOperation,('simulation:' if fake else '')+f'warehouse:allocation:{a.id}:receipt')
             # Posted goods cannot be silently freed and received a second time.
@@ -176,6 +184,10 @@ class WarehouseDocumentService:
                 raise DeskError('Organization mapping required')
             bare_key=key.removeprefix('simulation:')
             if action=='receipt':
+                import os
+                if (a.source_type == "partner_x"
+                        and os.getenv("OMS_HATUNA_POST_PICK_ENABLED", "false").lower() == "true"):
+                    raise DeskError("Для Хатуны используйте только одно автоматическое оприходование после сборки.")
                 if order.fulfillment_status!='new' or a.source_type=='own' or a.supply_status!='received':
                     raise DeskError('Для прихода требуется фактическое получение товара и новый заказ.')
                 item=items[a.order_item_id]
