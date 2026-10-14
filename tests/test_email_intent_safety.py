@@ -91,7 +91,7 @@ def test_mismatched_question_cannot_finalize_or_add_catalog():
     assert draft.contact_details["mail_intent"] == "inquiry"
     assert draft.items == []
     assert draft.total is None
-    assert "Письмо-уточнение" in compact_draft_card(draft)
+    assert "Уточнение по почте" in compact_draft_card(draft)
     assert "Уточнение" in build_draft_card(draft)
     assert "заказ" not in compact_draft_card(draft).splitlines()[0].lower()
     keyboard = build_draft_keyboard(draft)
