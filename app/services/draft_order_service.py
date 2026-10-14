@@ -133,11 +133,17 @@ class DraftOrderService:
             profile_type=customer.customer_type.value,
             profile_conflict=policy["profile_conflict"],
         )
-        extracted_lines = self.extraction_service.extract(message.body_text)
+        if source == "email" and hasattr(self.extraction_service, "extract_message"):
+            result = self.extraction_service.extract_message(message)
+            extracted_lines, mail_intent = list(result.items), result.intent
+        else:
+            extracted_lines = self.extraction_service.extract(message.body_text)
+            mail_intent = "order"
         log_event(
             logger,
             "email_parsed",
             action="email_parse",
+            intent=mail_intent,
             extracted_count=len(extracted_lines),
         )
         matches = [
@@ -165,8 +171,10 @@ class DraftOrderService:
 
         items = []
         problems = []
-        if not extracted_lines:
-            problems.append("Не удалось извлечь позиции из письма")
+        if mail_intent == "inquiry":
+            problems.append("Письмо-уточнение: не является заказом; менеджеру нужно ответить клиенту.")
+        elif not extracted_lines:
+            problems.append("Заказ без распознанных позиций: менеджеру нужно проверить оригинал письма.")
         if effective_type == CustomerType.UNKNOWN:
             problems.append("Необходимо подтвердить тип клиента")
         if not customer.moysklad_counterparty_id:
@@ -220,7 +228,8 @@ class DraftOrderService:
             "received_at": message.received_at,
             "customer_id": customer.customer_id,
             "customer_type": effective_type,
-            "contact_details": {"customer_type_policy": policy},
+            "contact_details": {"customer_type_policy": policy,
+                                "mail_intent": mail_intent},
             "counterparty_id": customer.moysklad_counterparty_id,
             "counterparty_candidates": counterparty_candidates,
             "status": status,
