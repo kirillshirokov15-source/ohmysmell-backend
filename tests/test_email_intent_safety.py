@@ -93,7 +93,7 @@ def test_mismatched_question_cannot_finalize_or_add_catalog():
     assert draft.total is None
     assert "Уточнение по почте" in compact_draft_card(draft)
     assert "Уточнение" in build_draft_card(draft)
-    assert "заказ" not in compact_draft_card(draft).splitlines()[0].lower()
+    assert "не заказ" in compact_draft_card(draft).splitlines()[0].lower()
     keyboard = build_draft_keyboard(draft)
     assert all("finalize" not in btn["callback_data"]
                for row in keyboard["inline_keyboard"] for btn in row)
