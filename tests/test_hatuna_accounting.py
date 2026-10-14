@@ -1,4 +1,5 @@
 """Hatuna accounting contract: exact Tilda retail price, no hidden provider writes."""
+import asyncio
 from dataclasses import FrozenInstanceError
 from uuid import uuid4
 
@@ -91,16 +92,17 @@ def test_idempotent_x_keys_are_per_order_and_per_warehouse_plan():
     assert one["purchase"] != one["receipt"]
 
 
-@pytest.mark.asyncio
-async def test_fake_moysklad_adapter_reconciles_intents(monkeypatch):
+def test_fake_moysklad_adapter_reconciles_intents():
     # No credentials and no remote network. Both docs share the same X lines.
     adapter = FakeDocumentAdapter()
     po = purchase_intent(**_args())
     receipt = receipt_intent(**_args(), purchase_id=PURCHASE)
-    result_po = await adapter.create(po)
-    result_receipt = await adapter.create(receipt)
-    assert verified_document(po, result_po)
-    assert verified_document(receipt, result_receipt)
-    assert (await adapter.find(po))[0]["id"] == result_po["id"]
-    assert (await adapter.find(receipt))[0]["id"] == result_receipt["id"]
-    assert adapter.calls == 2
+    async def exercise():
+        result_po = await adapter.create(po)
+        result_receipt = await adapter.create(receipt)
+        assert verified_document(po, result_po)
+        assert verified_document(receipt, result_receipt)
+        assert (await adapter.find(po))[0]["id"] == result_po["id"]
+        assert (await adapter.find(receipt))[0]["id"] == result_receipt["id"]
+        assert adapter.calls == 2
+    asyncio.run(exercise())
