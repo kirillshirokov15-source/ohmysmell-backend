@@ -139,8 +139,13 @@ class CounterpartyMatchingService:
         if len(value) < 3 or len(value) > 150:
             raise ValueError("Укажите название или реквизит (от 3 до 150 символов)")
         matches = await self.async_gateway.search_counterparties(value)
+        if value.isdigit() and len(value) in {10, 12} and hasattr(self.provider, "find_counterparties_exact"):
+            matches.extend(await self.async_gateway.find_counterparties_exact("inn", value))
+        if "@" in value and hasattr(self.provider, "find_counterparties_exact"):
+            matches.extend(await self.async_gateway.find_counterparties_exact("email", value))
+        unique = {row["id"]: row for row in matches if row.get("id") and not row.get("archived")}
         return [self._candidate(row, reason="Поиск менеджера – сверить реквизиты")
-                for row in matches if row.get("id") and not row.get("archived")][:10]
+                for row in list(unique.values())[:10]]
 
     async def duplicate_candidates(self, *, name, email=None, phone=None, inn=None):
         """Fail closed if even one likely existing record is found."""
