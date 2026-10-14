@@ -110,3 +110,13 @@ def test_live_executor_fails_closed_even_if_global_writes_enabled(database, monk
         with pytest.raises(HatunaPreflightError, match="не активирована"):
             await HatunaDocumentRunner().apply(**kwargs())
     asyncio.run(run())
+
+
+def test_live_cannot_run_without_persisted_order_and_stock_verifier(monkeypatch):
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr(settings, "external_writes_enabled", True)
+    monkeypatch.setenv("OMS_HATUNA_AUTO_WRITES_ENABLED", "true")
+    async def run():
+        with pytest.raises(HatunaPreflightError, match="Требуется сверка"):
+            await HatunaDocumentRunner().apply(**kwargs())
+    asyncio.run(run())
