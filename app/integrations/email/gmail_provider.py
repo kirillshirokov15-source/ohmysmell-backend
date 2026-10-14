@@ -259,12 +259,27 @@ class GmailEmailProvider:
     @classmethod
     def _body_text(cls, payload: dict) -> str:
         plain_parts = cls._mime_parts(payload, "text/plain")
-        if plain_parts:
-            return "\n".join(plain_parts).strip()
         html_parts = cls._mime_parts(payload, "text/html")
-        parser = _HTMLTextExtractor()
-        parser.feed("\n".join(html_parts))
-        return parser.text()
+        plaintext = "\n".join(plain_parts).strip()
+        if html_parts:
+            raw_html = "\n".join(html_parts)
+            if "<table" in raw_html.lower():
+                extractor = _HTMLTextExtractor()
+                extractor.feed(raw_html)
+                rendered = extractor.text()
+                # Prefer tab-separated actual table cells over a flattened
+                # multipart/plain counterpart. This is needed to keep SKU,
+                # quantity, price and total in the correct columns.
+                header = rendered.casefold()
+                if ("\t" in rendered and
+                        any(x in header for x in ("наименование", "product")) and
+                        any(x in header for x in ("количество", "quantity", "qty"))):
+                    return rendered
+            if not plaintext:
+                extractor = _HTMLTextExtractor()
+                extractor.feed(raw_html)
+                return extractor.text()
+        return plaintext
 
     @classmethod
     def _mime_parts(cls, payload: dict, mime_type: str, depth: int = 0) -> list[str]:
