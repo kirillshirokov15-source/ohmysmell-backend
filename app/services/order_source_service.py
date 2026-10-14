@@ -277,6 +277,10 @@ class OrderSourceService:
             return after
 
     async def _assign(self, session, order, plans, parts, actor):
+        import os
+        if (os.getenv("OMS_HATUNA_POST_PICK_ENABLED", "false").lower() == "true"
+                and any(part.source_type == "external" for part in parts)):
+            raise DeskError("Заказы Tilda обеспечиваются только основным складом и складом Х. Buying отдельно.")
         items = {i.id: i for i in order.items}
         assigned = defaultdict(int)
         for plan in plans:
