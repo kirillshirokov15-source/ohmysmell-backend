@@ -30,6 +30,26 @@ def simulation_allowed():
     return settings.environment != "production" and not settings.external_writes_enabled
 
 
+def is_x_warehouse_name(name):
+    """Physical X warehouse only; Latin/Cyrillic X spelling is normalized."""
+    if not isinstance(name, str):
+        return False
+    normalized = "".join(name.casefold().split()).replace("x", "х")
+    return normalized == "складх"
+
+
+def validate_site_source_warehouse(source_type, warehouse):
+    """Reject own/X warehouse swaps; never infer where physical goods are."""
+    if source_type not in {"own", "partner_x"}:
+        raise DeskError("Заказы Tilda обеспечиваются только своим складом или складом Х. Buying отдельно.")
+    name = (warehouse or {}).get("name")
+    if not name:
+        raise DeskError("Название склада МойСклад не подтверждено; назначение остановлено.")
+    is_x = is_x_warehouse_name(name)
+    if (source_type == "own" and is_x) or (source_type == "partner_x" and not is_x):
+        raise DeskError("Источник не соответствует физическому складу. Используйте «Свой склад» или «Склад Х» правильно.")
+
+
 def allocation_ready(allocation, *, manual=False):
     if not allocation.managed_source:
         return not manual
@@ -317,7 +337,9 @@ class OrderSourceService:
             product = catalog.get(item.product_id)
             stores = {s["id"]: s for s in product.get("stocks", [])} if product else {}
             if part.warehouse_id not in stores or (settings.warehouse_ids and part.warehouse_id not in settings.warehouse_ids):
-                raise DeskError("Товар или склад отсутствует в актуальном каталоге.")
+                raise DeskError("Товар или склад отсутствует в актуальном каталоге. Для позиции вне МойСклад сначала сопоставьте или создайте карточку после проверки дублей.")
+            if settings.environment in {"staging", "production"}:
+                validate_site_source_warehouse(part.source_type, stores[part.warehouse_id])
             if part.source_type == "own":
                 stock = stores[part.warehouse_id]
                 claimed = await claimed_stock(session, item.product_id, part.warehouse_id)
