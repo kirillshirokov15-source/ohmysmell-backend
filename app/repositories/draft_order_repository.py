@@ -87,11 +87,16 @@ class DraftOrderRepository:
             )
             return result.scalar_one_or_none()
 
-    async def list(self, limit: int = 50, offset: int = 0, active_only: bool = False, status: str | None = None) -> list[DraftOrder]:
+    async def list(self, limit: int = 50, offset: int = 0, active_only: bool = False,
+                   status: str | None = None, source: str | None = None) -> list[DraftOrder]:
         async with async_session() as session:
-            query = self._query().order_by(DraftOrder.created_at.desc())
+            query = self._query().order_by(DraftOrder.created_at.desc(), DraftOrder.id.desc())
             if status:
                 query = query.where(DraftOrder.status == status)
+            if source:
+                if source not in {"email", "website", "instagram", "manual", "telegram"}:
+                    raise ValueError("Unknown order source")
+                query = query.where(DraftOrder.source == source)
             if active_only:
                 query = query.where(DraftOrder.status.in_(["draft", "needs_review", "ready"]))
             result = await session.execute(
