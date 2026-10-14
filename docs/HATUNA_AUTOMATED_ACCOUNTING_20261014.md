@@ -1,93 +1,38 @@
-# Tilda → OWN / Hatuna → MoySklad (confirmed Oct 14, 2026)
+# Tilda → основной склад / Склад Х: внутренний учёт «Хатуна»
 
-## Authoritative business rules
+Согласованная бизнес-модель (14 октября 2026):
 
-Tilda holds the immutable **retail sale price** and quantity for every order item. The
-customer bot sees those original item names. No sale-price changes are derived from
-purchase prices.
+- В Tilda сохраняем **оригинальное наименование, количество и фактическую цену продажи**. Цена продажи никогда не меняется из-за складского учёта.
+- Заказы Tilda исполняются только с основного склада МойСклад или со **Склада Х**. Buying и сторонние поставщики остаются независимыми.
+- Сборщик физически собирает товар; ответственный менеджер нажимает «Заказ собран». Лишь после этого автоматизация, если включена, делает учётные операции.
+- Для Хатуны **не формируем заказ поставщику, приёмку от поставщика, задолженность или электронные уведомления**. Создаём **один документ `enter` («Оприходование»)** со складом Х и организацией WowHairLover как внутренним реквизитом. В описании пишем «Хатуна», ID клиентского заказа, правило предварительной цены и ежемесячную сверку.
+- У оприходования по каждой позиции указаны товар, количество, **цена учёта = зафиксированная цена продажи Tilda − 1 000 ₽ за единицу**, в копейках. Не использовать цену сайта в качестве себестоимости напрямую.
+- Затем делаем `customerorder` (резерв) и `demand` (отгрузка) **отдельно по каждому складу**. Смешанный заказ имеет один клиентский ID и несколько складских документов.
+- Для цены на сайте **не выше 1 000 ₽** учётная цена была бы <= 0. Сохраняем заказ, но останавливаем автоматическое оприходование и отправляем на ручную проверку.
+- В конце месяца менеджер проверяет **предварительную учётную себестоимость**, сверяет с реальной и исправляет отклонения корректной учётной операцией с историей изменений. Розничную цену покупки клиентом не меняем.
 
-Website orders have two sources:
-- **OWN**: the main physical warehouse in MoySklad; reserve its available stock and
-  create shipment from that warehouse.
-- **X / Hatuna**: Hatuna is an accounting supplier/counterparty and X is a physical
-  warehouse. Hatuna never needs to confirm, be emailed, or use Buying. The picker
-  must physically assemble and confirm that all assigned X items are present.
+## Предотвращение задвоений
 
-**After** trusted picker confirmation, the unattended document sequence for X is:
+- `HatunaDocumentRunner` создаёт одну `enter` на пару (заказ, складской план), с детерминированными `externalCode` и `syncId`, через `ExternalOperationService`.
+- Отдельная запись в журнале фиксирует намерение и результат создания. Неопределённый результат блокирует повторную запись до ручной сверки МойСклад; не повторять сетевой POST вслепую.
+- `frozen_plan` блокирует изменение источников после начала или завершения `enter`, в том числе при неясном результате.
+- Если в МойСклад уже есть учтённый остаток Х без подтверждённого созданного нами `enter`, повторный приход блокируется до сверки; иначе остатки могут искусственно увеличиться.
+- Товар без проверенной карточки МойСклад не оприходуем. Нужно сначала проверить дубли, создать/сопоставить товар, затем продолжить исходный заказ с его неизменной продажной ценой.
+- Старый ручной путь `warehouse:allocation:...:receipt` в режиме post-pick запрещён для склада Х.
 
-1. Verify actual product identities (MoySklad UUIDs), X store ID, the specific
-   existing Hatuna counterparty ID, allocation quantities, customer order, and
-   on-hand stock reconciliation. If an item is absent from the MoySklad product
-   catalog, match by an exact identifier or create a verified product card without
-   duplicates **before** creating inventory documents.
-2. Create one `purchaseorder` per customer order / X warehouse plan, including
-   multiple X items. Unit estimated cost = Tilda *unit* retail price − RUB 1,000;
-   no customer sale price is modified.
-3. Create `supply` (приёмка), associated with that `purchaseorder`, into X.
-   Only posted stock receipt changes X on-hand stock.
-4. Create a reservation for the customer’s X allocation, then one `demand`
-   shipment originating from X.
-5. Create a distinct reservation and `demand` for OWN items. Where there are
-   mixed allocations, allow separate fulfillment documents and associate all
-   documents with one client order and its original Tilda price and quantities.
-6. Expose completed, failed or reconciliation-required step statuses to manager.
-   Payment tracking remains independent and manually confirmed.
+## Включение
 
-**These steps require durable external-operation journal keys, provider-side
-exactly-once reconciliation after timeouts, and an independently retryable worker
-or queue; simply calling APIs from the Telegram handler is unsafe.**
+Сейчас всё оставлено **без реальных складских записей**.
 
-## Month-end bookkeeping
+- `OMS_HATUNA_POST_PICK_ENABLED` — включает новый порядок физических этапов.
+- `OMS_HATUNA_AUTO_PROCESS_ENABLED` — включает фоновый работник по `assembled` заказам.
+- `OMS_HATUNA_AUTO_WRITES_ENABLED` плюс `EXTERNAL_WRITES_ENABLED` — оба требуются для live `enter` и прочих документов. Не включать до полной приёмки.
+- `MOYSKLAD_ORGANIZATION_ID` — внутреннее юрлицо (WowHairLover), только обязательный реквизит.
+- `OMS_HATUNA_X_WAREHOUSE_ID` и `OMS_MAIN_WAREHOUSE_ID` — проверенные UUID двух складов.
+- `/hatuna ORDER_ID` — менеджерский read-only отчёт о ценах Tilda, предварительной себестоимости и журналах оприходования, резервов, отгрузок.
 
-Every Hatuna purchase and receipt must be marked provisional and preserve its
-source Tilda unit price, estimated unit cost, quantity, and supplier UUID in the
-audit. At month end the manager compares each cost to the real settlement and
-records an approved adjustment in MoySklad; a blanket overwrite would corrupt
-historical inventory valuation. Retail sale prices never change during this audit.
+## Остаточные работы до production
 
-Automatic cost is blocked if website unit price is at most RUB 1,000: a negative
-or zero receipt cost silently produced by the formula would be incorrect. The
-client order is retained for manager review instead.
+Проверить достоверность стоимости позиции `enter` непосредственно в МойСклад, провести безопасную приёмку со смешанным заказом в staging, закончить создание отсутствующей в МойСклад карточки без дублей, подключить полноценное физическое подтверждение сборщика и сверку имеющегося остатка Х с уже отражённым в МойСклад.
 
-**Existing X stock must be reconciled before posting**. If units were already
-received in MoySklad, do not post them a second time merely because they were
-assigned to a new website order. Reuse existing recorded stock where appropriate
-and create accounting purchases only for genuinely unrecorded units.
-
-## Implementation checkpoint
-
-- `app/services/hatuna_accounting.py` builds **pure**, deterministic purchase
-  and linked receipt intents from picker-confirmed X lines. It has no I/O.
-- `app/integrations/moysklad/payloads.py::purchaseorder` builds the supplier
-  order with provisional acquisition prices.
-- Fake MoySklad adapter tests validate price arithmetic, line grouping, linked
-  documents, dedup keys and rejection of unconfirmed/unmatched inputs.
-
-The manager bot uses the existing `Начать сборку` → `Заказ собран`
-actions as the trusted physical picking boundary for now. The dedicated
-`hatuna_auto` worker can, when expressly enabled, detect the committed
-`assembled` state and perform purchaseorder → linked supply →
-reservation/shipments for each warehouse, then update the order to shipped.
-The old `enter` receipt path is NOT used by this worker.
-
-- `OMS_HATUNA_POST_PICK_ENABLED=true` enables source coverage before picking.
-- `OMS_HATUNA_AUTO_PROCESS_ENABLED=true` starts the background worker on the
-  manager service (must never be enabled before synthetic staging acceptance).
-- `OMS_HATUNA_COUNTERPARTY_ID` must contain the real, verified MoySklad Hatuna UUID.
-- `OMS_HATUNA_AUTO_WRITES_ENABLED=true` plus
-  `EXTERNAL_WRITES_ENABLED=true` are BOTH required for live supplier documents.
-- `/hatuna ORDER_ID` shows the responsible manager the original sale total,
-  provisional purchase costs, and recorded purchase/receipt/reservation/shipment
-  IDs with reconciliation states.
-
-If the provider response is lost or ambiguous, the persisted
-`external_operations` entry blocks retry and requires explicit inspection.
-
-**Not implemented yet:** automatic creation of MoySklad product cards absent
-from the catalog, a dedicated Picker-role Telegram confirmation (currently
-authorized manager confirmation), and reconciliation of already-posted X stock
-with previously unrecorded Hatuna purchases. No production flags are enabled.
-
-Production and warehouse-write flags must remain unchanged until the
-remaining cases, provider read-only mappings, and staged E2E acceptance pass.
-Never enable the obsolete `enter` path for Hatuna.
+**Не включать `OMS_OWN_X_LIVE_ENABLED`**: старый вариант `enter` без стоимости не подходит для новой схемы.
