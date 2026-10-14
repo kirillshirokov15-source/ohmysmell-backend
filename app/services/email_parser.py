@@ -68,6 +68,7 @@ class EmailParser:
     _header_names = frozenset({"product", "name", "наименование", "товар"})
     _header_quantities = frozenset({"qty", "quantity", "количество", "кол-во", "шт", "шт."})
     _product_prefix = re.compile(r"^\s*(?:заказ\s*[:№-]?\s*|order\s*[:#-]?\s*)", re.I)
+    _inline_order_name = re.compile(r"^\s*(?:заказ|order)\s*[:\-]\s*(?P<product>.+)$", re.I)
 
     @staticmethod
     def _normalize(value):
@@ -110,6 +111,10 @@ class EmailParser:
             row = cls._line_qty(p)
             if row:
                 results.append(row)
+        if not results:
+            candidate = cls._inline_order_name.match(subject or "")
+            if candidate and (name := cls._safe_product(candidate.group("product"))):
+                results.append(ExtractedOrderLine(name, 0, "unknown", (subject or "")[:500]))
         return results
 
     def parse_lines(self, body_text: str, *, sender_name=None,
@@ -130,12 +135,19 @@ class EmailParser:
             if self._signature_start.match(line):
                 break
             if not line:
+                in_order_list = False
                 continue
             if self._normalize(line) == self._normalize(sender_name):
                 continue
             if self._order_header.match(line):
                 in_order_list = True
                 continue
+            inline_name = self._inline_order_name.match(line)
+            if explicit_order and inline_name:
+                name = self._safe_product(inline_name.group("product"), sender_name=sender_name)
+                if name:
+                    output.append(ExtractedOrderLine(name, 0, "unknown", line[:500]))
+                    continue
             marker = self._list_marker.match(line)
             clean = line[marker.end():].strip() if marker else line.lstrip("*•- ").strip()
             if self._greeting.match(clean) or "@" in clean or len(clean) > 500:
