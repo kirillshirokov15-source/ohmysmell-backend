@@ -18,7 +18,7 @@ class FakeMessage:
 
 def _email_draft(identifier=11):
     items = [SimpleNamespace(id=1, raw_product_text="Marvis Strong Mint 85 ml", qty=2,
-                             quantity_confidence="confirmed", candidates=[]),
+                             quantity_confidence="confirmed", candidates=[], match_status="not_found"),
              SimpleNamespace(id=2, raw_product_text="Chanel Allure Homme Sport", qty=1,
                              quantity_confidence="confirmed", candidates=[])]
     return SimpleNamespace(id=identifier, source="email", status="needs_review",
