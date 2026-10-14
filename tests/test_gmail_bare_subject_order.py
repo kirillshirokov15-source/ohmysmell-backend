@@ -68,4 +68,4 @@ def test_subject_only_product_creates_unfinalizable_draft_with_manager_buttons()
     assert "✅ Это заказ" in labels and "💬 Это вопрос" in labels
     assert any("другой товар" in text for text in labels)
     assert not any("Подтвердить заказ" in text for text in labels)
-    assert "Not a confirmed" in service._finalize_problems(draft)
+    assert any("Not a confirmed" in p for p in service._finalize_problems(draft))
