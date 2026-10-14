@@ -121,3 +121,17 @@ def test_matching_options_remain_manager_controlled():
     labels=[b["text"] for row in keyboard["inline_keyboard"] for b in row]
     assert any("другой товар" in label for label in labels)
     assert all("Подтвердить заказ" not in label for label in labels)
+
+
+@pytest.mark.parametrize("subject,body", [
+    ("Заказ: Marvis Classic Strong Mint 85 ml", "Спасибо! С уважением"),
+    ("Заказ", "Заказ: Marvis Classic Strong Mint 85 ml"),
+    ("Заказ", "Заказ:\n• Marvis Classic Strong Mint 85 ml\n\nСпасибо, жду"),
+])
+def test_product_with_unknown_qty_requires_manager_check(subject,body):
+    result=EmailParser().parse_message(subject,body,sender_name="Кирилл Широков")
+    assert result.intent == "order"
+    assert len(result.items) == 1
+    assert result.items[0].raw_product_text == "Marvis Classic Strong Mint 85 ml"
+    assert result.items[0].qty == 0
+    assert result.items[0].quantity_confidence == "unknown"
