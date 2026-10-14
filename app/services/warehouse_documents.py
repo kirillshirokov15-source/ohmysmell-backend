@@ -33,6 +33,14 @@ def plan_key(plan, action, fake):
 
 async def frozen_plan(session, plan):
     for fake in (False,True):
+        if any(a.source_type == "partner_x" and a.supply_status != "cancelled"
+               for a in plan.allocations):
+            from app.services.hatuna_accounting import hatuna_operation_keys
+            x_key = hatuna_operation_keys(plan.order_id, plan.id)["receipt"]
+            # Even an uncertain provider response freezes the plan. It may
+            # already have posted inventory and must never be reassigned.
+            if await session.get(ExternalOperation, ("simulation:" if fake else "") + x_key):
+                return True
         for a in plan.allocations:
             receipt=await session.get(ExternalOperation,('simulation:' if fake else '')+f'warehouse:allocation:{a.id}:receipt')
             # Posted goods cannot be silently freed and received a second time.
@@ -176,6 +184,10 @@ class WarehouseDocumentService:
                 raise DeskError('Organization mapping required')
             bare_key=key.removeprefix('simulation:')
             if action=='receipt':
+                import os
+                if (a.source_type == "partner_x"
+                        and os.getenv("OMS_HATUNA_POST_PICK_ENABLED", "false").lower() == "true"):
+                    raise DeskError("Для Хатуны используйте только одно автоматическое оприходование после сборки.")
                 if order.fulfillment_status!='new' or a.source_type=='own' or a.supply_status!='received':
                     raise DeskError('Для прихода требуется фактическое получение товара и новый заказ.')
                 item=items[a.order_item_id]
@@ -246,7 +258,14 @@ class WarehouseDocumentService:
                     raise DeskError('All sources must be received and posted')
                 for a in rows:
                     if a.source_type!='own':
-                        receipt=await session.get(ExternalOperation,('simulation:' if fake else '')+f'warehouse:allocation:{a.id}:receipt')
+                        import os
+                        if (a.source_type == 'partner_x' and
+                                os.getenv('OMS_HATUNA_POST_PICK_ENABLED', 'false').lower() == 'true'):
+                            from app.services.hatuna_accounting import hatuna_operation_keys
+                            receipt_key=hatuna_operation_keys(order_id, plan.id)['receipt']
+                        else:
+                            receipt_key=f'warehouse:allocation:{a.id}:receipt'
+                        receipt=await session.get(ExternalOperation,('simulation:' if fake else '')+receipt_key)
                         if not receipt or receipt.status!='succeeded' or receipt.result['id']!=a.receipt_reference:
                             raise DeskError('Verified receipt document required')
                 positions=[{'id':items[a.order_item_id].product_id,'qty':a.qty,
@@ -278,8 +297,12 @@ class WarehouseDocumentService:
                         document['applicable']=False
                         document['syncId']=reserve.result['syncId']
                 elif action=='reserve':
-                    if order.fulfillment_status!='new':
-                        raise DeskError('Reserve before assembly')
+                    import os
+                    post_pick=(order.manual_fulfillment and
+                        os.getenv('OMS_HATUNA_POST_PICK_ENABLED', 'false').lower() == 'true')
+                    if (post_pick and order.fulfillment_status != 'assembled') or (
+                            not post_pick and order.fulfillment_status != 'new'):
+                        raise DeskError('Резерв требует корректного этапа сборки заказа.')
                     from app.services.order_source_service import lock_source_stock, claimed_stock
                     from app.services.product_service import ProductService
                     from app.services.stock_allocation import available_units
