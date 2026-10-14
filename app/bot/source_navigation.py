@@ -242,19 +242,32 @@ def register(dp, check_access, safe_callback_answer):
                     empty_reason = ("Склад Х не найден однозначно среди разрешённых складов "
                                     "МойСклад. Проверьте его название и привязку товара.")
                 else:
-                    # The Tilda retail price is already frozen in the CRM order.
-                    # X procurement cost must NEVER be guessed from that price.
+                    # The Tilda retail price is immutable. The provisional X
+                    # valuation is an explicit business rule, not a supplier debt.
                     item_view = next((row for row in view["items"]
                         if row["id"] == state["item_id"]), None)
                     if not item_view:
                         raise DeskError("Позиция заказа не найдена.")
                     state = dict(state, warehouse_id=warehouses[0]["id"])
                     from app.services.telegram_display import telegram_rubles
-                    text = (f"Склад Х · заказ №{state['order_id']}\n"
-                        f"Количество: {state['qty']} шт.\n"
-                        f"Цена продажи по Tilda: {telegram_rubles(item_view['sale_unit_minor'])} за шт.\n"
-                        "Закупочная себестоимость Х: не указана (вносится отдельно).\n"
-                        "Назначить склад Х без закупки, резерва или финансового расчёта?")
+                    if post_pick_enabled():
+                        from app.services.hatuna_accounting import provisional_cost, HatunaPreflightError
+                        try:
+                            value = telegram_rubles(provisional_cost(item_view['sale_unit_minor']))
+                        except HatunaPreflightError:
+                            value = "нужна ручная проверка (цена продажи ≤ 1 000 ₽)"
+                        text = (f"Склад Х · заказ №{state['order_id']}\n"
+                            f"Количество: {state['qty']} шт.\n"
+                            f"Продажа Tilda: {telegram_rubles(item_view['sale_unit_minor'])} за шт.\n"
+                            f"Предварительная учётная цена: {value} за шт.\n"
+                            "Оприходование после подтверждения сборки; без заказа поставщику.\n"
+                            "Назначить склад Х?")
+                    else:
+                        text = (f"Склад Х · заказ №{state['order_id']}\n"
+                            f"Количество: {state['qty']} шт.\n"
+                            f"Цена продажи по Tilda: {telegram_rubles(item_view['sale_unit_minor'])} за шт.\n"
+                            "Закупочная себестоимость Х: не указана (вносится отдельно).\n"
+                            "Назначить склад Х без закупки, резерва или финансового расчёта?")
                     rows.append(button("✅ Назначить склад Х",
                                        dict(state, step="apply", action="assign")))
                     rows.append(button("← Другой источник", dict(state, step="type")))
