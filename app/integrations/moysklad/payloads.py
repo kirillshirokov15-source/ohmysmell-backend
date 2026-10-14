@@ -85,8 +85,13 @@ def enter(organization_id, warehouse_id, items, operation_key):
     for item in items:
         if not isinstance(item.get("id"), str) or type(item.get("qty")) is not int or item["qty"] <= 0:
             raise ValueError("Позиция оприходования не содержит подтверждённый товар и количество")
-        rows.append({"quantity": item["qty"],
-                     "assortment": reference("product", item["id"])})
+        row = {"quantity": item["qty"],
+               "assortment": reference("product", item["id"])}
+        if "price" in item:
+            if type(item["price"]) is not int or item["price"] < 0:
+                raise ValueError("Учётная цена оприходования должна быть в копейках и неотрицательной")
+            row["price"] = item["price"]
+        rows.append(row)
     payload = {"organization": reference("organization", organization_id),
                "store": reference("store", warehouse_id),
                "positions": rows,
@@ -94,4 +99,23 @@ def enter(organization_id, warehouse_id, items, operation_key):
                "description": "Оприходование собственного склада Х; цена продажи не является себестоимостью",
                "externalCode": operation_key,
                "syncId": str(uuid5(NAMESPACE_URL, "ohmysmell:" + operation_key))}
+    return payload
+
+
+def hatuna_enter(organization_id, warehouse_id, items, operation_key, order_id):
+    """One internal X stock entry with frozen provisional cost and no supplier debt.
+
+    Never includes agent, purchaseOrder or a purchase price inferred from catalog.
+    No outgoing message to Hatuna is triggered by this document.
+    """
+    if type(order_id) is not int or order_id <= 0:
+        raise ValueError("Требуется ID клиентского заказа")
+    if not items or any(type(item.get("price")) is not int or item["price"] <= 0 for item in items):
+        raise ValueError("Для оприходования Х нужна положительная расчётная стоимость каждой позиции")
+    payload = enter(organization_id, warehouse_id, items, operation_key)
+    payload["description"] = (
+        f"Хатуна — внутренний учёт склада Х. Заказ OhMySmell №{order_id}. "
+        "Учётная цена предварительная (цена продажи Tilda − 1 000 ₽/шт.); "
+        "подлежит ежемесячной сверке. Не является заказом поставщику."
+    )
     return payload
