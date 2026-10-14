@@ -185,7 +185,7 @@ class HatunaFulfillment:
                 picker_confirmed=True)
             await self.confirm_x_receipt(order_id, plan.id, result["receipt_id"],
                                          simulated=result["simulated"])
-        warehouse = WarehouseDocumentService(adapter=self.adapter)
+        warehouse = WarehouseDocumentService(adapter=self.adapter, sessions=self.sessions)
         for plan in plans:
             # A successful shipment is terminal; a previously completed
             # reserve is read from the durable ledger.
