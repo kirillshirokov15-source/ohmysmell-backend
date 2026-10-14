@@ -275,8 +275,11 @@ class EmailParser:
         # An inquiry wins unless there is an explicit commitment to buy.
         # Parse structured order rows before checking inquiry words:
         # table headings such as "Цена" are not customer questions.
-        table_order = bool(re.search(r"(?:^|[\n\t|])\s*(?:наименование|product)\s*[\t|]", body, re.I)
-                           and re.search(r"количество|quantity|qty", body, re.I))
+        table_order = bool(
+            re.search(r"(?:наименование|product)", body, re.I)
+            and re.search(r"(?:количество|quantity|qty)", body, re.I)
+            and ("\t" in body or "|" in body)
+        )
         if (question or "?" in subj or "?" in body) and not order_command and not table_order:
             return ClassifiedEmail("inquiry", ())
         item_rows = self.parse_lines(body, sender_name=sender_name,
