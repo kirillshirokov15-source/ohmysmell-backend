@@ -166,6 +166,9 @@ class HatunaFulfillment:
         if settings.environment == "production" and fake:
             raise HatunaPreflightError("В production симуляция запрещена")
         order, plans, x_plans, items, actor, chat = await self.preflight(order_id)
+        if x_plans and not fake:
+            from app.services.hatuna_accounting import verify_hatuna_counterparty
+            await verify_hatuna_counterparty(os.getenv("OMS_HATUNA_COUNTERPARTY_ID", ""))
         for plan in x_plans:
             aggregated = defaultdict(int)
             for a in plan.allocations:
