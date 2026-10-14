@@ -147,7 +147,7 @@ class DraftOrderService:
             extracted_count=len(extracted_lines),
         )
         matches = [
-            await self.matching_service.match_async(line.raw_product_text, line.qty)
+            await self._match_email_line(line)
             for line in extracted_lines
         ]
         log_event(
@@ -294,6 +294,25 @@ class DraftOrderService:
         except Exception:
             await self.customer_service.discard_if_unreferenced(customer)
             raise
+
+    async def _match_email_line(self, line):
+        """Unique article from a structured email takes precedence over names.
+
+        Never guess among multiple SKU records. The client-supplied table
+        price is not used for CRM selling price.
+        """
+        import re
+        from dataclasses import replace
+        from app.services.product_matching_service import ProductMatchingService
+        m = re.match(r"Артикул\s+([^|\r\n]{1,80})\s*\|", line.quantity_evidence or "")
+        if m and hasattr(self.matching_service, "products_async"):
+            sku = m.group(1).strip()
+            products = await self.matching_service.products_async()
+            article_match = ProductMatchingService.match_sku(products, sku, line.qty)
+            if article_match.status in {ProductMatchStatus.MATCHED,
+                                       ProductMatchStatus.AMBIGUOUS}:
+                return replace(article_match, raw_product_text=line.raw_product_text)
+        return await self.matching_service.match_async(line.raw_product_text, line.qty)
 
     def _price(
         self, product: dict, customer_type: CustomerType, problems: list[str]
