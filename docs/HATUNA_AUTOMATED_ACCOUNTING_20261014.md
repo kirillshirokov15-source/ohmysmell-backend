@@ -63,8 +63,31 @@ and create accounting purchases only for genuinely unrecorded units.
 - Fake MoySklad adapter tests validate price arithmetic, line grouping, linked
   documents, dedup keys and rejection of unconfirmed/unmatched inputs.
 
-**Not implemented yet:** durable post-picking worker trigger, live document
-execution, recovery/reconciliation UX, per-pick confirmation and missing-product
-catalog creation. Production and warehouse-write flags must remain unchanged
-until all are implemented and verified in staging. Do not enable X receipt using
-the old `enter` path: that path lacks Hatuna as counterparty.
+The manager bot uses the existing `Начать сборку` → `Заказ собран`
+actions as the trusted physical picking boundary for now. The dedicated
+`hatuna_auto` worker can, when expressly enabled, detect the committed
+`assembled` state and perform purchaseorder → linked supply →
+reservation/shipments for each warehouse, then update the order to shipped.
+The old `enter` receipt path is NOT used by this worker.
+
+- `OMS_HATUNA_POST_PICK_ENABLED=true` enables source coverage before picking.
+- `OMS_HATUNA_AUTO_PROCESS_ENABLED=true` starts the background worker on the
+  manager service (must never be enabled before synthetic staging acceptance).
+- `OMS_HATUNA_COUNTERPARTY_ID` must contain the real, verified MoySklad Hatuna UUID.
+- `OMS_HATUNA_AUTO_WRITES_ENABLED=true` plus
+  `EXTERNAL_WRITES_ENABLED=true` are BOTH required for live supplier documents.
+- `/hatuna ORDER_ID` shows the responsible manager the original sale total,
+  provisional purchase costs, and recorded purchase/receipt/reservation/shipment
+  IDs with reconciliation states.
+
+If the provider response is lost or ambiguous, the persisted
+`external_operations` entry blocks retry and requires explicit inspection.
+
+**Not implemented yet:** automatic creation of MoySklad product cards absent
+from the catalog, a dedicated Picker-role Telegram confirmation (currently
+authorized manager confirmation), and reconciliation of already-posted X stock
+with previously unrecorded Hatuna purchases. No production flags are enabled.
+
+Production and warehouse-write flags must remain unchanged until the
+remaining cases, provider read-only mappings, and staged E2E acceptance pass.
+Never enable the obsolete `enter` path for Hatuna.
