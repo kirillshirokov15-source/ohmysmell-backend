@@ -20,7 +20,7 @@ class ExtractedOrderLine:
 
 @dataclass(frozen=True)
 class ClassifiedEmail:
-    intent: str   # "order" or "inquiry"
+    intent: str   # "order", "possible_order" or "inquiry"
     items: tuple[ExtractedOrderLine, ...]
 
 
@@ -69,6 +69,21 @@ class EmailParser:
     _header_quantities = frozenset({"qty", "quantity", "количество", "кол-во", "шт", "шт."})
     _product_prefix = re.compile(r"^\s*(?:заказ\s*[:№-]?\s*|order\s*[:#-]?\s*)", re.I)
     _inline_order_name = re.compile(r"^\s*(?:заказ|order)\s*[:\-]\s*(?P<product>.+)$", re.I)
+    _message_prefix = re.compile(r"^\s*(?:re|fw|fwd|ответ)\s*:\s*", re.I)
+    _non_product_subject = re.compile(
+        r"^(?:сч[её]т|сч[еёё]т\s+на\s+оплату|invoice|"
+        r"накладная|доставка|отгрузка|оплата|payment|"
+        r"квитанция|заявка\s+на\s+работу|встреча|meeting|"
+        r"подтверждение|подписка|спасибо|hello|привет|"
+        r"тест|test|прайс|price\s+list)\b", re.I,
+    )
+    _product_subject_evidence = re.compile(
+        r"(?:\d+\s*(?:мл|ml|литр(?:а|ов)?|l|г|гр|g|кг|kg)\b"
+        r"|\b[а-яa-z]{2,}[\s\-]*\d{2,}[а-яa-z0-9-]*\b"
+        r"|\b\d{2,}[\s\-]*[а-яa-z]{2,}\b)",
+        re.I,
+    )
+
 
     @staticmethod
     def _normalize(value):
@@ -198,6 +213,23 @@ class EmailParser:
                 output.append(ExtractedOrderLine(name, 0, "unknown", clean[:500]))
         return output
 
+    @classmethod
+    def _bare_subject_product(cls, subject, *, sender_name=None):
+        """A product-like email subject, not a verified purchase.
+
+        This captures shorthand such as "dsd 001 500мл". Quantity is
+        UNKNOWN; `500мл` is package volume, not 500 pieces. Generic
+        correspondence (invoice, replies, price questions) is excluded.
+        """
+        raw = (subject or "").strip()
+        if not raw or cls._message_prefix.match(raw):
+            return None
+        if cls._non_product_subject.match(raw) or cls._question_signal.search(raw):
+            return None
+        if not cls._product_subject_evidence.search(raw):
+            return None
+        return cls._safe_product(raw, sender_name=sender_name)
+
     def parse_message(self, subject, body_text, *, sender_name=None):
         subj = subject or ""
         body = body_text or ""
@@ -214,5 +246,11 @@ class EmailParser:
             item_rows.extend(i for i in subject_rows
                              if self._normalize(i.raw_product_text) not in seen)
         if not item_rows and not order_command and not self._order_signal.search(subj):
+            candidate = self._bare_subject_product(subj, sender_name=sender_name)
+            if candidate:
+                # A possible retail/wholesale item is not proof of a purchase;
+                # must confirm both product match and unit quantity manually.
+                tentative = ExtractedOrderLine(candidate, 0, "unknown", subj[:500])
+                return ClassifiedEmail("possible_order", (tentative,))
             return ClassifiedEmail("inquiry", ())
         return ClassifiedEmail("order", tuple(item_rows))
