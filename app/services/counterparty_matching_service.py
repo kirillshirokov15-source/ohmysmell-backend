@@ -127,9 +127,21 @@ class CounterpartyMatchingService:
             raise ValueError("Контрагент не соответствует отправителю; проверьте реквизиты вручную")
         return self._candidate(record, reason=evidence)
 
+    async def manual_search_async(self, query):
+        """Manager-entered business/INN search, never automatic linkage."""
+        value = str(query or "").strip()
+        if len(value) < 3 or len(value) > 150:
+            raise ValueError("Укажите название или реквизит (от 3 до 150 символов)")
+        matches = await self.async_gateway.search_counterparties(value)
+        return [self._candidate(row, reason="Поиск менеджера – сверить реквизиты")
+                for row in matches if row.get("id") and not row.get("archived")][:10]
+
     async def duplicate_candidates(self, *, name, email=None, phone=None, inn=None):
         """Fail closed if even one likely existing record is found."""
         candidates = []
+        for field, value in (("email", email), ("phone", phone), ("inn", inn), ("name", name)):
+            if value:
+                candidates.extend(await self.async_gateway.find_counterparties_exact(field, str(value)))
         for query in self._queries(email, phone, inn, name):
             candidates.extend(await self.async_gateway.search_counterparties(query))
         # Name and email weak matches should also block create for review.
