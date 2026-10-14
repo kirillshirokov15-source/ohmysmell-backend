@@ -18,7 +18,10 @@ from app.services.telegram_display import (
 
 
 def build_draft_card(draft: DraftOrder) -> str:
-    email_heading = "📨 Новый заказ из почты" if draft.items else "📨 Вопрос или письмо без товарных строк"
+    inquiry = (getattr(draft, "contact_details", None) or {}).get("mail_intent") == "inquiry"
+    email_heading = ("📩 Письмо-уточнение · НЕ заказ" if inquiry
+                     else "📨 Новый заказ из почты" if draft.items
+                     else "📨 Возможный заказ · нужны товары")
     lines = [
         email_heading if getattr(draft, "source", "email") == "email" else "📨 Входящая заявка",
         "",
@@ -32,8 +35,12 @@ def build_draft_card(draft: DraftOrder) -> str:
         f"Тема: {draft.subject or 'Без темы'}",
         f"Контрагент: {draft.counterparty_name or draft.counterparty_id or 'Не выбран'}",
         "",
-        "Позиции:",
+        "Позиции:" if not inquiry else "Письмо клиента (требуется ответ):",
     ]
+    if inquiry:
+        excerpt = " ".join((getattr(draft, "body_text", "") or "").split())[:650]
+        lines.append(excerpt or "(письмо без текста; посмотрите исходное письмо в Gmail)")
+        lines.append("⚠ Это письмо не является оформленным заказом.")
     for item in draft.items:
         reference = f" (позиция {item.id})" if getattr(item, "id", None) else ""
         lines.extend(["", f"• {item.raw_product_text}{reference}"])
@@ -90,6 +97,12 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
         return {"inline_keyboard": [[{"text": "Открыть заявку сайта", "callback_data": f"desk:refresh:{draft.id}"}]]}
     if str(draft.status) in {"new", "rejected"}:
         return {"inline_keyboard": []}
+    if (getattr(draft, "contact_details", None) or {}).get("mail_intent") == "inquiry":
+        return {"inline_keyboard": [
+            [{"text": "📄 Прочитать вопрос", "callback_data": f"draft:details:{draft.id}"}],
+            [{"text": "Закрыть обращение", "callback_data": f"draft:reject:{draft.id}"}],
+            [{"text": "Обновить", "callback_data": f"draft:refresh:{draft.id}"}],
+        ]}
     rows = [] if channel_customer_type(getattr(draft, "source", "email")) else [[
         {
             "text": "Подтвердить: опт",
@@ -123,6 +136,10 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
                     f"draft:pick:{draft.id}:{item.id}:{candidate_index}"
                 ),
             }])
+    for item in draft.items:
+        if str(item.match_status) in {"not_found", "ambiguous"}:
+            rows.append([{"text": f"🔎 #{item.id}: другой товар / нет в МойСклад",
+                          "callback_data": f"draft:searchhint:{draft.id}:{item.id}"}])
     for candidate_index, candidate in enumerate(draft.counterparty_candidates[:3]):
         rows.append([{
             "text": (
@@ -191,19 +208,27 @@ def compact_draft_card(draft, *, expanded=False):
     rows = compact_draft_keyboard(draft)["inline_keyboard"]
     next_step = rows[0][0]["text"] if len(rows) > 2 else "Действий не требуется"
     email = getattr(draft, "source", "email") == "email"
-    lines = (["📨 Новый оптовый заказ из почты"] if email else []) + [
+    inquiry = (getattr(draft, "contact_details", None) or {}).get("mail_intent") == "inquiry"
+    lines = (["📩 Уточнение по почте · не заказ"] if inquiry else
+             ["📨 Новый оптовый заказ из почты"] if email else []) + [
         f"Заявка №{draft.id}", f"Статус: {draft_status_label(draft.status)}"]
     if email:
         lines.append("Клиент: " + (draft.customer_name or draft.sender_email or "Не указан")[:120])
+        if inquiry:
+            lines.append("Тема: " + (draft.subject or "Без темы")[:170])
+            lines.append("Вопрос: " + " ".join((getattr(draft, "body_text", "") or "").split())[:220])
         for item in (draft.items or [])[:3]:
             title = " ".join((item.raw_product_text or "Товар").split())[:90]
             lines.append(f"• {title} — {max(item.qty, 0)} шт.")
         if len(draft.items or []) > 3:
             lines.append(f"…ещё {len(draft.items) - 3} позиций")
-    lines += [f"Товаров: {sum(max(i.qty, 0) for i in draft.items)} шт.",
-        "Сумма: " + (telegram_rubles(draft.total) if draft.total is not None else "требует проверки"),
-        "Оплата: после подтверждения заказа",
-        "Наличие: требует согласования", f"Сейчас: {next_step}"]
+    if not inquiry:
+        lines += [f"Товаров: {sum(max(i.qty, 0) for i in draft.items)} шт.",
+            "Сумма: " + (telegram_rubles(draft.total) if draft.total is not None else "требует проверки"),
+            "Оплата: после подтверждения заказа",
+            "Наличие: требует согласования", f"Сейчас: {next_step}"]
+    else:
+        lines.append("Сейчас: ответить клиенту в исходной переписке Gmail")
     return "\n".join(lines)[:3900]
 
 
