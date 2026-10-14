@@ -49,6 +49,14 @@ class ExternalOperationService:
         require_external_writes()
         return await self._execute(key, payload, send)
 
+    async def execute_counterparty(self, key, payload, send):
+        """Only named counterparty creation with dedicated production switch."""
+        from app.integrations.write_guard import require_counterparty_creation
+        require_counterparty_creation()
+        if not key.startswith("oms:counterparty:customer:") or not isinstance(payload, dict):
+            raise ExternalOperationConflict("Invalid counterparty creation operation")
+        return await self._execute(key, payload, send)
+
     async def simulate_document(self, key, payload, adapter):
         from app.integrations.moysklad.documents import FakeDocumentAdapter
         from app.config.settings import settings
