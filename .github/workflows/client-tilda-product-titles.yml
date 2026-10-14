@@ -1,0 +1,27 @@
+name: Client Bot Tilda Product Titles
+on:
+  push:
+    branches:
+      - feature/client-bot-tilda-product-titles-20261014
+  workflow_dispatch:
+
+jobs:
+  customer-order-display:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install app and test-only SQLite tools
+        run: python -m pip install -r requirements.txt pytest aiosqlite
+      - name: Compile project
+        run: python -m compileall -q app tests
+      - name: Client item titles and scoped Telegram outbox
+        env:
+          OMS_STAGING_TESTS: '0'
+          EXTERNAL_WRITES_ENABLED: 'false'
+        run: |
+          python -m pytest -q tests/test_client_tilda_product_titles.py tests/test_telegram_menu_regressions.py
