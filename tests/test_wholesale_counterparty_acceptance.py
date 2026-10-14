@@ -251,6 +251,7 @@ def test_manager_business_name_search_and_counterparty_reconciliation(database,m
 def test_counterparty_transport_rejects_disabled_creation(monkeypatch):
     from app.integrations.moysklad.client import MoySkladClient
     from unittest.mock import Mock
+    monkeypatch.setattr("app.integrations.moysklad.client.MOYSKLAD_TOKEN", "DUMMY_FAKE_NO_NETWORK")
     monkeypatch.setattr(settings,"environment","production")
     monkeypatch.setenv("OMS_COUNTERPARTY_CREATION_ENABLED","false")
     session=Mock()
