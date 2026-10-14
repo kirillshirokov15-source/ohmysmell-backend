@@ -84,6 +84,30 @@ class MoySkladClient:
     def get_counterparty(self, counterparty_id):
         return self._get(f"entity/counterparty/{self._id(counterparty_id)}")
 
+    def find_counterparties_exact(self, field, value):
+        if field not in {"email", "phone", "name", "inn", "externalCode"}:
+            raise ValueError("Unsupported counterparty field")
+        val = str(value or "").strip()
+        if not val or any(ch in val for ch in (";", "\n", "\r")) or len(val) > 320:
+            raise ValueError("Invalid counterparty filter")
+        return self._rows("entity/counterparty", {"filter": f"{field}={val}"})
+
+    def create_counterparty(self, payload):
+        # Narrowly permitted independently of stock/document writes, with a
+        # second guard at the HTTP transport. Only a counterparty POST.
+        from app.integrations.write_guard import require_counterparty_creation
+        require_counterparty_creation()
+        permitted = {"name", "email", "phone", "externalCode", "description"}
+        if not isinstance(payload, dict) or not {"name", "email", "externalCode"} <= payload.keys():
+            raise ValueError("Missing validated counterparty fields")
+        if set(payload) - permitted:
+            raise ValueError("Unexpected counterparty fields")
+        response = self.session.post(
+            f"{self.base_url}/entity/counterparty", headers=self.headers,
+            json=payload, timeout=(5, 30))
+        response.raise_for_status()
+        return response.json()
+
     def create_document(self, entity, payload):
         require_external_writes()
         if entity not in {"customerorder", "demand", "supply", "enter", "purchaseorder"}:
