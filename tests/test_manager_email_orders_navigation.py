@@ -17,11 +17,14 @@ class FakeMessage:
 
 
 def _email_draft(identifier=11):
-    items = [SimpleNamespace(raw_product_text="Marvis Strong Mint 85 ml", qty=2),
-             SimpleNamespace(raw_product_text="Chanel Allure Homme Sport", qty=1)]
+    items = [SimpleNamespace(id=1, raw_product_text="Marvis Strong Mint 85 ml", qty=2,
+                             quantity_confidence="confirmed", candidates=[]),
+             SimpleNamespace(id=2, raw_product_text="Chanel Allure Homme Sport", qty=1,
+                             quantity_confidence="confirmed", candidates=[])]
     return SimpleNamespace(id=identifier, source="email", status="needs_review",
         customer_name="Магазин Косметики", sender_email="buyer@example.invalid",
-        items=items, total=None, contact_details={}, revision=1)
+        items=items, total=None, contact_details={}, revision=1, counterparty_candidates=[],
+        counterparty_id=None)
 
 
 def test_manager_more_menu_contains_dedicated_wholesale_gmail_route():
