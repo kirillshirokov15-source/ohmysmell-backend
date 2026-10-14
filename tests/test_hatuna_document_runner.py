@@ -23,7 +23,6 @@ def kwargs():
         "order_id": 101,
         "x_plan_id": 202,
         "organization_id": ids[0],
-        "hatuna_id": ids[1],
         "x_store_id": ids[2],
         "items": [
             HatunaItem(ids[3], 2, 550_000, 3001),
@@ -46,22 +45,21 @@ def test_postpick_receipt_is_journaled_replay_safe_and_unchanged_price(database,
         result = await service.apply(**inputs)
         assert result["simulated"]
         assert result["provisional_cost"]
-        assert result["purchase_order_id"] != result["receipt_id"]
-        assert result["receipt_key"] != result["purchase_key"]
-        assert adapter.calls == 2
+        assert result["receipt_key"].endswith(":enter")
+        assert adapter.calls == 1
         repeated = await service.apply(**inputs)
         assert repeated == result
-        assert adapter.calls == 2
+        assert adapter.calls == 1
         async with database() as session:
             rows = (await session.scalars(select(ExternalOperation))).all()
-            assert len(rows) == 2
-            assert all(row.status == "succeeded" for row in rows)
-            order = next(row for row in rows if row.payload["entity"] == "purchaseorder")
-            receipt = next(row for row in rows if row.payload["entity"] == "supply")
-            assert receipt.payload["document"]["purchaseOrder"]["meta"]["href"].endswith(
-                "/purchaseorder/" + result["purchase_order_id"])
-            assert order.payload["document"]["positions"] == receipt.payload["document"]["positions"]
-            assert [i["price"] for i in order.payload["document"]["positions"]] == [450_000, 810_000]
+            assert len(rows) == 1
+            op = rows[0]
+            assert op.status == "succeeded"
+            assert op.payload["entity"] == "enter"
+            doc = op.payload["document"]
+            assert "Хатуна" in doc["description"]
+            assert "agent" not in doc and "purchaseOrder" not in doc
+            assert [i["price"] for i in doc["positions"]] == [450_000, 810_000]
     asyncio.run(run())
 
 
@@ -90,7 +88,7 @@ def test_ambiguous_response_must_not_duplicate_real_or_simulated_receipt(databas
     async def run():
         with pytest.raises(TimeoutError):
             await service.apply(**inputs)
-        assert adapter.calls == 1  # purchase may already exist provider-side
+        assert adapter.calls == 1  # entry may already exist provider-side
         adapter.lose_response = False
         with pytest.raises(ExternalOperationConflict):
             await service.apply(**inputs)
@@ -117,6 +115,6 @@ def test_live_cannot_run_without_persisted_order_and_stock_verifier(monkeypatch)
     monkeypatch.setattr(settings, "external_writes_enabled", True)
     monkeypatch.setenv("OMS_HATUNA_AUTO_WRITES_ENABLED", "true")
     async def run():
-        with pytest.raises(HatunaPreflightError, match="Требуется сверка"):
+        with pytest.raises(HatunaPreflightError, match="Нет повторной сверки"):
             await HatunaDocumentRunner().apply(**kwargs())
     asyncio.run(run())
