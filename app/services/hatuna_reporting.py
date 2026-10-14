@@ -53,8 +53,7 @@ async def order_hatuna_report(order_id, actor, chat_id, *, sessions=None):
             if x:
                 keys = hatuna_operation_keys(order_id, plan.id)
                 document_keys = [
-                    ("Заказ поставщику", keys["purchase"]),
-                    ("Приёмка на Х", keys["receipt"]),
+                    ("Оприходование Х · внутренний учёт", keys["receipt"]),
                 ]
             else:
                 document_keys = []
