@@ -548,22 +548,33 @@ class DraftOrderService:
         result = EmailParser().parse_message(
             draft.subject, (getattr(draft.inbound_message, "body_text", None) or ""),
             sender_name=draft.customer_name)
-        if result.intent != "possible_order" or len(result.items) != 1:
-            raise DraftOrderError("В письме не распознана товарная тема")
-        item = result.items[0]
-        match = await self.matching_service.match_async(item.raw_product_text, 0)
-        data = {
-            "raw_product_text": item.raw_product_text, "qty": 0,
-            "quantity_confidence": "unknown", "quantity_evidence": item.quantity_evidence,
-            "match_status": match.status,
-            "product_id": match.product["id"] if match.product else None,
-            "product_name": match.product.get("name") if match.product else None,
-            "article": match.product.get("article") if match.product else None,
-            "price": None, "item_total": None,
-            "candidates": [v.__dict__ for v in match.candidates],
-        }
+        if result.intent not in {"possible_order", "order"} or not result.items:
+            raise DraftOrderError("В исходном письме не найдены товарные строки")
+        if len(result.items) > 100:
+            raise DraftOrderError("Слишком много позиций: требуется ручная проверка")
+        rows = []
+        for extracted in result.items:
+            match = await self.matching_service.match_async(
+                extracted.raw_product_text, extracted.qty)
+            rows.append({
+                "raw_product_text": extracted.raw_product_text,
+                "qty": extracted.qty,
+                "quantity_confidence": extracted.quantity_confidence,
+                "quantity_evidence": extracted.quantity_evidence,
+                "match_status": match.status,
+                "product_id": match.product["id"] if match.product else None,
+                "product_name": match.product.get("name") if match.product else None,
+                "article": match.product.get("article") if match.product else None,
+                "price": None, "item_total": None,
+                "candidates": [v.__dict__ for v in match.candidates],
+            })
         try:
-            changed = await self.repository.reconsider_email_subject(draft_id, data, actor)
+            if result.intent == "possible_order":
+                if len(rows) != 1:
+                    raise DraftOrderError("Неоднозначный предполагаемый заказ")
+                await self.repository.reconsider_email_subject(draft_id, rows[0], actor)
+            else:
+                await self.repository.reconsider_email_table(draft_id, rows, actor)
         except InvalidOrderTransitionError as error:
             raise DraftOrderError(str(error)) from error
         return await self.review(draft_id)
