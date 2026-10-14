@@ -60,6 +60,9 @@ class CounterpartyCreationService:
         draft = await self.repository.get(draft_id)
         if draft is None or draft.source != "email" or draft.counterparty_id:
             raise CounterpartyCreationError("Нельзя создавать контрагента для этого заказа")
+        if await self.repository.get_customer_counterparty(draft.customer_id):
+            raise CounterpartyCreationError(
+                "Клиент CRM уже связан с МойСклад; новый контрагент не создаётся")
         pending = (draft.contact_details or {}).get("counterparty_create_preview") or {}
         if not pending or pending.get("actor") != manager_id or pending.get("revision") != draft.revision:
             raise CounterpartyCreationError("Подтверждение устарело; повторите /newcp")
