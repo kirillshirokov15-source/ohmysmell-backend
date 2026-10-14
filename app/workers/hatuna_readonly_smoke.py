@@ -25,6 +25,23 @@ def main():
         print(f"HATUNA_READONLY_CHECK_FAILED:{type(exc).__name__}", flush=True)
     else:
         print("HATUNA_READONLY_CHECK_VERIFIED", flush=True)
+        try:
+            from app.integrations.moysklad.client import MoySkladClient
+            client = MoySkladClient()
+            warehouses = client.get_stores()
+            organizations = client.get_organizations()
+            def safe_name(value):
+                return " ".join((value or "").split())[:65]
+            for warehouse in warehouses[:30]:
+                name = safe_name(warehouse.get("name"))
+                kind = "X" if name.casefold().replace(" ", "").replace("x", "х") == "складх" else "OTHER"
+                if not warehouse.get("archived"):
+                    print(f"OMS_READONLY_WAREHOUSE:{kind}:{warehouse.get('id')}:{name}", flush=True)
+            for org in organizations[:15]:
+                if not org.get("archived"):
+                    print(f"OMS_READONLY_ORGANIZATION:{org.get('id')}:{safe_name(org.get('name'))}", flush=True)
+        except Exception as exc:
+            print(f"OMS_READONLY_ACCOUNT_REFERENCES_FAILED:{type(exc).__name__}", flush=True)
 
     # Railway's staging manager service is intentionally a harmless HTTP
     # smoke container until a separate safe acceptance is completed.
