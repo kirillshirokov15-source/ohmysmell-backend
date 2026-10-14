@@ -277,6 +277,17 @@ class OrderSourceService:
             return after
 
     async def _assign(self, session, order, plans, parts, actor):
+        # Website orders are fulfilled only from existing own stock or our
+        # physical X warehouse. Buying remains a separate procurement workflow.
+        # Enforce at the transaction boundary, including direct/internal API
+        # and stale Telegram commands, before allocations or Buying writes.
+        if settings.environment in {"staging", "production"} and any(
+            part.source_type == "external" for part in parts
+        ):
+            raise DeskError(
+                "Для заказов с Tilda доступны только «Свой склад» и «Склад Х». "
+                "Внешние поставщики оформляются отдельно через Buying."
+            )
         items = {i.id: i for i in order.items}
         assigned = defaultdict(int)
         for plan in plans:
