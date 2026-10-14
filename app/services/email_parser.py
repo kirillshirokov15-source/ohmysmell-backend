@@ -100,7 +100,8 @@ class EmailParser:
 
     @classmethod
     def _subject_items(cls, subject):
-        subject = cls._product_prefix.sub("", subject or "").strip()
+        original_subject = subject or ""
+        subject = cls._product_prefix.sub("", original_subject).strip()
         # Split only conventional delimiters. Preserve product names with commas
         # unless every candidate looks like a separately quantified line.
         parts = [p.strip() for p in re.split(r"\s*[;,\n]\s*", subject) if p.strip()]
@@ -112,7 +113,7 @@ class EmailParser:
             if row:
                 results.append(row)
         if not results:
-            candidate = cls._inline_order_name.match(subject or "")
+            candidate = cls._inline_order_name.match(original_subject)
             if candidate and (name := cls._safe_product(candidate.group("product"))):
                 results.append(ExtractedOrderLine(name, 0, "unknown", (subject or "")[:500]))
         return results
