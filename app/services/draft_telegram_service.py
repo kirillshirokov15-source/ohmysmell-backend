@@ -145,8 +145,10 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
             inquiry_original_body(draft),
             sender_name=getattr(draft, "customer_name", None),
         )
-        if classification.intent == "possible_order":
-            rows.append([{"text": "📦 Проверить как возможный заказ",
+        if classification.intent in {"possible_order", "order"} and classification.items:
+            rows.append([{"text": ("📦 Проверить как возможный заказ"
+                                      if classification.intent == "possible_order"
+                                      else "🧾 Разобрать как заказ из письма"),
                           "callback_data": f"draft:reconsider:{draft.id}"}])
         rows.extend([
             [{"text": "Закрыть обращение", "callback_data": f"draft:reject:{draft.id}"}],
