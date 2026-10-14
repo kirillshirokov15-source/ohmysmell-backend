@@ -9,9 +9,8 @@ from app.schemas.order_sources import SourceAction
 HELP = ("/sources ЗАКАЗ — позиции, назначения и ревизия\n"
         "/sourceadd ЗАКАЗ РЕВИЗИЯ ПОЗИЦИЯ КОЛИЧЕСТВО own СКЛАД\n"
         "/sourceadd ЗАКАЗ РЕВИЗИЯ ПОЗИЦИЯ КОЛИЧЕСТВО partner_x СКЛАД ПОСТАВЩИК БАЗА_КОП\n"
-        "/sourceadd ЗАКАЗ РЕВИЗИЯ ПОЗИЦИЯ КОЛИЧЕСТВО external СКЛАД OFFER_ID [BUYING_ID]\n"
         "/sourceaction ЗАКАЗ РЕВИЗИЯ НАЗНАЧЕНИЕ receive|post_receipt|cancel\n"
-        "Внешнюю закупку отправляйте и отмечайте полученной в Buying. "
+        "Заказ Tilda: только свой склад или склад Х. Внешние закупки — отдельно в Buying. "
         "После receive: /warehousedoc ЗАКАЗ РЕВИЗИЯ receipt НАЗНАЧЕНИЕ. "
         "Для реального МойСклад: /warehousedoc ЗАКАЗ РЕВИЗИЯ receipt|reserve|ship|release ID LIVE. "
         "Операция LIVE создаёт/изменяет реальный документ; повторы не отправляйте без сверки.")
@@ -92,6 +91,8 @@ def register(dp, check_access):
                 revision = int(parts[2])
                 if command == "/sourceadd":
                     item, qty, source, warehouse = int(parts[3]), int(parts[4]), parts[5], parts[6]
+                    if source == "external":
+                        raise DeskError("В заказах Tilda используются только свой склад и склад Х. Buying работает отдельно.")
                     row = dict(item_id=item, qty=qty, source_type=source, warehouse_id=warehouse)
                     if source == "partner_x":
                         row.update(supplier_id=int(parts[7]), base_cost_minor=int(parts[8]))
