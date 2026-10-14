@@ -1,0 +1,27 @@
+name: Hatuna purchase and receipt contract
+on:
+  push:
+    branches:
+      - feature/hatuna-receipt-after-picking-20261014
+  workflow_dispatch:
+jobs:
+  fake-moysklad:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Dependencies
+        run: python -m pip install -r requirements.txt pytest aiosqlite
+      - name: Python syntax
+        run: python -m compileall -q app tests
+      - name: Hatuna accounting and existing document regressions
+        env:
+          APP_ENV: staging
+          EXTERNAL_WRITES_ENABLED: 'false'
+          SUPPLIER_EMAIL_SEND_ENABLED: 'false'
+          TELEGRAM_BOT_TOKEN: '123456:TEST_CI_TOKEN_NO_NETWORK'
+        run: python -m pytest -q tests/test_hatuna_accounting.py tests/test_owned_x_enter_and_fast_chat.py
