@@ -80,6 +80,11 @@ class DraftOrder(Base):
     items: Mapped[list["DraftOrderItem"]] = relationship(
         back_populates="draft_order", cascade="all, delete-orphan"
     )
+    # The complete original email is stored in inbound_messages, not
+    # draft_orders. Load via relation, never infer its body from item rows.
+    inbound_message: Mapped["InboundMessage"] = relationship(
+        "InboundMessage", lazy="selectin"
+    )
 
 
 class DraftOrderItem(Base):
