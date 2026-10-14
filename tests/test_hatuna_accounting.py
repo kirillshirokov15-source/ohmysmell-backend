@@ -8,7 +8,7 @@ import pytest
 from app.integrations.moysklad.documents import FakeDocumentAdapter, verified_document
 from app.services.hatuna_accounting import (
     HatunaItem, HatunaPreflightError, hatuna_lines, hatuna_operation_keys,
-    provisional_cost, purchase_intent, receipt_intent,
+    provisional_cost, purchase_intent, receipt_intent, verify_hatuna_counterparty,
 )
 
 ORG, HATUNA, X_STORE, ITEM_A, ITEM_B, PURCHASE = [str(uuid4()) for _ in range(6)]
@@ -106,3 +106,30 @@ def test_fake_moysklad_adapter_reconciles_intents():
         assert (await adapter.find(receipt))[0]["id"] == result_receipt["id"]
         assert adapter.calls == 2
     asyncio.run(exercise())
+
+
+def test_hatuna_counterparty_identity_is_verified_readonly():
+    class StubClient:
+        def __init__(self, data):
+            self.data = data
+            self.calls = []
+        def get_counterparty(self, identifier):
+            self.calls.append(identifier)
+            return self.data
+
+    async def run():
+        good = StubClient({"id": HATUNA, "name": "Хатуна", "archived": False})
+        assert await verify_hatuna_counterparty(HATUNA, client=good) is True
+        assert good.calls == [HATUNA]
+        for invalid in [
+            {"id": HATUNA, "name": "Поставщик не Хатуна", "archived": True},
+            {"id": HATUNA, "name": "Другая компания", "archived": False},
+            {"id": ORG, "name": "Хатуна", "archived": False},
+        ]:
+            with pytest.raises(HatunaPreflightError):
+                await verify_hatuna_counterparty(HATUNA, client=StubClient(invalid))
+        broken = StubClient({"id": HATUNA, "name": "Хатуна"})
+        with pytest.raises(HatunaPreflightError):
+            await verify_hatuna_counterparty("not-a-uuid", client=broken)
+        assert broken.calls == []
+    asyncio.run(run())
