@@ -73,7 +73,7 @@ class EmailParser:
     _non_product_subject = re.compile(
         r"^(?:сч[её]т|сч[еёё]т\s+на\s+оплату|invoice|"
         r"накладная|доставка|отгрузка|оплата|payment|"
-        r"квитанция|заявка\s+на\s+работу|встреча|meeting|"
+        r"квитанция|заявка\s+на\s+работу|рабочая\s+встреча|встреча|meeting|договор|"
         r"подтверждение|подписка|спасибо|hello|привет|"
         r"тест|test|прайс|price\s+list)\b", re.I,
     )
@@ -236,7 +236,7 @@ class EmailParser:
         order_command = bool(self._explicit_order.search(subj + "\n" + body))
         question = bool(self._question_signal.search(subj + "\n" + body))
         # An inquiry wins unless there is an explicit commitment to buy.
-        if question and not order_command:
+        if (question or "?" in subj or "?" in body) and not order_command:
             return ClassifiedEmail("inquiry", ())
         item_rows = self.parse_lines(body, sender_name=sender_name,
                                      explicit_order=bool(self._order_signal.search(subj + "\n" + body)))
