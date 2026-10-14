@@ -305,9 +305,11 @@ async def manager_new_counterparty_preview(message: Message):
                 "callback_data":f"draft:cpcreate:{prepared.id}:v{prepared.revision}",
             }]]))
     except (ValueError, CounterpartyCreationError) as error:
+        detail = str(error)[:380] if isinstance(error, CounterpartyCreationError) else ""
         await message.answer(
-            "Формат: /newcp НОМЕР_ЗАЯВКИ ПОЛНОЕ_НАЗВАНИЕ\n" + str(error)[:380],
-            parse_mode=None)
+            "Чтобы создать контрагента: /newcp 8 ООО Ромашка\n"
+            "Сначала укажите номер заявки и полное юридическое название.\n"
+            + detail, parse_mode=None)
 
 
 @dp.callback_query(F.data.startswith("draft:"))
@@ -489,6 +491,24 @@ async def draft_callback_handler(callback: CallbackQuery):
             )
         elif action == "counterparty_select":
             draft = await service.load_counterparty_candidates(draft_id)
+            if callback.message:
+                count = len(draft.counterparty_candidates or [])
+                heading = (f"🔎 Сверка МойСклад · заявка №{draft_id}\\n"
+                           + (f"Найдено совпадений по проверяемым реквизитам: {count}.\\n"
+                              if count else "Точных совпадений не найдено.\\n")
+                           + ("Выберите нужного контрагента ниже или проверьте по ИНН.\\n"
+                              if count else "Нельзя выбирать случайные карточки. Попробуйте ручной поиск.\\n")
+                           + f"/cpsearch {draft_id} НАЗВАНИЕ_ИЛИ_ИНН\\n"
+                           + f"/newcp {draft_id} ПОЛНОЕ_НАЗВАНИЕ\\n"
+                           + f"/cpcheck {draft_id}")
+                await callback.message.answer(
+                    heading.replace("\\n", "\n"),
+                    parse_mode=None,
+                    reply_markup=InlineKeyboardMarkup.model_validate(
+                        build_draft_keyboard(draft)),
+                )
+            outcome = "success"
+            return
         elif action == "finalize":
             order = await service.finalize(draft_id)
             log_event(
