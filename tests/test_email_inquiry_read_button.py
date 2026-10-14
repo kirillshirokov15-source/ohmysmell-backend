@@ -53,7 +53,7 @@ def test_inquiry_original_body_loaded_from_persisted_inbound_message(database, m
 
         loaded = await repo.get(new.id)
         assert loaded.inbound_message.body_text == INQUIRY
-        assert "есть Marvis" in compact_draft_card(loaded)
+        assert "Marvis Classic Strong Mint" in compact_draft_card(loaded)
         assert "сколько он стоит?" in build_draft_card(loaded)
         direct = build_inquiry_message(loaded)
         assert "client@example.invalid" in direct
@@ -98,5 +98,5 @@ def test_click_read_question_sends_new_message_instead_of_edit(monkeypatch):
     asyncio.run(scenario())
     reply.assert_awaited_once()
     args, kw = reply.await_args
-    assert "есть Marvis" in args[0]
+    assert "Marvis Classic Strong Mint" in args[0]
     assert kw["parse_mode"] is None
