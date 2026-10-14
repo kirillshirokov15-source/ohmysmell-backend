@@ -89,14 +89,22 @@ def purchase_intent(*, order_id, x_plan_id, organization_id, hatuna_id,
 
 
 def receipt_intent(*, order_id, x_plan_id, organization_id, hatuna_id,
-                   x_store_id, items, picker_confirmed, purchase_id):
+                   x_store_id, items, picker_confirmed, purchase_id, simulation=False):
     """Always connect posted purchase receipt to the already verified PO."""
     if picker_confirmed is not True:
         raise HatunaPreflightError("Сборка не подтверждена")
     _uuid(organization_id, "Организация")
     _uuid(hatuna_id, "Контрагент Хатуна")
     _uuid(x_store_id, "Склад Х")
-    _uuid(purchase_id, "Созданный заказ поставщику")
+    if simulation:
+        # FakeDocumentAdapter uses fake-<uuid>; this exception is strictly
+        # test-only. The production executor never supplies simulation=True.
+        if (not isinstance(purchase_id, str)
+                or not purchase_id.startswith("fake-")):
+            raise HatunaPreflightError("Неизвестный тестовый номер заказа поставщику")
+        _uuid(purchase_id[5:], "Тестовый заказ поставщику")
+    else:
+        _uuid(purchase_id, "Созданный заказ поставщику")
     rows = hatuna_lines(items)
     key = hatuna_operation_keys(order_id, x_plan_id)["receipt"]
     payload = supply(organization_id, hatuna_id, x_store_id, rows, key,
