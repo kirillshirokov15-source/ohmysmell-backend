@@ -326,6 +326,11 @@ class DraftOrderService:
             problems.append("Необходимо выбрать контрагента")
         if not draft.items:
             problems.append("В draft отсутствуют позиции")
+        intent = (getattr(draft, "contact_details", None) or {}).get("mail_intent")
+        if draft.source == "email" and intent == "possible_order":
+            problems.append("Возможный заказ: менеджер должен подтвердить, что клиент оформляет заказ")
+        elif draft.source == "email" and intent == "inquiry":
+            problems.append("Письмо-уточнение не является заказом")
 
         for item in draft.items:
             if getattr(item, "quantity_confidence", "confirmed") != "confirmed" or item.qty <= 0:
@@ -432,6 +437,17 @@ class DraftOrderService:
             raise DraftOrderError("Черновик не найден")
         return draft
 
+    async def classify_possible_email(self, draft_id, intent, actor):
+        try:
+            draft = await self.repository.classify_possible_email(draft_id, intent, actor)
+        except InvalidOrderTransitionError as error:
+            raise DraftOrderError(str(error)) from error
+        if draft is None:
+            raise DraftOrderError("Заявка не найдена")
+        if intent == "order":
+            return await self.review(draft_id)
+        return draft
+
     async def reject(self, draft_id: int) -> DraftOrder:
         try:
             draft = await self.repository.reject(draft_id)
@@ -468,6 +484,10 @@ class DraftOrderService:
     @staticmethod
     def _finalize_problems(draft: DraftOrder) -> list[str]:
         problems = []
+        if getattr(draft, "source", None) == "email" and (
+                (getattr(draft, "contact_details", None) or {}).get("mail_intent")
+                in {"possible_order", "inquiry"}):
+            problems.append("Not a confirmed customer purchase request")
         if CustomerType(draft.customer_type) == CustomerType.UNKNOWN:
             problems.append("customer type is unknown")
         if not draft.counterparty_id:
