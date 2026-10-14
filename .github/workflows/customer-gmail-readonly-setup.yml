@@ -1,0 +1,24 @@
+name: Customer Gmail Readonly Setup
+on:
+  push:
+    branches:
+      - feature/customer-gmail-readonly-setup-20261014
+  workflow_dispatch:
+jobs:
+  readonly-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install -r requirements.txt pytest aiosqlite
+      - run: python -m compileall -q app tests
+      - name: Gmail OAuth read-only, previous intake and manager regressions
+        env:
+          APP_ENV: staging
+          EXTERNAL_WRITES_ENABLED: 'false'
+          TELEGRAM_BOT_TOKEN: '123456:TEST_CI_TOKEN_NO_NETWORK'
+        run: python -m pytest -q tests/test_customer_gmail_readonly_smoke.py tests/test_gmail_acceptance.py tests/test_gmail_auth.py tests/test_gmail_mailboxes.py tests/test_manager_email_orders_navigation.py
