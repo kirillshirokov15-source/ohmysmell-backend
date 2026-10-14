@@ -19,6 +19,11 @@ from app.schemas.order_sources import SourceAction
 navigation = {}
 
 
+def post_pick_enabled():
+    import os
+    return os.getenv("OMS_HATUNA_POST_PICK_ENABLED", "false").lower() == "true"
+
+
 def source_warehouses(product, allowed_ids, source_type):
     """Distinct source and physical warehouse: X never appears under Own."""
     if source_type not in {"own", "partner_x", "external"}:
@@ -127,28 +132,33 @@ async def show_sources(message, actor, order_id, *, edit=False):
         if remaining > 0 and editable and not frozen:
             rows.append(button(f"Источник: {item['name'][:45]} · {remaining} шт.",
                 dict(state, step="type", item_id=item["id"], qty=remaining)))
+    import os
+    post_pick = os.getenv("OMS_HATUNA_POST_PICK_ENABLED", "false").lower() == "true"
     for allocation in view["allocations"]:
         if allocation["status"] == "cancelled":
             continue
         label = {"own": "Свой склад", "partner_x": "X", "external": "Поставщик"}[allocation["source_type"]]
         lines.append(f"{label}: {allocation['qty']} шт. · " + ("готово" if allocation["ready"] else "ожидаем поступления"))
         if allocation["source_type"] == "partner_x":
-            lines.append("  Этапы Х: получить товар → оприходовать в МойСклад → резерв → отгрузка.")
-            rows.append(button("Проверить оприходование Х",
-                dict(state, step="x_receipt_preview", allocation_id=allocation["id"])))
-            lines.append("  Наш физический склад Х — без контрагента и закупочной цены.")
-            # Physical receipt is a factual assertion, not a financial write:
-            # confirm only on explicit manager click; never infer from cost.
-            if (editable and not frozen and allocation["status"] == "awaiting_receipt"):
-                rows.append(button("Физически получено со склада Х",
-                    dict(state, step="confirm_receive", allocation_id=allocation["id"])))
+            if post_pick:
+                lines.append("  После «Заказ собран» автоматически: закупка Хатуна → "
+                             "приёмка склад Х → резерв → отгрузка.")
+                lines.append("  Закупочная цена расчётная: цена сайта − 1 000 ₽/шт.")
+            else:
+                lines.append("  Этапы Х: получить товар → оприходовать в МойСклад → резерв → отгрузка.")
+                rows.append(button("Проверить оприходование Х",
+                    dict(state, step="x_receipt_preview", allocation_id=allocation["id"])))
+                lines.append("  Наш физический склад Х — без контрагента и закупочной цены.")
+                if (editable and not frozen and allocation["status"] == "awaiting_receipt"):
+                    rows.append(button("Физически получено со склада Х",
+                        dict(state, step="confirm_receive", allocation_id=allocation["id"])))
         if not editable or allocation["plan_status"] != "planned":
             continue
-        if simulation_allowed() and allocation["status"] == "awaiting_receipt" and (
+        if not post_pick and simulation_allowed() and allocation["status"] == "awaiting_receipt" and (
                 allocation["source_type"] == "partner_x" or allocation["purchase_status"] == "received"):
             rows.append(button(f"Получено: {label} · {allocation['qty']} шт.", dict(state, step="apply",
                 action="receive", allocation_id=allocation["id"])))
-        if simulation_allowed() and allocation["status"] == "received":
+        if not post_pick and simulation_allowed() and allocation["status"] == "received":
             rows.append(button(f"Оприходовать: {label} (симуляция)", dict(state, step="apply",
                 action="post_receipt", allocation_id=allocation["id"])))
         if not frozen:
@@ -205,11 +215,15 @@ def register(dp, check_access, safe_callback_answer):
                 # Never replay an obsolete operation; refresh existing card.
                 await show_sources(callback.message, state["actor"], state["order_id"], edit=True)
                 return
+            if post_pick_enabled() and state.get("source_type") == "external":
+                raise DeskError("Внешние закупки работают в Buying, не в заказах Tilda.")
             rows, text = [], "Выберите источник"
             empty_reason = None
             step = state["step"]
             if step == "type":
-                for value, label in (("own", "Свой склад"), ("partner_x", "Склад Х"), ("external", "Внешний поставщик")):
+                allowed = (("own", "Свой склад"), ("partner_x", "Склад Х")) if post_pick_enabled() else (
+                    ("own", "Свой склад"), ("partner_x", "Склад Х"), ("external", "Внешний поставщик"))
+                for value, label in allowed:
                     rows.append(button(label, dict(state, step="x_warehouse" if value == "partner_x" else "warehouse", source_type=value)))
                 rows.append(button(f"Количество: {state['qty']} шт. · изменить", dict(state,
                     step="quantity", quantity_next="type")))
