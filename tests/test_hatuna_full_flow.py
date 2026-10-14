@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.config.settings import settings
 from app.integrations.moysklad.documents import FakeDocumentAdapter
@@ -93,7 +94,7 @@ def test_complete_mixed_owned_and_hatuna_order_after_picker_confirmation(source_
             "hatuna_receipts": 1, "simulated": True}
         assert adapter.calls == 6
         async with source_db() as session:
-            final = await session.get(Order, order_id)
+            final = await session.scalar(select(Order).where(Order.id == order_id).options(selectinload(Order.items)))
             assert final.fulfillment_status == "shipped"
             assert final.total == 8 * 168_000
             assert final.items[0].price == 168_000
