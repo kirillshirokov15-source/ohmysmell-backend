@@ -319,6 +319,17 @@ async def draft_callback_handler(callback: CallbackQuery):
         draft = None
         if action in {"refresh", "details", "actions"}:
             draft = await DraftOrderRepository().get(draft_id)
+            if (action == "details" and draft
+                    and (draft.contact_details or {}).get("mail_intent") == "inquiry"):
+                # Editing an already expanded card often returns
+                # MESSAGE_NOT_MODIFIED and hides the original email. Send a
+                # distinct readable message on each explicit button press.
+                if callback.message:
+                    from app.services.draft_telegram_service import build_inquiry_message
+                    await callback.message.answer(
+                        build_inquiry_message(draft), parse_mode=None)
+                outcome = "success"
+                return
         elif action == "type":
             customer_type = CustomerType(parts[2])
             draft = await service.set_customer_type(draft_id, customer_type)
