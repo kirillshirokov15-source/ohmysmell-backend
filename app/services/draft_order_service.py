@@ -465,6 +465,50 @@ class DraftOrderService:
             raise DraftOrderError("Заявка не найдена")
         return updated
 
+    async def counterparty_reconciliation(self, draft_id):
+        """Manager read-only comparison: CRM binding vs fresh MoySklad record."""
+        draft = await self._get_required(draft_id)
+        if draft.source != "email":
+            raise DraftOrderError("Сверка предназначена для заявок оптовой почты")
+        lines = [f"🔎 Сверка контрагента · заявка №{draft.id}",
+                 f"Отправитель: {draft.sender_email or 'не указан'}"]
+        if not draft.counterparty_id:
+            lines.append("Контрагент CRM: пока не выбран.")
+            try:
+                candidates = await self.counterparty_service.candidates_async(
+                    draft.sender_email, draft.customer_name)
+            except Exception as e:
+                raise DraftOrderError("Не удалось получить свежие данные МойСклад") from e
+            for item in candidates[:5]:
+                lines.append(f"• {item.get('name')} — {item.get('reason')}")
+            lines.append(f"Поиск вручную: /cpsearch {draft.id} НАЗВАНИЕ_ИЛИ_ИНН")
+            lines.append(f"Создать новый: /newcp {draft.id} ПОЛНОЕ_НАЗВАНИЕ")
+            return "\n".join(lines)[:3700]
+        if not hasattr(self.counterparty_service, "async_gateway"):
+            raise DraftOrderError("Проверка через API МойСклад не настроена")
+        try:
+            record = await self.counterparty_service.async_gateway.get_counterparty(
+                draft.counterparty_id)
+        except Exception as error:
+            raise DraftOrderError("Контрагент не доступен в МойСклад") from error
+        from app.services.counterparty_matching_service import emails
+        current_email = emails(record.get("email"))
+        sender = (draft.sender_email or "").strip().casefold()
+        audit = (draft.contact_details or {}).get("counterparty_reconciliation") or {}
+        lines.extend([
+            f"Связанный ID: {draft.counterparty_id}",
+            f"Наименование: {record.get('name') or 'не указано'}",
+            f"Email МойСклад: {record.get('email') or 'не указан'}",
+            f"Телефон МойСклад: {record.get('phone') or 'не указан'}",
+            f"ИНН МойСклад: {record.get('inn') or 'не указан'}",
+            "Статус: " + ("⚠ архивирован или не найден" if record.get("archived")
+                or record.get("id") != draft.counterparty_id else "✓ активен"),
+            "Email: " + ("✓ совпадает" if sender in current_email
+                else "⚠ отличается; сверить организацию/контакт вручную"),
+            f"Способ связи: {audit.get('evidence') or 'историческая привязка, проверить'}",
+        ])
+        return "\n".join(lines)[:3700]
+
     async def validate_linked_counterparty(self, draft):
         """Provider read-back required before finalizing any wholesale email."""
         if draft.source != "email" or not draft.counterparty_id:
