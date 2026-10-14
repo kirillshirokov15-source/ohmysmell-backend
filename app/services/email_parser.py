@@ -38,6 +38,17 @@ class EmailParser:
         r"(?P<product>[^\n]+?)\s*$", re.I,
     )
     _inline_qty = re.compile(r"^(?P<product>.+?)\s+qty\s*[:=]?\s*(?P<qty>\d+)\s*$", re.I)
+    # Short wholesale line: SKU, quantity, then customer-supplied price.
+    # The trailing number is money, NEVER part of quantity or SKU.
+    _sku_qty_price = re.compile(
+        r"^(?P<product>[a-zа-яё0-9][a-zа-яё0-9._/\\-]{1,40})\\s+"
+        r"(?P<qty>\\d{1,4})\\s*(?:шт\\.?|штук(?:а|и)?|pcs?\\.?)\\s+"
+        r"(?P<quoted>\\d{1,9}(?:[.,]\\d{1,2})?)\\s*(?:₽|руб\\.?|р\\.?)?\\s*$", re.I,
+    )
+    _table_price_header = frozenset({"цена", "цена, $", "цена,₽", "цена, ₽", "цена, р", "цена, руб", "price", "price, $", "unit price"})
+    _table_article_header = frozenset({"артикул", "sku", "код", "article"})
+    _total_header = frozenset({"итого", "итог", "всего", "total"})
+
     _list_marker = re.compile(r"^\s*(?:[•*]|\d+[.)])\s+", re.I)
     _order_header = re.compile(r"^\s*(?:заказ(?:ы|ать)?|заказыва[ею]м|"
         r"хочу заказать|прошу заказать|order|items?|список товаров)\s*:?\s*$", re.I)
@@ -104,6 +115,11 @@ class EmailParser:
 
     @classmethod
     def _line_qty(cls, line):
+        m = cls._sku_qty_price.match(line)
+        if m and int(m.group("qty")) > 0:
+            product = cls._safe_product(m.group("product"))
+            if product:
+                return ExtractedOrderLine(product, int(m.group("qty")), "confirmed", line[:500])
         for pattern in (cls._suffix_qty, cls._plain_qty, cls._inline_qty, cls._prefix_qty):
             m = pattern.match(line)
             if m:
@@ -143,7 +159,7 @@ class EmailParser:
         output = []
         lines = body_text.splitlines()
         skip = set()
-        product_column, qty_column, in_order_list = 0, None, False
+        product_column, qty_column, article_column, in_order_list = 0, None, None, False
         for index, raw in enumerate(lines):
             if index in skip:
                 continue
@@ -175,17 +191,34 @@ class EmailParser:
                         and any(t in self._header_quantities for t in titles)):
                     product_column = next((i for i,t in enumerate(titles) if t in self._header_names), 0)
                     qty_column = next((i for i,t in enumerate(titles) if t in self._header_quantities), None)
+                    article_column = next((i for i,t in enumerate(titles) if t in self._table_article_header), None)
                     in_order_list = True
                     continue
-                product = cells[product_column] if product_column < len(cells) else ""
-                quant = cells[qty_column] if qty_column is not None and qty_column < len(cells) else (
-                    cells[1] if len(cells) == 2 else "")
-                match = re.fullmatch(r"(?:qty\s*)?(\d+)\s*(?:шт\.?|pcs?\.?)?", quant, re.I)
+                # Structured table: use ONLY the designated quantity column.
+                # A currency price or order total must never become a quantity.
+                if qty_column is not None:
+                    product = cells[product_column] if product_column < len(cells) else ""
+                    quant = cells[qty_column] if qty_column < len(cells) else ""
+                    match = re.fullmatch(r"(\\d{1,5})\\s*(?:шт\\.?|pcs?\\.?)?", quant, re.I)
+                    if product and match and (name := self._safe_product(product, sender_name=sender_name)):
+                        qty = int(match.group(1))
+                        if 1 <= qty <= 100000:
+                            article = (cells[article_column].strip() if article_column is not None
+                                       and article_column < len(cells) else "")
+                            # Keep SKU as supporting evidence for human matching.
+                            evidence = (f"Артикул {article} | " if article else "") + clean
+                            output.append(ExtractedOrderLine(name, qty, "confirmed", evidence[:500]))
+                            continue
+                    # A non-item row inside a table must not fall back to
+                    # numeric suffix/prefix heuristics.
+                    continue
+                product = cells[0]
+                quant = cells[1] if len(cells) == 2 else ""
+                match = re.fullmatch(r"(\\d{1,5})\\s*(?:шт\\.?|pcs?\\.?)?", quant, re.I)
                 if product and match and (name := self._safe_product(product, sender_name=sender_name)):
                     qty = int(match.group(1))
                     if 1 <= qty <= 100000:
-                        output.append(ExtractedOrderLine(name, qty,
-                            "confirmed" if qty_column is not None else "probable", clean[:500]))
+                        output.append(ExtractedOrderLine(name, qty, "probable", clean[:500]))
                         continue
             parsed = self._line_qty(clean)
             if parsed:
@@ -236,7 +269,11 @@ class EmailParser:
         order_command = bool(self._explicit_order.search(subj + "\n" + body))
         question = bool(self._question_signal.search(subj + "\n" + body))
         # An inquiry wins unless there is an explicit commitment to buy.
-        if (question or "?" in subj or "?" in body) and not order_command:
+        # Parse structured order rows before checking inquiry words:
+        # table headings such as "Цена" are not customer questions.
+        table_order = bool(re.search(r"(?:^|[\\n\\t|])\\s*(?:наименование|product)\\s*[\\t|]", body, re.I)
+                           and re.search(r"количество|quantity|qty", body, re.I))
+        if (question or "?" in subj or "?" in body) and not order_command and not table_order:
             return ClassifiedEmail("inquiry", ())
         item_rows = self.parse_lines(body, sender_name=sender_name,
                                      explicit_order=bool(self._order_signal.search(subj + "\n" + body)))
