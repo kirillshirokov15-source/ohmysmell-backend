@@ -242,6 +242,11 @@ class DraftOrderRepository:
             await session.commit()
             return draft
 
+    async def get_customer_counterparty(self, customer_id):
+        async with async_session() as session:
+            return await session.scalar(select(Customer.moysklad_counterparty_id).where(
+                Customer.id == customer_id))
+
     async def prepare_new_counterparty(self, draft_id, name, actor):
         from app.models.manager import Manager
         from datetime import datetime, timezone
@@ -255,6 +260,11 @@ class DraftOrderRepository:
             self._ensure_editable(draft)
             if draft.source != "email" or draft.counterparty_id:
                 raise InvalidOrderTransitionError("Создание доступно только для заявки с почты без контрагента")
+            linked = await session.scalar(select(Customer.moysklad_counterparty_id).where(
+                Customer.id == draft.customer_id))
+            if linked:
+                raise InvalidOrderTransitionError(
+                    "Клиент CRM уже привязан к контрагенту МойСклад; сначала выполните /cpcheck")
             self._invalidate(draft)
             draft.contact_details = {
                 **(draft.contact_details or {}),
