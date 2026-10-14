@@ -8,7 +8,7 @@ import pytest
 from app.integrations.moysklad.documents import FakeDocumentAdapter, verified_document
 from app.services.hatuna_accounting import (
     HatunaItem, HatunaPreflightError, hatuna_lines, hatuna_operation_keys,
-    provisional_cost, purchase_intent, receipt_intent, verify_hatuna_counterparty,
+    provisional_cost, stock_entry_intent, verify_hatuna_counterparty,
 )
 
 ORG, HATUNA, X_STORE, ITEM_A, ITEM_B, PURCHASE = [str(uuid4()) for _ in range(6)]
@@ -23,7 +23,7 @@ def _items():
 
 def _args():
     return dict(order_id=13, x_plan_id=5, organization_id=ORG,
-                hatuna_id=HATUNA, x_store_id=X_STORE, items=_items(),
+                x_store_id=X_STORE, items=_items(),
                 picker_confirmed=True)
 
 
@@ -46,31 +46,29 @@ def test_nonpositive_estimated_cost_requires_manual_review(bad):
         provisional_cost(bad)
 
 
-def test_supplier_order_then_linked_receipt_with_same_cost_and_inventory():
-    po = purchase_intent(**_args())
-    assert po["entity"] == "purchaseorder"
-    assert po["document"]["agent"]["meta"]["href"].endswith("/counterparty/" + HATUNA)
-    assert po["document"]["store"]["meta"]["href"].endswith("/store/" + X_STORE)
-    assert po["document"]["description"].startswith("Внутренний учёт")
-    receipt = receipt_intent(**_args(), purchase_id=PURCHASE)
-    assert receipt["entity"] == "supply"
-    assert receipt["document"]["purchaseOrder"]["meta"]["href"].endswith("/purchaseorder/" + PURCHASE)
-    assert receipt["document"]["positions"] == po["document"]["positions"]
-    assert po["document"]["externalCode"] != receipt["document"]["externalCode"]
-    assert po["document"]["syncId"] != receipt["document"]["syncId"]
-    assert purchase_intent(**_args()) == po
-    assert receipt_intent(**_args(), purchase_id=PURCHASE) == receipt
-    assert po["document"]["applicable"] is True
-    assert receipt["document"]["applicable"] is True
+def test_one_priced_internal_entry_no_supplier_documents():
+    intent = stock_entry_intent(**_args())
+    assert intent["entity"] == "enter"
+    doc = intent["document"]
+    assert doc["store"]["meta"]["href"].endswith("/store/" + X_STORE)
+    assert doc["organization"]["meta"]["href"].endswith("/organization/" + ORG)
+    assert doc["applicable"] is True
+    assert "Хатуна" in doc["description"]
+    assert "13" in doc["description"]
+    assert "предварительная" in doc["description"]
+    assert [i["price"] for i in doc["positions"]] == [390_000, 550_000]
+    assert [i["quantity"] for i in doc["positions"]] == [2, 1]
+    assert "agent" not in doc and "purchaseOrder" not in doc
+    assert stock_entry_intent(**_args()) == intent
 
 
 @pytest.mark.parametrize("invalid", [
     {"picker_confirmed": False},
     {"picker_confirmed": "yes"},
-    {"hatuna_id": "not-an-uuid"},
+    {"organization_id": "unknown"},
     {"x_store_id": "unknown"},
     {"items": []},
-    {"items": [HatunaItem(product_id="not-an-uuid", quantity=1,
+    {"items": [HatunaItem(product_id="invalid", quantity=1,
                           sale_unit_minor=400_000, source_item_id=1)]},
     {"items": [HatunaItem(product_id=ITEM_A, quantity=1,
                           sale_unit_minor=100_000, source_item_id=1)]},
@@ -79,33 +77,40 @@ def test_supplier_order_then_linked_receipt_with_same_cost_and_inventory():
                HatunaItem(product_id=ITEM_B, quantity=3,
                           sale_unit_minor=500_000, source_item_id=1)]},
 ])
-def test_provider_intent_refuses_unconfirmed_or_unmatched_x_items(invalid):
+def test_no_entry_without_verified_picker_catalog_and_price(invalid):
     with pytest.raises(HatunaPreflightError):
-        purchase_intent(**{**_args(), **invalid})
+        stock_entry_intent(**{**_args(), **invalid})
 
 
-def test_idempotent_x_keys_are_per_order_and_per_warehouse_plan():
+def test_one_key_per_order_and_x_warehouse_plan():
     one = hatuna_operation_keys(13, 5)
     assert one == hatuna_operation_keys(13, 5)
     assert one != hatuna_operation_keys(13, 6)
     assert one != hatuna_operation_keys(14, 5)
-    assert one["purchase"] != one["receipt"]
+    assert set(one) == {"receipt"}
+    assert one["receipt"].endswith(":enter")
+    assert one["receipt"] != "oms:hatuna:order:13:x-plan:5:receipt"
 
 
-def test_fake_moysklad_adapter_reconciles_intents():
-    # No credentials and no remote network. Both docs share the same X lines.
+def test_fake_provider_creates_only_one_enter_with_priced_positions():
     adapter = FakeDocumentAdapter()
-    po = purchase_intent(**_args())
-    receipt = receipt_intent(**_args(), purchase_id=PURCHASE)
+    intent = stock_entry_intent(**_args())
     async def exercise():
-        result_po = await adapter.create(po)
-        result_receipt = await adapter.create(receipt)
-        assert verified_document(po, result_po)
-        assert verified_document(receipt, result_receipt)
-        assert (await adapter.find(po))[0]["id"] == result_po["id"]
-        assert (await adapter.find(receipt))[0]["id"] == result_receipt["id"]
-        assert adapter.calls == 2
+        result = await adapter.create(intent)
+        assert verified_document(intent, result)
+        assert (await adapter.find(intent))[0]["id"] == result["id"]
+        assert adapter.calls == 1
     asyncio.run(exercise())
+
+
+def test_entry_rejects_zero_or_invalid_acquisition_prices():
+    from app.integrations.moysklad.payloads import hatuna_enter
+    with pytest.raises(ValueError):
+        hatuna_enter(ORG, X_STORE, [{"id": ITEM_A, "qty": 1, "price": -1}], "test:hatuna", 13)
+    with pytest.raises(ValueError):
+        hatuna_enter(ORG, X_STORE, [{"id": ITEM_A, "qty": 1, "price": 0}], "test:hatuna", 13)
+    with pytest.raises(ValueError):
+        hatuna_enter(ORG, X_STORE, [{"id": ITEM_A, "qty": 1}], "test:hatuna", 13)
 
 
 def test_hatuna_counterparty_identity_is_verified_readonly():
