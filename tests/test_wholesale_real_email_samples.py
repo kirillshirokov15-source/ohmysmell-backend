@@ -96,3 +96,39 @@ def test_inline_html_words_keep_spaces_and_formatting_does_not_split_cells():
     assert len(classified.items)==1
     assert classified.items[0].raw_product_text=="Chanel Coco Mademoiselle"
     assert classified.items[0].qty==1
+
+
+def test_wholesale_exact_table_sku_matches_catalog_not_customer_price():
+    import asyncio
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from app.integrations.email.provider import EmailMessage
+    from app.models.sales import CustomerType
+    from app.services.draft_order_service import DraftOrderService
+    from app.services.product_matching_service import ProductMatchingService
+    from app.services.price_service import PriceService
+    from tests.test_email_pipeline import FakeDraftRepository, FakeCustomerService, FakeCounterpartyService
+
+    product={"id":"moysklad-ct023","name":"Оттенки Charlotte Glowgasm",
+             "article":"CT023", "salePrices":[
+             {"value":555000,"priceType":{"name":"Цена продажи"}}]}
+    catalog=SimpleNamespace(get_products=lambda:[product])
+    service=DraftOrderService(repository=FakeDraftRepository(),
+        customer_service=FakeCustomerService(CustomerType.WHOLESALE,"cp-existing"),
+        matching_service=ProductMatchingService(catalog),
+        counterparty_service=FakeCounterpartyService(),
+        price_service=PriceService({CustomerType.WHOLESALE:"Цена продажи"}))
+    body=html_render("""
+    <table><tr><th>Артикул</th><th>Наименование</th><th>Цена, $</th><th>Количество</th><th>Итог, $</th></tr>
+    <tr><td>CT023</td><td>charlotte tilbury glowgasm face palette</td><td>87.64</td><td>1</td><td>87.64</td></tr>
+    </table>
+    """)
+    msg=EmailMessage(external_message_id="table-art-CT023", sender_email="buyer@example.com",
+        sender_name="Хуршед", subject="Заказ от Хуршеда",body_text=body,
+        received_at=datetime.now(timezone.utc))
+    draft=asyncio.run(service.ingest_email(msg))
+    assert len(draft.items)==1
+    assert draft.items[0].raw_product_text=="charlotte tilbury glowgasm face palette"
+    assert draft.items[0].product_id=="moysklad-ct023"
+    assert draft.items[0].article=="CT023"
+    assert draft.items[0].price==555000  # catalog price, NOT 87.64 USD
