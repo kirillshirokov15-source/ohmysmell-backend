@@ -217,6 +217,18 @@ async def settings_handler(message: Message):
         f"Розничный прайс: {'настроен' if settings.moysklad_retail_price_type else 'требует настройки'}")
 
 
+@dp.message(Command("emailorders"))
+@dp.message(F.text == "📨 Заказы с почты")
+async def email_orders_page(message: Message):
+    if not await check_access(message):
+        return
+    try:
+        offset = max(0, int((message.text or "").split()[1]))
+    except (ValueError, IndexError):
+        offset = 0
+    await show_email_order_list(message, offset)
+
+
 @dp.message(Command("drafts"))
 async def drafts_page(message: Message):
     if not await check_access(message):
@@ -527,6 +539,24 @@ async def workspace_section(message):
         await show_order_list(message, category, 0)
 
 
+async def show_email_order_list(message, offset):
+    """Only customer wholesale email orders, never supplier Buying correspondence."""
+    from app.services.telegram_display import telegram_rubles
+    drafts = await DraftOrderRepository().list(
+        limit=10, offset=offset, source="email", active_only=False)
+    rows = [[{"text": f"📨 №{d.id} · {(d.customer_name or 'Клиент')[:26]} · "
+                         + (telegram_rubles(d.total) if d.total is not None else "проверка"),
+              "callback_data": f"draft:refresh:{d.id}"}] for d in drafts]
+    if offset:
+        rows.append([{"text": "← Ранее", "callback_data": f"draftpage:email:{max(0,offset-10)}"}])
+    if len(drafts) == 10:
+        rows.append([{"text": "Далее →", "callback_data": f"draftpage:email:{offset+10}"}])
+    await message.answer(
+        "📨 Оптовые заявки из почты — выберите заказ:" if drafts
+        else "Оптовых заявок из почты пока нет. Проверьте работу Gmail-приёмника.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
 async def show_draft_list(message, status, offset):
     drafts = await DraftOrderRepository().list(limit=10, offset=offset, status=status)
     rows = [[{"text": f"Заявка №{d.id} · {(d.customer_name or 'Клиент')[:40]}",
@@ -548,6 +578,8 @@ async def workspace_page(callback):
     kind, category, offset = callback.data.split(":")
     if kind == "orders":
         await show_order_list(callback.message, category, max(0, int(offset)))
+    elif category == "email":
+        await show_email_order_list(callback.message, max(0, int(offset)))
     else:
         await show_draft_list(callback.message, category, max(0, int(offset)))
 
@@ -755,3 +787,5 @@ async def menu_callback(callback):
         await help_handler(message)
     elif action == "drafts":
         await show_draft_list(message, "needs_review", 0)
+    elif action == "email_orders":
+        await show_email_order_list(message, 0)
