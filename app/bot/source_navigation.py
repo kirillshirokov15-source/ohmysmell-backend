@@ -205,11 +205,14 @@ def register(dp, check_access, safe_callback_answer):
                 # Never replay an obsolete operation; refresh existing card.
                 await show_sources(callback.message, state["actor"], state["order_id"], edit=True)
                 return
+            if state.get("source_type") == "external":
+                # Stale callback tokens must not reopen supplier buying from Tilda.
+                raise DeskError("Внешние поставщики работают отдельно в Buying. Выберите свой склад или склад Х.")
             rows, text = [], "Выберите источник"
             empty_reason = None
             step = state["step"]
             if step == "type":
-                for value, label in (("own", "Свой склад"), ("partner_x", "Склад Х"), ("external", "Внешний поставщик")):
+                for value, label in (("own", "Свой склад"), ("partner_x", "Склад Х")):
                     rows.append(button(label, dict(state, step="x_warehouse" if value == "partner_x" else "warehouse", source_type=value)))
                 rows.append(button(f"Количество: {state['qty']} шт. · изменить", dict(state,
                     step="quantity", quantity_next="type")))
