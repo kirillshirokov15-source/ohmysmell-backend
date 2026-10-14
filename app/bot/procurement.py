@@ -50,6 +50,18 @@ async def supply_order_card(order, shipments=(), *, details=False):
             except SupplyError:
                 quantities = {}
     order.ui_supply_ready = bool(order.items) and quantities == {i.id: i.qty for i in order.items}
+    if order.manual_fulfillment and order.fulfillment_status == "new":
+        import os
+        if os.getenv("OMS_HATUNA_POST_PICK_ENABLED", "false").lower() == "true":
+            from app.services.hatuna_post_pick import require_complete_picking_plan
+            from app.services.order_operations import OperationError
+            try:
+                require_complete_picking_plan(order, shipments)
+            except OperationError:
+                order.ui_supply_ready = False
+            else:
+                # Start physical assembly before the X supplier receipt.
+                order.ui_supply_ready = True
     if not details:
         from app.services.manager_workspace import site_titles_for
         titles = await site_titles_for(order) if order.manual_fulfillment else {}
