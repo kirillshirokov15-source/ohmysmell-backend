@@ -46,6 +46,22 @@ def reservation(organization_id, counterparty_id, warehouse_id, items, operation
     return payload
 
 
+
+def purchaseorder(organization_id, supplier_id, warehouse_id, items, operation_key):
+    """Supplier order for Hatuna: the separate, estimated acquisition prices.
+
+    A purchase order alone never updates stock. One idempotent document groups
+    all Hatuna items for a single destination warehouse and client order.
+    """
+    payload = customerorder(organization_id, supplier_id, items, operation_key=operation_key)
+    payload["store"] = reference("store", warehouse_id)
+    payload["applicable"] = True
+    payload["description"] = (
+        "Внутренний учёт закупки Хатуна; расчётная себестоимость до ежемесячной сверки"
+    )
+    return payload
+
+
 def supply(organization_id, supplier_id, warehouse_id, items, operation_key, purchase_order_id=None):
     """Receipt costs are purchase costs, never the customer's retail prices."""
     payload = customerorder(organization_id, supplier_id, items, operation_key=operation_key)
