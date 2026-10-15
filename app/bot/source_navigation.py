@@ -167,11 +167,11 @@ async def show_sources(message, actor, order_id, *, edit=False):
             continue
         ready = all(allocation_ready(a, manual=order.manual_fulfillment)
                     for a in active_allocations)
-        if (ready and plan.status == "planned" and not plan_docs[plan.id]["reserved"]
+        if (not post_pick and ready and plan.status == "planned" and not plan_docs[plan.id]["reserved"]
                 and order.fulfillment_status == "new" and not order.needs_review):
             rows.append(button("Проверить резерв МойСклад",
                 dict(state, step="plan_doc_preview", plan_id=plan.id, doc_action="reserve")))
-        if (ready and plan.status == "planned" and plan_docs[plan.id]["reserved"]
+        if (not post_pick and ready and plan.status == "planned" and plan_docs[plan.id]["reserved"]
                 and not plan_docs[plan.id]["shipped"]
                 and order.fulfillment_status == "assembled" and not order.needs_review):
             rows.append(button("Проверить отгрузку МойСклад",
@@ -213,6 +213,17 @@ def register(dp, check_access, safe_callback_answer):
             rows, text = [], "Выберите источник"
             empty_reason = None
             step = state["step"]
+            # Old inline callback tokens may outlive a rollout. For orders
+            # switched to post-pick, every former pre-pick document action
+            # must remain unreachable, including its confirmation step.
+            if post_pick_enabled(state["order_id"]) and step in {
+                "x_receipt_preview", "x_receipt_find_partner",
+                "x_receipt_confirm", "execute_live_receipt",
+                "plan_doc_preview", "plan_doc_confirm", "plan_doc_execute",
+                "confirm_receive",
+            }:
+                raise DeskError("Старая операция склада Х отключена: "
+                                "после физической сборки используется post-pick.")
             if step == "type":
                 allowed = (("own", "Свой склад"), ("partner_x", "Склад Х")) if post_pick_enabled(state["order_id"]) else (
                     ("own", "Свой склад"), ("partner_x", "Склад Х"), ("external", "Внешний поставщик"))
