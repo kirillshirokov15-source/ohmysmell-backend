@@ -24,9 +24,6 @@ jobs:
           python -m pytest -q -m "not staging"
           tests/test_manager_ledger_read_performance.py
           tests/test_source_navigation_ui.py
-          # The legacy test_order_sources.py fixture still expects an X supplier
-          # and contradicts the current no-supplier X business contract.
-          # Inventory assignment and mixed X documents are covered below.
           tests/test_hatuna_accounting.py
           tests/test_hatuna_document_runner.py
           tests/test_hatuna_full_flow.py
