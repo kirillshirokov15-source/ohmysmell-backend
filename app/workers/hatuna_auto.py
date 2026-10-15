@@ -32,7 +32,10 @@ async def run_once(service=None, session_factory=None):
     # Run serially. DB and ExternalOperation locks coordinate restarts and
     # stop duplicate purchase/receipt/reserve/ship if polling overlaps.
     completed = 0
+    from app.services.hatuna_post_pick import post_pick_enabled_for_order
     for order_id in ids:
+        if not post_pick_enabled_for_order(order_id):
+            continue
         try:
             await executor.run_order(order_id)
             completed += 1
