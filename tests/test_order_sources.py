@@ -161,8 +161,31 @@ async def full_scenario(factory, actor=111, *, pid="ms-dsd", concurrent=False):
         assert (await s.get(BuyingPurchase, external["purchase_id"])).snapshot["total_minor"] == 270000
 
 
-def test_split_sources_full_lifecycle(source_db):
-    asyncio.run(full_scenario(source_db))
+def test_split_sources_full_lifecycle(source_db, monkeypatch):
+    """One Tilda order: only OWN and X. Buying is never inferred from X."""
+    monkeypatch.setenv("OMS_HATUNA_POST_PICK_ENABLED", "true")
+    async def run():
+        order, service, parts = await seed_sources(source_db)
+        own = {**parts[0], "qty": 2}
+        x = {key: val for key,val in parts[3].items()
+             if key not in {"supplier_id", "base_cost_minor"}}
+        x["qty"] = 6
+        request = SourceAction(action="assign", parts=[own, x],
+            expected_revision=0, idempotency_key=uuid4().hex)
+        view = await service.act(order.id, 111, CHAT, request)
+        assert view == await service.act(order.id, 111, CHAT, request)
+        assert view["items"][0]["assigned"] == order.items[0].qty == 8
+        assert view["items"][0]["ready"] == 2
+        assert {a["source_type"] for a in view["allocations"]} == {"own", "partner_x"}
+        assert {a["plan_status"] for a in view["allocations"]} == {"planned"}
+        assert all(a.get("purchase_id") is None for a in view["allocations"])
+        async with source_db() as session:
+            assert await session.scalar(select(func.count()).select_from(XSettlement)
+                .where(XSettlement.order_id == order.id)) == 0
+            assert (await session.get(Order, order.id)).total == 8 * 168000
+    asyncio.run(run())
+
+
 
 
 def test_atomic_overallocation_cancel_and_reassign(source_db):
@@ -199,16 +222,24 @@ def test_cancel_external_allocation_does_not_fake_purchase_receipt(source_db, se
     asyncio.run(run())
 
 
-def test_cancel_order_closes_its_sources_and_unsent_buying(source_db):
+def test_cancel_order_closes_own_and_x_sources(source_db, monkeypatch):
+    monkeypatch.setenv("OMS_HATUNA_POST_PICK_ENABLED", "true")
     async def run():
         order, service, parts = await seed_sources(source_db)
-        view = await service.act(order.id, 111, CHAT, SourceAction(action="assign", parts=parts, expected_revision=0, idempotency_key="all"))
-        await OrderOperations().act(order.id, 111, OrderAction(action="cancel", expected_revision=1, idempotency_key="cancel-order"))
-        view = await service.read(order.id, 111, CHAT)
-        assert view["items"][0]["ready"] == view["items"][0]["assigned"] == 0
-        assert all(a["status"] == a["plan_status"] == "cancelled" for a in view["allocations"])
-        assert next(a for a in view["allocations"] if a["source_type"] == "external")["purchase_status"] == "cancelled"
+        x = {key: val for key,val in parts[3].items()
+             if key not in {"supplier_id", "base_cost_minor"}}
+        x["qty"] = 6
+        view = await service.act(order.id, 111, CHAT, SourceAction(
+            action="assign", parts=[parts[0], x], expected_revision=0, idempotency_key="all"))
+        await OrderOperations().act(order.id, 111,
+            OrderAction(action="cancel", expected_revision=view["revision"], idempotency_key="cancel-order"))
+        state = await service.read(order.id, 111, CHAT)
+        assert state["items"][0]["ready"] == state["items"][0]["assigned"] == 0
+        assert all(a["status"] == a["plan_status"] == "cancelled" for a in state["allocations"])
+        assert not any(a.get("purchase_id") for a in state["allocations"])
     asyncio.run(run())
+
+
 
 
 @pytest.mark.parametrize("failure", ["stock", "offline", "warehouse", "production"])
@@ -220,7 +251,8 @@ def test_fail_closed(source_db, monkeypatch, failure):
         if failure == "offline": service.products.get_catalog_async.side_effect = RuntimeError("offline")
         if failure == "warehouse": selected[0]["warehouse_id"] = "missing"
         if failure == "production":
-            view = await service.act(order.id, 111, CHAT, SourceAction(action="assign", parts=[parts[2]], expected_revision=0, idempotency_key="x"))
+            clean_x = {k:v for k,v in parts[2].items() if k not in {"supplier_id", "base_cost_minor"}}
+            view = await service.act(order.id, 111, CHAT, SourceAction(action="assign", parts=[clean_x], expected_revision=0, idempotency_key="x"))
             monkeypatch.setattr(settings, "environment", "production")
             with pytest.raises(DeskError, match="симуляции"):
                 await service.act(order.id, 111, CHAT, SourceAction(action="receive", allocation_id=view["allocations"][0]["id"], expected_revision=1, idempotency_key="receive"))
@@ -289,113 +321,77 @@ def test_telegram_assignment_is_versioned_and_idempotent(monkeypatch):
     assert args[3].idempotency_key == f"source:{CHAT}:70"
 
 
-def test_single_x_counterparty_created_only_on_confirmed_allocation(source_db):
-    """The X menu never needs a supplier choice and never creates a real provider document."""
+def test_x_allocation_does_not_create_supplier_or_settlement(source_db):
     async def run():
         order, service, parts = await seed_sources(source_db)
-        async with source_db() as session, session.begin():
-            original = list((await session.scalars(
-                select(Supplier).where(Supplier.supplier_type == "partner_x"))).all())
-            assert len(original) == 1
-            original[0].status = "inactive"
-        async with source_db() as session:
-            assert not (await session.scalars(select(Supplier).where(
-                Supplier.supplier_type == "partner_x", Supplier.status == "active"))).all()
-        x_part = {k: v for k, v in parts[2].items() if k != "supplier_id"}
-        assert SourceAction(action="assign", parts=[x_part], expected_revision=0,
-                            idempotency_key=uuid4().hex).parts[0].supplier_id is None
-        view = await service.act(order.id, 111, CHAT, SourceAction(
-            action="assign", parts=[x_part], expected_revision=0,
-            idempotency_key=uuid4().hex))
-        assert view["items"][0]["assigned"] == 1 and view["items"][0]["ready"] == 0
-        async with source_db() as session:
-            partners = (await session.scalars(select(Supplier).where(
-                Supplier.supplier_type == "partner_x", Supplier.status == "active"))).all()
-            assert len(partners) == 1 and partners[0].name == "Склад Х"
-            assert view["allocations"][0]["supplier_id"] == partners[0].id
-            assert await session.scalar(select(func.count()).select_from(XSettlement).where(
-                XSettlement.order_id == order.id)) == 1
-        again = await service.act(order.id, 111, CHAT, SourceAction(
-            action="assign", parts=[{**x_part, "warehouse_id": "wh2"}],
-            expected_revision=1, idempotency_key=uuid4().hex))
-        assert again["items"][0]["assigned"] == 2
-        async with source_db() as session:
-            partners = (await session.scalars(select(Supplier).where(
-                Supplier.supplier_type == "partner_x", Supplier.status == "active"))).all()
-            assert len(partners) == 1
-    asyncio.run(run())
-
-
-def test_multiple_active_x_partners_fail_closed_without_selection(source_db):
-    async def run():
-        order, service, parts = await seed_sources(source_db)
-        async with source_db() as session, session.begin():
-            session.add(Supplier(name="Another supplier X", supplier_type="partner_x"))
-        x_part = {k: v for k, v in parts[2].items() if k != "supplier_id"}
-        with pytest.raises(DeskError, match="несколько активных партнёров"):
-            await service.act(order.id, 111, CHAT, SourceAction(
-                action="assign", parts=[x_part], expected_revision=0,
-                idempotency_key=uuid4().hex))
-        result = await service.read(order.id, 111, CHAT)
-        assert result["revision"] == 0 and result["allocations"] == []
-    asyncio.run(run())
-
-
-def test_x_assignment_uses_final_tilda_sale_price_without_faking_cost(source_db):
-    """Stock allocation is not a financial settlement or a MoySklad receipt."""
-    async def run():
-        order, service, parts = await seed_sources(source_db)
-        x_part = {key: value for key, value in parts[2].items()
+        clean = [{key:value for key,value in row.items()
                   if key not in {"supplier_id", "base_cost_minor"}}
-        request = SourceAction(action="assign", parts=[x_part],
-            expected_revision=0, idempotency_key=uuid4().hex)
-        assert request.parts[0].base_cost_minor is None
-        view = await service.act(order.id, 111, CHAT, request)
-        allocation = view["allocations"][0]
-        assert allocation["source_type"] == "partner_x"
-        assert allocation["x_cost_pending"] is True
-        assert allocation["ready"] is False
-        assert allocation["x_total_cost_minor"] is None
-        assert view["items"][0]["sale_unit_minor"] == 168000
+                 for row in parts[2:4]]
         async with source_db() as session:
-            unchanged = await session.scalar(select(Order).where(Order.id == order.id)
-                .options(selectinload(Order.items)))
-            assert unchanged.total == 8 * 168000
-            assert unchanged.items[0].price == 168000
-            assert await session.scalar(select(func.count()).select_from(XSettlement).where(
-                XSettlement.order_id == order.id)) == 0
-        # Physical receipt is factual and may be confirmed before purchase
-        # cost is known, but it does not create a financial or stock document.
-        physically_received = await service.act(order.id, 111, CHAT, SourceAction(
-            action="receive", allocation_id=allocation["id"],
-            expected_revision=1, idempotency_key=uuid4().hex))
-        assert physically_received["revision"] == 2
-        assert physically_received["allocations"][0]["status"] == "received"
-        assert physically_received["allocations"][0]["ready"] is False
-        assert physically_received["allocations"][0]["x_cost_pending"] is True
+            before = await session.scalar(select(func.count()).select_from(Supplier)
+                .where(Supplier.supplier_type == "partner_x"))
+        view = await service.act(order.id,111,CHAT,SourceAction(
+            action="assign",parts=clean,expected_revision=0,idempotency_key=uuid4().hex))
+        assert view["items"][0]["assigned"] == 2
+        assert all(a["supplier_id"] is None for a in view["allocations"])
         async with source_db() as session:
-            assert await session.scalar(select(func.count()).select_from(XSettlement).where(
-                XSettlement.order_id == order.id)) == 0
-        confirmed = await service.act(order.id, 111, CHAT, SourceAction(
-            action="set_x_cost", allocation_id=allocation["id"], x_unit_cost_minor=100000,
-            expected_revision=2, idempotency_key=uuid4().hex))
-        assert confirmed["revision"] == 3
-        assert confirmed["allocations"][0]["x_cost_pending"] is False
-        assert confirmed["allocations"][0]["x_total_cost_minor"] == 100000
-        async with source_db() as session:
-            settlement = await session.scalar(select(XSettlement).where(
-                XSettlement.allocation_id == allocation["id"]))
-            assert settlement.base_cost_minor == 100000
-            assert settlement.sale_price_minor == 168000
-            assert settlement.total_margin_minor == 68000
-            order_after = await session.get(Order, order.id)
-            assert order_after.total == 8 * 168000
-        with pytest.raises(DeskError, match="подтверждена"):
-            await service.act(order.id, 111, CHAT, SourceAction(
-                action="set_x_cost", allocation_id=allocation["id"],
-                x_unit_cost_minor=90000, expected_revision=3,
-                idempotency_key=uuid4().hex))
+            after = await session.scalar(select(func.count()).select_from(Supplier)
+                .where(Supplier.supplier_type == "partner_x"))
+            settlements = await session.scalar(select(func.count()).select_from(XSettlement)
+                .where(XSettlement.order_id == order.id))
+        assert (before,after,settlements) == (1,1,0)
     asyncio.run(run())
+
+
+
+
+def test_multiple_legacy_x_partners_do_not_affect_own_x_allocation(source_db, monkeypatch):
+    monkeypatch.setenv("OMS_HATUNA_POST_PICK_ENABLED", "true")
+    async def run():
+        order, service, parts = await seed_sources(source_db)
+        async with source_db() as session,session.begin():
+            session.add(Supplier(name="Old X agent not required",supplier_type="partner_x"))
+        clean = {key:value for key,value in parts[2].items()
+                 if key not in {"supplier_id", "base_cost_minor"}}
+        view = await service.act(order.id,111,CHAT,SourceAction(
+            action="assign",parts=[clean],expected_revision=0,idempotency_key=uuid4().hex))
+        assert view["items"][0]["assigned"] == 1
+        assert view["allocations"][0]["supplier_id"] is None
+    asyncio.run(run()
+
+
+
+
+def test_x_sale_price_immutable_and_manual_receipts_disabled(source_db, monkeypatch):
+    monkeypatch.setenv("OMS_HATUNA_POST_PICK_ENABLED", "true")
+    async def run():
+        order, service, parts = await seed_sources(source_db)
+        clean = {key:value for key,value in parts[2].items()
+                 if key not in {"supplier_id", "base_cost_minor"}}
+        view = await service.act(order.id,111,CHAT,SourceAction(
+            action="assign",parts=[clean],expected_revision=0,idempotency_key=uuid4().hex))
+        alloc = view["allocations"][0]
+        assert alloc["source_type"] == "partner_x"
+        assert alloc["supplier_id"] is None
+        assert view["items"][0]["sale_unit_minor"] == 168000
+        for action in ("receive","post_receipt"):
+            with pytest.raises(DeskError, match="автоматически"):
+                await service.act(order.id,111,CHAT,SourceAction(
+                    action=action,allocation_id=alloc["id"],
+                    expected_revision=view["revision"],idempotency_key=uuid4().hex))
+        with pytest.raises(DeskError, match="автоматически"):
+            await service.act(order.id,111,CHAT,SourceAction(
+                action="set_x_cost",allocation_id=alloc["id"],x_unit_cost_minor=50000,
+                expected_revision=view["revision"],idempotency_key=uuid4().hex))
+        async with source_db() as session:
+            o = await session.scalar(select(Order).where(Order.id == order.id)
+                .options(selectinload(Order.items)))
+            assert o.items[0].price == 168000
+            assert o.total == 8*168000
+            assert await session.scalar(select(func.count()).select_from(XSettlement)) == 0
+    asyncio.run(run())
+
+
 
 
 def test_x_cost_cannot_be_substituted_from_tilda_retail_or_reassigned(source_db):
