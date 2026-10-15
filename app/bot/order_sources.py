@@ -19,16 +19,23 @@ HELP = ("/sources ЗАКАЗ — позиции, назначения и рев�
 
 def source_lines(view):
     from app.services.supply_service import LABELS
+    from app.services.hatuna_post_pick import post_pick_enabled_for_order
+    post_pick = post_pick_enabled_for_order(view["order_id"])
     lines = [f"Источники заказа №{view['order_id']} · ревизия {view['revision']}"]
     for item in view["items"]:
+        label = ("учтено для отгрузки" if post_pick else "доступно к сборке")
         lines.append(f"Позиция #{item['id']} {item['name']}: {item['qty']} шт.; "
-                     f"назначено {item['assigned']}; доступно к сборке {item['ready']}")
+                     f"назначено {item['assigned']}; {label} {item['ready']}")
     states = {"awaiting_receipt": "ожидает получения", "received": "получено, требуется оприходование",
               "confirmed": "источник подтверждён", "cancelled": "отменено"}
     for a in view["allocations"]:
+        source_state = (("назначено на склад Х; физическую сборку подтверждает человек"
+                         if not a["ready"] else "источник подтверждён")
+                        if post_pick and a["source_type"] == "partner_x"
+                        else states[a["status"]])
         lines.append(f"Назначение #{a['id']} · позиция #{a['item_id']} · {LABELS[a['source_type']]} · "
-            f"{a['qty']} шт. · склад {a['warehouse_id']} · {states[a['status']]} · план #{a.get('plan_id', '?')} {a['plan_status']} · "
-            f"{'доступно' if a['ready'] else 'отгрузка заблокирована'}")
+            f"{a['qty']} шт. · склад {a['warehouse_id']} · {source_state} · план #{a.get('plan_id', '?')} {a['plan_status']} · "
+            f"{'учтено для отгрузки' if a['ready'] else 'отгрузка заблокирована'}")
         if a["purchase_id"]:
             lines.append(f"Buying B-{a['purchase_id']:06d}: {a['purchase_status']}" +
                          (" · требуется оформить закупку" if a["requires_purchase"] else ""))
