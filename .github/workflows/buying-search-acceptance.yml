@@ -16,6 +16,8 @@ jobs:
           cache: pip
       - run: python -m pip install -r requirements.txt pytest aiosqlite
       - run: python -m compileall -q app tests
+      - name: Checkout link browser smoke test (no real orders)
+        run: node tests/tilda_checkout_link_smoke.cjs
       - name: Buying search and existing catalog and permissions
         env:
           APP_ENV: staging
