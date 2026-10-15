@@ -65,3 +65,28 @@ def test_post_pick_requires_explicit_feature_flag(monkeypatch):
     monkeypatch.setenv("OMS_HATUNA_POST_PICK_ORDER_IDS", "8")
     order, plans = case()
     assert "Готово к сборке: 1 из 2 шт." in order_card(order, plans)
+
+
+def test_source_commands_describe_shipping_readiness_separately(monkeypatch):
+    from app.bot.order_sources import source_lines
+    monkeypatch.setenv("OMS_HATUNA_POST_PICK_ENABLED", "true")
+    monkeypatch.setenv("OMS_HATUNA_POST_PICK_ORDER_IDS", "8")
+    base = dict(
+        revision=5,
+        items=[{"id": 12, "name": "Charlotte Tilbury",
+                "qty": 1, "assigned": 1, "ready": 0}],
+        allocations=[{"id": 9, "item_id": 12, "source_type": "partner_x",
+                      "qty": 1, "warehouse_id": "warehouse-x",
+                      "status": "awaiting_receipt", "plan_id": 9, "plan_status": "planned",
+                      "ready": False, "purchase_id": None, "supplier_id": None,
+                      "receipt_simulated": False}],
+    )
+    view = dict(base, order_id=8)
+    updated = "\n".join(source_lines(view))
+    assert "назначено 1; учтено для отгрузки 0" in updated
+    assert "физическую сборку подтверждает человек" in updated
+    assert "доступно к сборке 0" not in updated
+
+    legacy = "\n".join(source_lines(dict(base, order_id=9)))
+    assert "доступно к сборке 0" in legacy
+    assert "физическую сборку подтверждает человек" not in legacy
