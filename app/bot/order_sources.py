@@ -55,6 +55,26 @@ def register(dp, check_access):
         except (ValueError, DeskError):
             await message.answer("Формат: /hatuna НОМЕР_ЗАКАЗА (только ответственный менеджер)", parse_mode=None)
 
+    @dp.message(Command('hatunacheck'))
+    async def hatuna_readonly_check(message):
+        if not await check_access(message):
+            return
+        from app.services.hatuna_readonly_check import check_hatuna_order
+        try:
+            parts = (message.text or "").split()
+            if len(parts) != 2:
+                raise ValueError()
+            report = await check_hatuna_order(int(parts[1]), message.from_user.id, message.chat.id)
+            await message.answer(report, parse_mode=None)
+        except (ValueError, DeskError):
+            await message.answer("Формат: /hatunacheck НОМЕР_ЗАКАЗА (только ответственный менеджер)",
+                                 parse_mode=None)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("hatuna_readonly_check_unavailable")
+            await message.answer("Проверка склада Х недоступна. Ничего не проводите до сверки.",
+                                 parse_mode=None)
+
     @dp.message(Command('warehousedoc'))
     async def warehouse_document(message):
         if not await check_access(message):
