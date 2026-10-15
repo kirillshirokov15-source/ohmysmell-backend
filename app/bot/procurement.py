@@ -31,9 +31,10 @@ async def supply_order_card(order, shipments=(), *, details=False):
     order.supply_has_external = bool(requests)
     order.supply_received = bool(requests) and all(r.status == "received" for r in requests.values())
     order.supply_financial_review = any(s.status == "requires_financial_review" for s in settlements.values())
-    from app.services.warehouse_documents import frozen_plan
+    from app.services.warehouse_documents import plan_document_read_models
     async with async_session() as session:
-        order.ui_cancellable = not any([await frozen_plan(session, plan) for plan in shipments])
+        docs = await plan_document_read_models(session, shipments)
+        order.ui_cancellable = not any(row['frozen'] for row in docs.values())
     from app.services.order_source_service import allocation_ready
     quantities = {}
     for plan in shipments:
