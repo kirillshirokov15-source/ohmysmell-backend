@@ -19,9 +19,9 @@ from app.schemas.order_sources import SourceAction
 navigation = {}
 
 
-def post_pick_enabled():
-    import os
-    return os.getenv("OMS_HATUNA_POST_PICK_ENABLED", "false").lower() == "true"
+def post_pick_enabled(order_id):
+    from app.services.hatuna_post_pick import post_pick_enabled_for_order
+    return post_pick_enabled_for_order(order_id)
 
 
 def source_warehouses(product, allowed_ids, source_type):
@@ -125,7 +125,7 @@ async def show_sources(message, actor, order_id, *, edit=False):
             rows.append(button(f"Источник: {item['name'][:45]} · {remaining} шт.",
                 dict(state, step="type", item_id=item["id"], qty=remaining)))
     import os
-    post_pick = os.getenv("OMS_HATUNA_POST_PICK_ENABLED", "false").lower() == "true"
+    post_pick = post_pick_enabled(order_id)
     for allocation in view["allocations"]:
         if allocation["status"] == "cancelled":
             continue
@@ -208,13 +208,13 @@ def register(dp, check_access, safe_callback_answer):
                 # Never replay an obsolete operation; refresh existing card.
                 await show_sources(callback.message, state["actor"], state["order_id"], edit=True)
                 return
-            if post_pick_enabled() and state.get("source_type") == "external":
+            if post_pick_enabled(state["order_id"]) and state.get("source_type") == "external":
                 raise DeskError("Внешние закупки работают в Buying, не в заказах Tilda.")
             rows, text = [], "Выберите источник"
             empty_reason = None
             step = state["step"]
             if step == "type":
-                allowed = (("own", "Свой склад"), ("partner_x", "Склад Х")) if post_pick_enabled() else (
+                allowed = (("own", "Свой склад"), ("partner_x", "Склад Х")) if post_pick_enabled(state["order_id"]) else (
                     ("own", "Свой склад"), ("partner_x", "Склад Х"), ("external", "Внешний поставщик"))
                 for value, label in allowed:
                     rows.append(button(label, dict(state, step="x_warehouse" if value == "partner_x" else "warehouse", source_type=value)))
@@ -243,7 +243,7 @@ def register(dp, check_access, safe_callback_answer):
                         raise DeskError("Позиция заказа не найдена.")
                     state = dict(state, warehouse_id=warehouses[0]["id"])
                     from app.services.telegram_display import telegram_rubles
-                    if post_pick_enabled():
+                    if post_pick_enabled(state["order_id"]):
                         from app.services.hatuna_accounting import provisional_cost, HatunaPreflightError
                         try:
                             value = telegram_rubles(provisional_cost(item_view['sale_unit_minor']))
