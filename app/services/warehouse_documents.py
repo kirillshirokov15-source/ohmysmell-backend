@@ -31,28 +31,60 @@ def plan_key(plan, action, fake):
     return ('simulation:' if fake else '')+f'warehouse:{plan.id}:{plan_generation(plan)}:{action}'
 
 
-async def frozen_plan(session, plan):
-    for fake in (False,True):
-        if any(a.source_type == "partner_x" and a.supply_status != "cancelled"
-               for a in plan.allocations):
-            from app.services.hatuna_accounting import hatuna_operation_keys
-            x_key = hatuna_operation_keys(plan.order_id, plan.id)["receipt"]
-            # Even an uncertain provider response freezes the plan. It may
-            # already have posted inventory and must never be reassigned.
-            if await session.get(ExternalOperation, ("simulation:" if fake else "") + x_key):
-                return True
-        for a in plan.allocations:
-            receipt=await session.get(ExternalOperation,('simulation:' if fake else '')+f'warehouse:allocation:{a.id}:receipt')
-            # Posted goods cannot be silently freed and received a second time.
-            # Returns/reassignment after posting require an explicit inventory workflow.
-            if receipt:
-                return True
-        reserved=await session.get(ExternalOperation,plan_key(plan,'reserve',fake))
-        released=await session.get(ExternalOperation,plan_key(plan,'release',fake))
-        if reserved and not (released and released.status=='succeeded'):
-            return True
-    return False
+async def plan_document_read_models(session, plans):
+    """One read-only ledger query for any number of manager order cards.
 
+    No caching: a UI snapshot is only informational. Every write operation
+    still checks the operation journal and fresh stock independently.
+    Both simulation and live keys are checked, including pending/uncertain
+    writes, so navigation never offers unsafe cancellation.
+    """
+    plans = list(plans)
+    if not plans:
+        return {}
+    from app.services.hatuna_accounting import hatuna_operation_keys
+    wanted = set()
+    for plan in plans:
+        for fake in (False, True):
+            prefix = 'simulation:' if fake else ''
+            if any(a.source_type == 'partner_x' and a.supply_status != 'cancelled'
+                   for a in plan.allocations):
+                wanted.add(prefix + hatuna_operation_keys(plan.order_id, plan.id)['receipt'])
+            wanted.update(prefix + f'warehouse:allocation:{a.id}:receipt'
+                          for a in plan.allocations)
+            wanted.add(plan_key(plan, 'reserve', fake))
+            wanted.add(plan_key(plan, 'release', fake))
+            wanted.add(plan_key(plan, 'ship', fake))
+    records = (await session.execute(select(ExternalOperation.key, ExternalOperation.status)
+                                     .where(ExternalOperation.key.in_(wanted)))).all()
+    statuses = dict(records)
+    result = {}
+    for plan in plans:
+        frozen = False
+        for fake in (False, True):
+            prefix = 'simulation:' if fake else ''
+            if (any(a.source_type == 'partner_x' and a.supply_status != 'cancelled'
+                    for a in plan.allocations) and
+                    prefix + hatuna_operation_keys(plan.order_id, plan.id)['receipt'] in statuses):
+                frozen = True
+            if any(prefix + f'warehouse:allocation:{a.id}:receipt' in statuses
+                   for a in plan.allocations):
+                frozen = True
+            reservation_status = statuses.get(plan_key(plan, 'reserve', fake))
+            release_status = statuses.get(plan_key(plan, 'release', fake))
+            if reservation_status is not None and release_status != 'succeeded':
+                frozen = True
+        result[plan.id] = {
+            'frozen': frozen,
+            'reserved': statuses.get(plan_key(plan, 'reserve', False)) == 'succeeded',
+            'shipped': plan_key(plan, 'ship', False) in statuses,
+        }
+    return result
+
+
+async def frozen_plan(session, plan):
+    """Compatibility entrypoint for a single plan, with one database lookup."""
+    return (await plan_document_read_models(session, [plan]))[plan.id]['frozen']
 
 class WarehouseDocumentService:
     def __init__(self, adapter=None, operations=None, sessions=None):
@@ -160,6 +192,13 @@ class WarehouseDocumentService:
                 if not pair:
                     raise DeskError('Allocation not found')
                 plan,a=pair
+                # Tilda X inventory is accounted ONLY after confirmed picking
+                # via HatunaDocumentRunner, never by the legacy pre-pick action.
+                # Keep fake legacy paths solely for backward-compatible tests.
+                if (not fake and order.manual_fulfillment and order.source == 'website'
+                        and a.source_type == 'partner_x'):
+                    raise DeskError('Для Tilda склад Х оприходуется только после сборки '
+                                    'через единый post-pick сценарий. Старый приход запрещён.')
                 key=('simulation:' if fake else '')+f'warehouse:allocation:{a.id}:receipt'
             else:
                 plan=next((p for p in plans if p.id==target_id),None)

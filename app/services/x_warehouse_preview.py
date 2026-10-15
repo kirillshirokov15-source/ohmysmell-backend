@@ -130,6 +130,9 @@ async def x_receipt_preflight(order_id, allocation_id, actor, chat_id):
                      partner_uuid_ready=True,
                      source_name=partner.name if partner else "Склад Х")
         blockers = []
+        if order.manual_fulfillment and order.source == "website":
+            blockers.append("Старое оприходование склада Х для Tilda отключено. "
+                            "Используйте post-pick после подтверждения сборки.")
         if order.status == "rejected" or order.fulfillment_status != "new" or order.needs_review:
             blockers.append("Заказ закрыт, уже в сборке либо требует проверки.")
         if "test oms" in (order.customer_name or "").casefold() or "test oms" in (order.comment or "").casefold():

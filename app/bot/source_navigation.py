@@ -32,7 +32,8 @@ def source_warehouses(product, allowed_ids, source_type):
         name = (stock.get("name") or "").replace(" ", "").casefold()
         return name in {"складх", "складx"}
     return [stock for stock in product.get("stocks", [])
-            if (not allowed_ids or stock["id"] in allowed_ids)
+            if stock.get("id") and not stock.get("archived", False)
+            and (not allowed_ids or stock["id"] in allowed_ids)
             and (is_x(stock) if source_type == "partner_x" else not is_x(stock))]
 
 
@@ -110,20 +111,11 @@ async def show_sources(message, actor, order_id, *, edit=False):
     order = await get_order(order_id)
     editable = order.fulfillment_status == "new" and order.status != "rejected" and not order.needs_review
     from app.services.order_source_service import source_plans, simulation_allowed
-    from app.services.warehouse_documents import frozen_plan
+    from app.services.warehouse_documents import plan_document_read_models
     async with async_session() as session:
         plans = await source_plans(session, order_id)
-        frozen = any([await frozen_plan(session, plan) for plan in plans])
-        from app.models.fulfillment import ExternalOperation
-        from app.services.warehouse_documents import plan_key
-        plan_docs = {}
-        for plan in plans:
-            reserved = await session.get(ExternalOperation, plan_key(plan, "reserve", False))
-            shipped = await session.get(ExternalOperation, plan_key(plan, "ship", False))
-            plan_docs[plan.id] = dict(
-                reserved=reserved is not None and reserved.status == "succeeded",
-                shipped=shipped is not None,
-            )
+        plan_docs = await plan_document_read_models(session, plans)
+        frozen = any(row['frozen'] for row in plan_docs.values())
     state = dict(actor=actor, chat=message.chat.id, order_id=order_id, revision=view["revision"])
     rows, lines = [], [f"Обеспечение заказа №{order_id}"]
     for item in view["items"]:
@@ -141,18 +133,18 @@ async def show_sources(message, actor, order_id, *, edit=False):
         lines.append(f"{label}: {allocation['qty']} шт. · " + ("готово" if allocation["ready"] else "ожидаем поступления"))
         if allocation["source_type"] == "partner_x":
             if post_pick:
-                lines.append("  После «Заказ собран» автоматически: внутреннее оприходование "
+                lines.append("  После «Заказ собран»: внутреннее оприходование "
                              "на склад Х → резерв → отгрузка.")
+                if os.getenv("OMS_HATUNA_AUTO_PROCESS_ENABLED", "false").lower() != "true":
+                    lines.append("  Автоматическая обработка отключена, "
+                                 "нужна контролируемая приёмка.")
                 lines.append("  Хатуна – пометка в документе, без заказа поставщику и уведомлений.")
                 lines.append("  Учётная цена предварительная: цена сайта − 1 000 ₽/шт.")
             else:
-                lines.append("  Этапы Х: получить товар → оприходовать в МойСклад → резерв → отгрузка.")
-                rows.append(button("Проверить оприходование Х",
-                    dict(state, step="x_receipt_preview", allocation_id=allocation["id"])))
-                lines.append("  Наш физический склад Х — без контрагента и закупочной цены.")
-                if (editable and not frozen and allocation["status"] == "awaiting_receipt"):
-                    rows.append(button("Физически получено со склада Х",
-                        dict(state, step="confirm_receive", allocation_id=allocation["id"])))
+                # The old pre-pick Tilda receipt cannot produce the priced
+                # post-pick Hatuna entry. Never advertise it as a live action.
+                lines.append("  Учет склада Х после подтверждения сборки пока отключен. "
+                             "Не создавайте ручной приход из старого меню.")
         if not editable or allocation["plan_status"] != "planned":
             continue
         if not post_pick and simulation_allowed() and allocation["status"] == "awaiting_receipt" and (
@@ -235,9 +227,12 @@ def register(dp, check_access, safe_callback_answer):
                     item = await session.get(OrderItem, state["item_id"])
                 if not item:
                     raise DeskError("Позиция заказа не найдена.")
-                catalog = await ProductService().get_catalog_async(include_supply=False)
-                product = next((p for p in catalog if p["id"] == item.product_id), {})
-                warehouses = source_warehouses(product, settings.warehouse_ids, "partner_x")
+                # This is only a navigation choice. Read the 60-second
+                # warehouse-name cache rather than downloading the entire
+                # stock/product catalog on each tap. The actual assignment
+                # rechecks the matched SKU and fresh available stock.
+                stores = await ProductService().async_gateway.get_stores()
+                warehouses = source_warehouses({"stocks": stores}, settings.warehouse_ids, "partner_x")
                 if len(warehouses) != 1:
                     empty_reason = ("Склад Х не найден однозначно среди разрешённых складов "
                                     "МойСклад. Проверьте его название и привязку товара.")
@@ -276,13 +271,12 @@ def register(dp, check_access, safe_callback_answer):
                 from app.config.settings import settings
                 async with async_session() as session:
                     item = await session.get(OrderItem, state["item_id"])
-                catalog = await ProductService().get_catalog_async(include_supply=False)
-                product = next((p for p in catalog if p["id"] == item.product_id), {})
-                # An X warehouse must never appear as an own-stock or external
-                # receiving choice. One eligible receiving warehouse is selected
-                # automatically: choosing a supply type must not ask for the same
-                # warehouse again.
-                warehouses = source_warehouses(product, settings.warehouse_ids, state["source_type"])
+                # Read the static warehouse identities only for navigation.
+                # OrderSourceService._assign() independently verifies matched
+                # product, exact warehouse and fresh stock before a mutation.
+                stores = await ProductService().async_gateway.get_stores()
+                warehouses = source_warehouses({"stocks": stores}, settings.warehouse_ids,
+                                               state["source_type"])
                 if not warehouses:
                     empty_reason = ("Для этого источника не найден основной склад. "
                         "«Склад Х» не может быть выбран как собственный склад "
