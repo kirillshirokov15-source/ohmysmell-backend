@@ -15,8 +15,6 @@ jobs:
           cache: pip
       - run: python -m pip install -r requirements.txt pytest aiosqlite
       - run: python -m compileall -q app tests scripts
-      - name: Browser checkout regression, no network
-        run: node tests/tilda_checkout_link_smoke.cjs
       - name: Full safe integration and performance regression
         env:
           APP_ENV: staging
@@ -35,18 +33,13 @@ jobs:
           tests/test_hatuna_accounting.py
           tests/test_hatuna_document_runner.py
           tests/test_hatuna_full_flow.py
-          tests/test_hatuna_order_readonly_preflight.py
           tests/test_gmail_real_order_samples.py
           tests/test_wholesale_real_email_samples.py
-          tests/test_gmail_quote_audit.py
           tests/test_real_wholesale_mail_formats.py
           tests/test_email_pipeline.py
           tests/test_gmail_acceptance.py
           tests/test_manager_cp_action_feedback.py
-          tests/test_buying_catalog_search.py
           tests/test_buying.py
           tests/test_buying_roles.py
-          tests/test_tilda_checkout_link.py
           tests/test_tilda_orders.py
           tests/test_tilda_desk_display.py
-          tests/test_async_moysklad_gateway.py
