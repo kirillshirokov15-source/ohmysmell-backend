@@ -122,6 +122,33 @@
     hidden.name = fieldName;
     hidden.className = "t-input";
     form.appendChild(hidden);
+    // Tilda's existing phone/email fields are the fallback if Telegram
+    // isn't installed. Ask explicitly which contact method the buyer prefers.
+    // This control is optional; it does not gate normal Tilda checkout.
+    const selector = form.querySelector && form.querySelector("[type=submit]");
+    if (selector && selector.parentNode && !form.querySelector("[name=oms_contact_preference]")) {
+      const preference = document.createElement("select");
+      preference.name = "oms_contact_preference";
+      preference.className = "t-input";
+      preference.setAttribute("aria-label", "Как удобнее связаться по заказу?");
+      preference.style.cssText = "display:block;width:100%;min-height:44px;box-sizing:border-box;margin:10px 0";
+      const choices = [
+        ["any", "Любым способом: телефон или email"],
+        ["phone", "Позвонить по телефону"],
+        ["email", "Написать на email"],
+        ["telegram", "Telegram (если установлен)"]
+      ];
+      choices.forEach(([value, caption]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = caption;
+        preference.appendChild(option);
+      });
+      const caption = document.createElement("label");
+      caption.style.cssText = "display:block;font-size:14px;margin-top:10px";
+      caption.append("Как связаться по заказу (Telegram необязателен)", preference);
+      selector.parentNode.insertBefore(caption, selector);
+    }
     let nonce = token();
     hidden.value = await digest(nonce);
     checkoutDebug.bound += 1;
