@@ -55,6 +55,9 @@ async def desk_card(draft_id, *, view="details"):
         if not desk or not draft:
             raise DeskError("Заявка не найдена.")
         data = draft.contact_details or {}
+        preference = {"phone": "Телефон", "email": "Email",
+                      "telegram": "Telegram", "any": "Телефон или email"}.get(
+                          data.get("preferred_contact"), "Телефон или email")
         stocks = await availability(draft.items)
         manager = await session.get(Manager, desk.manager_id) if desk.manager_id else None
         order = await session.get(Order, desk.order_id) if desk.order_id else None
@@ -68,6 +71,7 @@ async def desk_card(draft_id, *, view="details"):
             f"Клиент: {draft.customer_name or 'не указан'}",
             f"Телефон: {data.get('phone') or 'не указан'}",
             f"Email: {draft.sender_email or 'не указан'}",
+            f"Удобная связь: {preference}",
             f"Ответственный: {manager.name or manager.id if manager else 'не назначен'}",
             f"Telegram клиента: {'подключён' if desk.customer_telegram_id else 'не подключён'}",
             f"Оплата: {'оплачен' if order and order.payment_status == 'paid' else 'не оплачено'}",

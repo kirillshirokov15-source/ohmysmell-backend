@@ -241,8 +241,20 @@ def normalize(payload, delivery_key=None):
     subtotal = sum(i["price_minor"] * i["qty"] for i in rows) if all(i["price_minor"] is not None for i in rows) else None
     if subtotal is None or amounts["discount"] is None or amounts["total"] != subtotal - amounts["discount"]:
         problems.append("total_mismatch")
+    checkout_nonce_digest = path_value(payload, "oms_checkout_nonce_hash")
+    if checkout_nonce_digest is not None:
+        # Native Tilda sees only SHA-256, never the browser's bearer secret.
+        if not isinstance(checkout_nonce_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", checkout_nonce_digest):
+            raise TildaInvalid("invalid_checkout_nonce") from None
     result = {"external_id": str(external), "items": rows, "currency": currency,
               "reported_total": amounts["total"], "discount": amounts["discount"], "problems": sorted(set(problems))}
+    preferred_contact = path_value(payload, "oms_contact_preference")
+    if preferred_contact is not None:
+        if preferred_contact not in {"any", "phone", "email", "telegram"}:
+            raise TildaInvalid("invalid_contact_preference")
+        result["contact_preference"] = preferred_contact
+    if checkout_nonce_digest is not None:
+        result["checkout_nonce_hash"] = checkout_nonce_digest
     for key, limit in (("name", 255), ("phone", 100), ("email", 320), ("comment", 2000)):
         value = get(key)
         if value is not None and not isinstance(value, str):

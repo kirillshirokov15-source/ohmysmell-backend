@@ -19,6 +19,7 @@ from app.services.buying_passwords import verify_password, username as normalize
 from app.models.supply import Supplier, SupplierOffer, ProductSupply
 from app.services import buying as service
 from app.services.buying_excel import ParserConfig, ColumnPriceListParser, MAX_UPLOAD, normalize
+from app.services.buying_catalog_search import parse_catalog_query, buying_filter
 from app.services.fx import CbrFxProvider, FxError
 from app.schemas.buying import CatalogRead, OffersRead, CartRead, CheckoutPreviewRead, PurchaseRead, PurchaseDetailRead, PurchasesRead, BuyingUserRead, BuyingLoginRead
 
@@ -271,11 +272,19 @@ async def catalog(q: str = Query("", max_length=200), sort: Literal["cheapest", 
                   offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)) -> dict:
     async with async_session() as session:
         # Page canonical identities, then fetch all their offers in one query.
-        pattern = "%" + normalize(q).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        try:
+            terms = parse_catalog_query(q)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        filters = buying_filter(terms, BuyingProduct.normalized_name,
+                                func.lower(BuyingOffer.name))
         price = case((SupplierOffer.currency_code == "RUB", SupplierOffer.purchase_price_minor),
                      else_=SupplierOffer.purchase_price_minor * SupplierOffer.current_fx_rate_to_rub)
         base = select(BuyingProduct.product_id).join(SupplierOffer, SupplierOffer.product_id == BuyingProduct.product_id).join(BuyingOffer, BuyingOffer.offer_id == SupplierOffer.id).join(Supplier, Supplier.id == SupplierOffer.supplier_id).where(
-            or_(BuyingProduct.normalized_name.like(pattern, escape="\\"), func.lower(BuyingOffer.name).like(pattern, escape="\\")), SupplierOffer.active.is_(True), Supplier.status == "active").group_by(BuyingProduct.product_id)
+            SupplierOffer.active.is_(True), Supplier.status == "active")
+        if filters is not None:
+            base = base.where(filters)
+        base = base.group_by(BuyingProduct.product_id)
         order = func.min(price).asc().nullslast() if sort == "cheapest" else func.min(Supplier.name) if sort == "supplier" else func.max(SupplierOffer.valid_at).desc().nullslast()
         total = await session.scalar(select(func.count()).select_from(base.subquery()))
         ids = list((await session.scalars(base.order_by(order, BuyingProduct.product_id).offset(offset).limit(limit))).all())

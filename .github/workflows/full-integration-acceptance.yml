@@ -1,0 +1,46 @@
+name: OhMySmell Full Integration Acceptance
+on:
+  push:
+    branches: [integration/final-x-gmail-buying-20261016]
+  workflow_dispatch:
+jobs:
+  simulated-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install -r requirements.txt pytest aiosqlite
+      - run: python -m compileall -q app tests
+      - name: Tilda browser checkout smoke without external writes
+        run: node tests/tilda_checkout_link_smoke.cjs
+      - name: Gmail, counterparties, own and X warehouse, Buying, Tilda
+        env:
+          APP_ENV: staging
+          EXTERNAL_WRITES_ENABLED: 'false'
+          OMS_HATUNA_AUTO_WRITES_ENABLED: 'false'
+          OMS_HATUNA_AUTO_PROCESS_ENABLED: 'false'
+          SUPPLIER_EMAIL_SEND_ENABLED: 'false'
+          TELEGRAM_BOT_TOKEN: '123456:TEST_CI_TOKEN_NO_NETWORK'
+        run: >-
+          python -m pytest -q -m "not staging"
+          tests/test_gmail_real_order_samples.py
+          tests/test_wholesale_real_email_samples.py
+          tests/test_real_wholesale_mail_formats.py
+          tests/test_email_pipeline.py
+          tests/test_gmail_acceptance.py
+          tests/test_manager_cp_action_feedback.py
+          tests/test_hatuna_accounting.py
+          tests/test_hatuna_document_runner.py
+          tests/test_hatuna_full_flow.py
+          tests/test_order_sources.py
+          tests/test_source_navigation_ui.py
+          tests/test_buying_catalog_search.py
+          tests/test_buying.py
+          tests/test_buying_roles.py
+          tests/test_tilda_checkout_link.py
+          tests/test_tilda_orders.py
+          tests/test_tilda_desk_display.py

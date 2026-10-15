@@ -13,7 +13,7 @@ from app.services import desk_display
 def test_card_review_requires_approval_and_linked_order(
     monkeypatch, approved, order_id, arithmetic_checked
 ):
-    details = {"reported_total_minor": 168000}
+    details = {"reported_total_minor": 168000, "preferred_contact": "email"}
     if approved is not None:
         details["tilda_review_approved"] = approved
     if arithmetic_checked:
@@ -36,18 +36,14 @@ def test_card_review_requires_approval_and_linked_order(
 
     text, _ = asyncio.run(desk_display.desk_card(38, view="details"))
 
+    assert "Удобная связь: Email" in text
     if approved and order_id:
-        assert "Проверка суммы: арифметика согласована; одобрено менеджером" in text
-        assert "Цена Tilda заявлена сайтом; одобрена менеджером" in text
-        assert "требуется одобрение менеджера" not in text
-        assert "одобрение менеджера обязательно" not in text
+        assert "Цена сайта: подтверждена менеджером" in text
     else:
-        assert "Цена Tilda заявлена сайтом; одобрение менеджера обязательно." in text
-        assert "одобрено менеджером" not in text
-        assert "одобрена менеджером" not in text
-        if arithmetic_checked:
-            assert "Проверка суммы: арифметика согласована; требуется одобрение менеджера" in text
-        else:
-            assert "Проверка суммы: требует проверки" in text
+        assert "Цена сайта: требует подтверждения менеджера" in text
+    if arithmetic_checked:
+        assert "Итог заказа: " in text and "требует проверки (не подтверждён)" not in text
+    else:
+        assert "Итог заказа: требует проверки (не подтверждён)" in text
     session.commit.assert_not_awaited()
     session.flush.assert_not_awaited()
