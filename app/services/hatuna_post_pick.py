@@ -31,3 +31,22 @@ def require_complete_picking_plan(order, plans):
     if dict(actual) != requested:
         raise OperationError("Распределите все товары по двум складам до начала сборки.")
     return True
+
+
+def post_pick_enabled_for_order(order_id):
+    """Opt in to safe physical-picking workflow for selected Tilda orders.
+
+    Empty allowlist preserves preexisting flag semantics; a nonempty list
+    permits only explicit positive CRM order IDs. This DOES NOT enable
+    external MoySklad writes or the automatic warehouse worker.
+    """
+    import os
+    if os.getenv("OMS_HATUNA_POST_PICK_ENABLED", "false").lower() != "true":
+        return False
+    selected = os.getenv("OMS_HATUNA_POST_PICK_ORDER_IDS", "").strip()
+    if not selected:
+        return True
+    tokens = [token.strip() for token in selected.split(",")]
+    if any(not token.isascii() or not token.isdecimal() or int(token) <= 0 for token in tokens):
+        return False
+    return type(order_id) is int and order_id in {int(token) for token in tokens}
