@@ -34,7 +34,7 @@
     overlay = document.createElement("section");
     overlay.setAttribute("role", "status");
     overlay.setAttribute("aria-live", "polite");
-    overlay.style.cssText = "position:fixed;bottom:20px;right:20px;z-index:2147483600;max-width:360px;background:#fffaf7;border:1px solid #e6d8d4;border-radius:14px;padding:22px;font:15px/1.5 Arial,sans-serif;color:#352e2d;box-shadow:0 6px 32px #0002";
+    overlay.style.cssText = "position:fixed;bottom:max(16px,env(safe-area-inset-bottom));right:16px;left:auto;z-index:2147483600;width:calc(100vw - 32px);max-width:360px;box-sizing:border-box;background:#fffaf7;border:1px solid #e6d8d4;border-radius:14px;padding:20px;font:15px/1.5 Arial,sans-serif;color:#352e2d;box-shadow:0 6px 32px #0002";
     const title = document.createElement("div");
     title.textContent = "Ваш заказ принят";
     title.style.cssText = "font-weight:bold;font-size:18px;margin-bottom:10px";
@@ -46,6 +46,14 @@
     link.rel = "noopener noreferrer";
     link.referrerPolicy = "no-referrer";
     link.style.cssText = "display:none;background:#aa7f80;color:#fff;text-decoration:none;padding:11px 14px;border-radius:8px;text-align:center";
+    const noTelegram = document.createElement("button");
+    noTelegram.type = "button";
+    noTelegram.textContent = "У меня нет Telegram";
+    noTelegram.style.cssText = "display:block;background:transparent;color:#644647;border:0;padding:12px 0 0;text-decoration:underline;cursor:pointer;font:inherit";
+    noTelegram.addEventListener("click", function () {
+      status.textContent = "Заказ уже принят! Telegram не обязателен. Менеджер сможет связаться с вами по телефону или email, указанным при оформлении.";
+      link.style.display = "none";
+    });
     const again = document.createElement("button");
     again.type = "button";
     again.textContent = "Получить новую ссылку";
@@ -56,9 +64,9 @@
     close.setAttribute("aria-label", "Закрыть");
     close.style.cssText = "position:absolute;right:12px;top:8px;background:transparent;border:0;font-size:24px;cursor:pointer";
     close.addEventListener("click", () => { overlay.remove(); overlay = null; panelControls = null; });
-    overlay.append(title, status, link, again, close);
+    overlay.append(title, status, link, noTelegram, again, close);
     document.body.append(overlay);
-    panelControls = {status, link, again};
+    panelControls = {status, link, again, noTelegram};
     return panelControls;
   }
 
@@ -83,7 +91,7 @@
         if (response.ok) {
           const body = await response.json();
           if (!/^https:\/\/t\.me\/OhMySmell_OrdersBot\?start=[A-Za-z0-9_-]{43}$/.test(body.deep_link)) throw Error("unexpected_link");
-          ui.status.textContent = "Перейдите по персональной ссылке и нажмите Start в Telegram.";
+          ui.status.textContent = "Заказ принят. Для отслеживания откройте Telegram и нажмите Start в боте. Если Telegram не установлен, можно дождаться связи по контактам из заказа.";
           ui.link.href = body.deep_link;
           ui.link.style.display = "block";
           const expiresAt = Date.now() + Number(body.expires_in_seconds || 1800) * 1000;
@@ -100,7 +108,7 @@
         if (response.status !== 404 && response.status !== 503) break;
       } catch (_) {}
     }
-    ui.status.textContent = "Заказ сохранён. Ссылка пока недоступна. Попробуйте ещё раз или свяжитесь с магазином.";
+    ui.status.textContent = "Заказ принят даже без Telegram. Если бот временно недоступен, менеджер сможет связаться по телефону или email из заказа. Попробуйте получить ссылку позднее.";
     ui.again.style.display = "inline-block";
     ui.again.onclick = () => displayLink(nonce);
     ui.link.href = BOT;
