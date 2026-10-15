@@ -357,7 +357,7 @@ def test_multiple_legacy_x_partners_do_not_affect_own_x_allocation(source_db, mo
             action="assign",parts=[clean],expected_revision=0,idempotency_key=uuid4().hex))
         assert view["items"][0]["assigned"] == 1
         assert view["allocations"][0]["supplier_id"] is None
-    asyncio.run(run()
+    asyncio.run(run())
 
 
 
