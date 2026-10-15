@@ -52,8 +52,8 @@ async def supply_order_card(order, shipments=(), *, details=False):
                 quantities = {}
     order.ui_supply_ready = bool(order.items) and quantities == {i.id: i.qty for i in order.items}
     if order.manual_fulfillment and order.fulfillment_status == "new":
-        import os
-        if os.getenv("OMS_HATUNA_POST_PICK_ENABLED", "false").lower() == "true":
+        from app.services.hatuna_post_pick import post_pick_enabled_for_order
+        if post_pick_enabled_for_order(order.id):
             from app.services.hatuna_post_pick import require_complete_picking_plan
             from app.services.order_operations import OperationError
             try:
