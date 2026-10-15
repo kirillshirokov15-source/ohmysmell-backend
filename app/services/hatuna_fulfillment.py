@@ -28,8 +28,9 @@ from app.integrations.moysklad.documents import FakeDocumentAdapter
 from app.services.product_service import ProductService
 
 
-def enabled():
-    return os.getenv("OMS_HATUNA_POST_PICK_ENABLED", "false").lower() == "true"
+def enabled(order_id):
+    from app.services.hatuna_post_pick import post_pick_enabled_for_order
+    return post_pick_enabled_for_order(order_id)
 
 
 class HatunaFulfillment:
@@ -40,8 +41,8 @@ class HatunaFulfillment:
 
     async def snapshot(self, order_id):
         """Fresh DB snapshot; no untrusted client/browser IDs or prices."""
-        if not enabled():
-            raise HatunaPreflightError("Post-pick scenario is disabled")
+        if not enabled(order_id):
+            raise HatunaPreflightError("Post-pick scenario is disabled for this order")
         async with self.sessions() as session:
             order = await session.scalar(select(Order).where(Order.id == order_id)
                                          .options(selectinload(Order.items)))
