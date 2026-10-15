@@ -110,20 +110,11 @@ async def show_sources(message, actor, order_id, *, edit=False):
     order = await get_order(order_id)
     editable = order.fulfillment_status == "new" and order.status != "rejected" and not order.needs_review
     from app.services.order_source_service import source_plans, simulation_allowed
-    from app.services.warehouse_documents import frozen_plan
+    from app.services.warehouse_documents import plan_document_read_models
     async with async_session() as session:
         plans = await source_plans(session, order_id)
-        frozen = any([await frozen_plan(session, plan) for plan in plans])
-        from app.models.fulfillment import ExternalOperation
-        from app.services.warehouse_documents import plan_key
-        plan_docs = {}
-        for plan in plans:
-            reserved = await session.get(ExternalOperation, plan_key(plan, "reserve", False))
-            shipped = await session.get(ExternalOperation, plan_key(plan, "ship", False))
-            plan_docs[plan.id] = dict(
-                reserved=reserved is not None and reserved.status == "succeeded",
-                shipped=shipped is not None,
-            )
+        plan_docs = await plan_document_read_models(session, plans)
+        frozen = any(row['frozen'] for row in plan_docs.values())
     state = dict(actor=actor, chat=message.chat.id, order_id=order_id, revision=view["revision"])
     rows, lines = [], [f"Обеспечение заказа №{order_id}"]
     for item in view["items"]:
@@ -141,18 +132,18 @@ async def show_sources(message, actor, order_id, *, edit=False):
         lines.append(f"{label}: {allocation['qty']} шт. · " + ("готово" if allocation["ready"] else "ожидаем поступления"))
         if allocation["source_type"] == "partner_x":
             if post_pick:
-                lines.append("  После «Заказ собран» автоматически: внутреннее оприходование "
+                lines.append("  После «Заказ собран»: внутреннее оприходование "
                              "на склад Х → резерв → отгрузка.")
+                if os.getenv("OMS_HATUNA_AUTO_PROCESS_ENABLED", "false").lower() != "true":
+                    lines.append("  Автоматическая обработка отключена, "
+                                 "нужна контролируемая приёмка.")
                 lines.append("  Хатуна – пометка в документе, без заказа поставщику и уведомлений.")
                 lines.append("  Учётная цена предварительная: цена сайта − 1 000 ₽/шт.")
             else:
-                lines.append("  Этапы Х: получить товар → оприходовать в МойСклад → резерв → отгрузка.")
-                rows.append(button("Проверить оприходование Х",
-                    dict(state, step="x_receipt_preview", allocation_id=allocation["id"])))
-                lines.append("  Наш физический склад Х — без контрагента и закупочной цены.")
-                if (editable and not frozen and allocation["status"] == "awaiting_receipt"):
-                    rows.append(button("Физически получено со склада Х",
-                        dict(state, step="confirm_receive", allocation_id=allocation["id"])))
+                # The old pre-pick Tilda receipt cannot produce the priced
+                # post-pick Hatuna entry. Never advertise it as a live action.
+                lines.append("  Учет склада Х после подтверждения сборки пока отключен. "
+                             "Не создавайте ручной приход из старого меню.")
         if not editable or allocation["plan_status"] != "planned":
             continue
         if not post_pick and simulation_allowed() and allocation["status"] == "awaiting_receipt" and (

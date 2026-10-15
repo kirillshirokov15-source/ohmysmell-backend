@@ -173,9 +173,10 @@ class OrderOperations:
                 if quantities != {item.id: item.qty for item in order.items}:
                     raise OperationError("Сначала распределите все товары по складам.")
             if request.action == 'cancel':
-                from app.services.warehouse_documents import frozen_plan
+                from app.services.warehouse_documents import plan_document_read_models
                 from app.services.order_source_service import source_plans
-                if any([await frozen_plan(session,p) for p in await source_plans(session,order_id)]):
+                docs = await plan_document_read_models(session, await source_plans(session, order_id))
+                if any(row['frozen'] for row in docs.values()):
                     raise OperationError('Сначала сверить и снять внешний резерв.')
             apply_action(order, request, manager.id, datetime.now(timezone.utc))
             if request.action == "cancel":
