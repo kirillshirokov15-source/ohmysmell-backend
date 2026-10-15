@@ -118,6 +118,7 @@ class TildaIntake:
                 customer_type="retail", customer_name=payload["name"] or "Клиент сайта", sender_email=email,
                 subject="Заказ Tilda", status="needs_review", counterparty_candidates=[],
                 contact_details={"phone": payload["phone"], "comment": payload["comment"],
+                    "preferred_contact": payload.get("contact_preference", "any"),
                     "tilda": True, "reported_total_minor": payload["reported_total"],
                     "discount_minor": payload["discount"], "currency": payload["currency"],
                     "external_products": [i["externalid"] for i in payload["items"]],
