@@ -248,6 +248,11 @@ def normalize(payload, delivery_key=None):
             raise TildaInvalid("invalid_checkout_nonce") from None
     result = {"external_id": str(external), "items": rows, "currency": currency,
               "reported_total": amounts["total"], "discount": amounts["discount"], "problems": sorted(set(problems))}
+    preferred_contact = path_value(payload, "oms_contact_preference")
+    if preferred_contact is not None:
+        if preferred_contact not in {"any", "phone", "email", "telegram"}:
+            raise TildaInvalid("invalid_contact_preference")
+        result["contact_preference"] = preferred_contact
     if checkout_nonce_digest is not None:
         result["checkout_nonce_hash"] = checkout_nonce_digest
     for key, limit in (("name", 255), ("phone", 100), ("email", 320), ("comment", 2000)):
