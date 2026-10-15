@@ -23,8 +23,13 @@ async def desk_card(draft_id, *, view="compact"):
         order = await session.get(Order, desk.order_id) if desk.order_id else None
         review_approved = bool(draft.contact_details.get("tilda_review_approved") and desk.order_id)
         stage = stage_label(desk, draft, order)
+        preference = {
+            "phone": "Телефон", "email": "Email",
+            "telegram": "Telegram", "any": "Телефон или email",
+        }.get(draft.contact_details.get("preferred_contact"), "Телефон или email")
         lines = [f"Заказ с сайта · заявка №{draft.id}", f"Клиент: {draft.customer_name}",
             f"Телефон: {draft.contact_details.get('phone') or 'не указан'}", f"Email: {draft.sender_email or 'не указан'}",
+            f"Удобная связь: {preference}",
             f"Ответственный: {manager.name or manager.id if manager else 'не назначен'}",
             f"Этап: {stage}", f"Telegram клиента: {'подключён' if desk.customer_telegram_id else 'не подключён'}"]
         if desk.stage == "new" and not desk.order_id and draft.status != "rejected":
@@ -84,6 +89,7 @@ async def desk_card(draft_id, *, view="compact"):
                 "Сумма: " + (telegram_rubles(draft.total) if draft.total is not None else "требует проверки"),
                 "Оплата: " + ("Оплачен" if order and order.payment_status == "paid" else "Не оплачено"),
                 "Обеспечение: подтвердите источники в заказе" if desk.order_id else "Наличие: требуется согласование",
+                "Связь: " + preference,
                 "Сейчас: " + (primary["text"] if primary else "Действий не требуется")]
             if view == "compact":
                 rows = [[primary]] if primary else []
