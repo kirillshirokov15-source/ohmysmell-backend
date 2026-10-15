@@ -1,0 +1,16 @@
+name: Tilda Checkout Bot Link CDN Safety
+on:
+  push:
+    branches: [feature/tilda-checkout-link-cdn-fix-20261016]
+  workflow_dispatch:
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Tilda dynamic cart and trusted bot link endpoint
+        run: node tests/tilda_checkout_link_smoke.cjs
