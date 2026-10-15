@@ -742,13 +742,20 @@ async def order_callback(callback):
     try:
         _, action, identifier, version = callback.data.split(":")
         order_id, revision = int(identifier), int(version)
-        order = await get_order(order_id)
+        # Navigation is read-only. Retrieve order and warehouse plans
+        # concurrently, but never prefetch plans across a write action.
+        read_plans = None
+        if action in {"refresh", "actions", "details", "items"}:
+            order, read_plans = await asyncio.gather(
+                get_order(order_id), shipments_for(order_id))
+        else:
+            order = await get_order(order_id)
         if not order:
             raise OperationError("Заказ не найден.")
         if action != "refresh" and order.revision != revision:
             # Do not execute old callbacks; replace the old screen with
             # the latest controls, without adding "stale card" chat messages.
-            plans = await shipments_for(order_id)
+            plans = read_plans if read_plans is not None else await shipments_for(order_id)
             text = "Карточка обновлена: состояние заказа изменилось.\n" + await supply_order_card(order, plans)
             keyboard = InlineKeyboardMarkup.model_validate(order_keyboard(order, plans))
             await safe_edit_message(callback.message, text, draft_id=0, reply_markup=keyboard)
@@ -768,7 +775,7 @@ async def order_callback(callback):
             lines = [f"Заказ №{order_id} · товары:"]
             for item in order.items:
                 lines.append(f"{item.name} · {item.qty} × {telegram_rubles(item.price)} = {telegram_rubles(item.item_total)}")
-            plans = await shipments_for(order_id)
+            plans = read_plans if read_plans is not None else await shipments_for(order_id)
             for index, plan in enumerate(plans, 1):
                 lines.append(f"План №{index}: склад {plan.warehouse_id}")
             text = "\n".join(lines)
@@ -795,7 +802,7 @@ async def order_callback(callback):
             request = OrderAction(action=action, expected_revision=revision,
                 idempotency_key=f"tg:{callback.from_user.id}:{callback.data}", **extra)
             order = await OrderOperations().act(order_id, callback.from_user.id, request)
-        plans = await shipments_for(order_id)
+        plans = read_plans if read_plans is not None else await shipments_for(order_id)
         text = await supply_order_card(order, plans, details=action == "details")
         keyboard = InlineKeyboardMarkup.model_validate(order_keyboard(order, plans, expanded=action in {"details", "actions"}))
         try:
