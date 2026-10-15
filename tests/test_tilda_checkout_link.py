@@ -29,6 +29,23 @@ def test_checkout_nonce_normalized_as_digest_only(tilda_config):
     assert "checkout_nonce_hash" not in normalize(payload())
 
 
+@pytest.mark.parametrize("preference", ["any", "phone", "email", "telegram"])
+def test_tilda_optional_contact_channel_keeps_order_totals_and_prices(tilda_config, preference):
+    data = payload()
+    data["oms_contact_preference"] = preference
+    current = normalize(data)
+    assert current["contact_preference"] == preference
+    assert current["reported_total"] == normalize(payload())["reported_total"]
+    assert current["items"] == normalize(payload())["items"]
+
+
+def test_tilda_contact_channel_rejects_invalid_provider_values(tilda_config):
+    data = payload()
+    data["oms_contact_preference"] = "unknown"
+    with pytest.raises(TildaInvalid, match="invalid_contact_preference"):
+        normalize(data)
+
+
 @pytest.mark.parametrize("nonce", ["short", "a" * 42, "a" * 44, "a" * 42 + "!", 123, True, {}, None])
 def test_checkout_nonce_invalid_form_fails_closed(tilda_config, nonce):
     data = payload()
