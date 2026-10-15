@@ -14,6 +14,39 @@ async def _check():
     return await verify_hatuna_counterparty(os.getenv("OMS_HATUNA_COUNTERPARTY_ID", ""))
 
 
+async def _candidate_orders_readonly():
+    """List only staging CRM order IDs eligible for independent X preflight.
+
+    No customer data, no provider writes, no order changes, no simulation.
+    Candidate means assembled with X allocation, NOT cleared to post stock.
+    """
+    from sqlalchemy import select
+    from app.database.session import async_session
+    from app.models.order import Order
+    from app.models.fulfillment import Shipment, WarehouseAllocation
+    from app.config.settings import settings
+
+    if (settings.external_writes_enabled
+            or os.getenv("OMS_HATUNA_AUTO_WRITES_ENABLED", "false").lower() == "true"
+            or os.getenv("OMS_HATUNA_AUTO_PROCESS_ENABLED", "false").lower() == "true"):
+        print("OMS_X_CANDIDATES:SKIPPED_UNSAFE_FLAGS", flush=True)
+        return
+    async with async_session() as session:
+        ids = list((await session.scalars(
+            select(Order.id)
+            .join(Shipment, Shipment.order_id == Order.id)
+            .join(WarehouseAllocation, WarehouseAllocation.shipment_id == Shipment.id)
+            .where(Order.source == "website",
+                   Order.manual_fulfillment.is_(True),
+                   Order.fulfillment_status == "assembled",
+                   Order.needs_review.is_(False),
+                   WarehouseAllocation.source_type == "partner_x",
+                   WarehouseAllocation.supply_status != "cancelled")
+            .distinct().order_by(Order.id.desc()).limit(10)
+        )).all())
+    print("OMS_X_CANDIDATES:" + (",".join(str(i) for i in ids) or "NONE"), flush=True)
+
+
 def main():
     if os.getenv("APP_ENV") != "staging":
         raise RuntimeError("Hatuna read-only smoke is staging-only")
@@ -42,6 +75,11 @@ def main():
                     print(f"OMS_READONLY_ORGANIZATION:{org.get('id')}:{safe_name(org.get('name'))}", flush=True)
         except Exception as exc:
             print(f"OMS_READONLY_ACCOUNT_REFERENCES_FAILED:{type(exc).__name__}", flush=True)
+
+    try:
+        asyncio.run(_candidate_orders_readonly())
+    except Exception as exc:
+        print(f"OMS_X_CANDIDATES_ERROR:{type(exc).__name__}", flush=True)
 
     # Railway's staging manager service is intentionally a harmless HTTP
     # smoke container until a separate safe acceptance is completed.
