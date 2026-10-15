@@ -32,7 +32,8 @@ def source_warehouses(product, allowed_ids, source_type):
         name = (stock.get("name") or "").replace(" ", "").casefold()
         return name in {"складх", "складx"}
     return [stock for stock in product.get("stocks", [])
-            if (not allowed_ids or stock["id"] in allowed_ids)
+            if stock.get("id") and not stock.get("archived", False)
+            and (not allowed_ids or stock["id"] in allowed_ids)
             and (is_x(stock) if source_type == "partner_x" else not is_x(stock))]
 
 
@@ -226,9 +227,12 @@ def register(dp, check_access, safe_callback_answer):
                     item = await session.get(OrderItem, state["item_id"])
                 if not item:
                     raise DeskError("Позиция заказа не найдена.")
-                catalog = await ProductService().get_catalog_async(include_supply=False)
-                product = next((p for p in catalog if p["id"] == item.product_id), {})
-                warehouses = source_warehouses(product, settings.warehouse_ids, "partner_x")
+                # This is only a navigation choice. Read the 60-second
+                # warehouse-name cache rather than downloading the entire
+                # stock/product catalog on each tap. The actual assignment
+                # rechecks the matched SKU and fresh available stock.
+                stores = await ProductService().async_gateway.get_stores()
+                warehouses = source_warehouses({"stocks": stores}, settings.warehouse_ids, "partner_x")
                 if len(warehouses) != 1:
                     empty_reason = ("Склад Х не найден однозначно среди разрешённых складов "
                                     "МойСклад. Проверьте его название и привязку товара.")
@@ -267,13 +271,12 @@ def register(dp, check_access, safe_callback_answer):
                 from app.config.settings import settings
                 async with async_session() as session:
                     item = await session.get(OrderItem, state["item_id"])
-                catalog = await ProductService().get_catalog_async(include_supply=False)
-                product = next((p for p in catalog if p["id"] == item.product_id), {})
-                # An X warehouse must never appear as an own-stock or external
-                # receiving choice. One eligible receiving warehouse is selected
-                # automatically: choosing a supply type must not ask for the same
-                # warehouse again.
-                warehouses = source_warehouses(product, settings.warehouse_ids, state["source_type"])
+                # Read the static warehouse identities only for navigation.
+                # OrderSourceService._assign() independently verifies matched
+                # product, exact warehouse and fresh stock before a mutation.
+                stores = await ProductService().async_gateway.get_stores()
+                warehouses = source_warehouses({"stocks": stores}, settings.warehouse_ids,
+                                               state["source_type"])
                 if not warehouses:
                     empty_reason = ("Для этого источника не найден основной склад. "
                         "«Склад Х» не может быть выбран как собственный склад "
