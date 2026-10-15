@@ -117,24 +117,36 @@ async def show_sources(message, actor, order_id, *, edit=False):
         plan_docs = await plan_document_read_models(session, plans)
         frozen = any(row['frozen'] for row in plan_docs.values())
     state = dict(actor=actor, chat=message.chat.id, order_id=order_id, revision=view["revision"])
+    post_pick = post_pick_enabled(order_id)
     rows, lines = [], [f"Обеспечение заказа №{order_id}"]
     for item in view["items"]:
-        lines.append(f"{item['name']}: готово {item['ready']} из {item['qty']} шт.")
+        metric = (f"назначено {item['assigned']}" if post_pick
+                  else f"готово для отгрузки {item['ready']}")
+        lines.append(f"{item['name']}: {metric} из {item['qty']} шт.")
         remaining = item["qty"] - item["assigned"]
         if remaining > 0 and editable and not frozen:
             rows.append(button(f"Источник: {item['name'][:45]} · {remaining} шт.",
                 dict(state, step="type", item_id=item["id"], qty=remaining)))
     import os
-    post_pick = post_pick_enabled(order_id)
     for allocation in view["allocations"]:
         if allocation["status"] == "cancelled":
             continue
         label = {"own": "Свой склад", "partner_x": "X", "external": "Поставщик"}[allocation["source_type"]]
-        lines.append(f"{label}: {allocation['qty']} шт. · " + ("готово" if allocation["ready"] else "ожидаем поступления"))
+        if post_pick and allocation["source_type"] == "partner_x" and not allocation["ready"]:
+            source_status = ("назначено; проверить фактическое наличие перед сборкой"
+                             if order.fulfillment_status in {"new", "assembling"}
+                             else "ожидает внутреннего оприходования после сборки")
+        else:
+            source_status = ("источник подтверждён" if allocation["ready"]
+                             else "ожидает поступления")
+        lines.append(f"{label}: {allocation['qty']} шт. · {source_status}")
         if allocation["source_type"] == "partner_x":
             if post_pick:
-                lines.append("  После «Заказ собран» автоматически: внутреннее оприходование "
+                lines.append("  После «Заказ собран»: проверить внутреннее оприходование "
                              "на склад Х → резерв → отгрузка.")
+                if os.getenv("OMS_HATUNA_AUTO_PROCESS_ENABLED", "false").lower() != "true":
+                    lines.append("  Автоматическая обработка отключена; "
+                                 "проводки МойСклад сейчас не выполняются.")
                 lines.append("  Хатуна – пометка в документе, без заказа поставщику и уведомлений.")
                 lines.append("  Учётная цена предварительная: цена сайта − 1 000 ₽/шт.")
             else:
