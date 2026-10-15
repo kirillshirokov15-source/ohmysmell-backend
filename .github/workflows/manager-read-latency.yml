@@ -1,7 +1,7 @@
 name: Manager Bot Read Performance Acceptance
 on:
   push:
-    branches: [release/manager-read-latency-20261016]
+    branches: [release/manager-read-latency-20261016, feature/manager-order-card-fast-20261016]
   workflow_dispatch:
 jobs:
   manager:
