@@ -146,6 +146,8 @@ class DraftOrderService:
             intent=mail_intent,
             extracted_count=len(extracted_lines),
         )
+        mail_quote_issues = tuple(getattr(result, "quote_issues", ())) if source == "email" and "result" in locals() else ()
+        quote_reported_total = getattr(result, "quote_reported_total", None) if source == "email" and "result" in locals() else None
         matches = [
             await self._match_email_line(line)
             for line in extracted_lines
@@ -171,6 +173,8 @@ class DraftOrderService:
 
         items = []
         problems = []
+        if mail_quote_issues:
+            problems.append("Цены/валюта из письма требуют проверки: " + ", ".join(mail_quote_issues))
         if mail_intent == "possible_order":
             problems.append("Возможный заказ по теме письма: подтвердите намерение заказать, товар и количество.")
         if mail_intent == "inquiry":
@@ -230,8 +234,26 @@ class DraftOrderService:
             "received_at": message.received_at,
             "customer_id": customer.customer_id,
             "customer_type": effective_type,
-            "contact_details": {"customer_type_policy": policy,
-                                "mail_intent": mail_intent},
+            "contact_details": {
+                "customer_type_policy": policy,
+                "mail_intent": mail_intent,
+                "mail_quote_audit": {
+                    "reported_total": quote_reported_total,
+                    "issues": list(mail_quote_issues),
+                    "items": [
+                        {
+                            "article": getattr(line, "quoted_article", None),
+                            "product": line.raw_product_text[:450],
+                            "quantity": line.qty,
+                            "unit_price": getattr(line, "quoted_unit_price", None),
+                            "row_total": getattr(line, "quoted_row_total", None),
+                            "currency": getattr(line, "quoted_currency", None),
+                            "issues": list(getattr(line, "quote_issues", ())),
+                        }
+                        for line in extracted_lines
+                    ],
+                } if source == "email" else {},
+            },
             "counterparty_id": customer.moysklad_counterparty_id,
             "counterparty_candidates": counterparty_candidates,
             "status": status,
