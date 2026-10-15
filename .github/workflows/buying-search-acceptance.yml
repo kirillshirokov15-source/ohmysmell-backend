@@ -23,4 +23,4 @@ jobs:
           APP_ENV: staging
           EXTERNAL_WRITES_ENABLED: 'false'
           TELEGRAM_BOT_TOKEN: '123456:TEST_CI_TOKEN_NO_NETWORK'
-        run: python -m pytest -q -m "not staging" tests/test_buying_catalog_search.py tests/test_buying.py tests/test_buying_roles.py tests/test_tilda_checkout_link.py tests/test_tilda_orders.py
+        run: python -m pytest -q -m "not staging" tests/test_buying_catalog_search.py tests/test_buying.py tests/test_buying_roles.py tests/test_tilda_checkout_link.py tests/test_tilda_orders.py tests/test_tilda_desk_display.py
