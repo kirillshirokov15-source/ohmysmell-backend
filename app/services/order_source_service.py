@@ -211,6 +211,12 @@ class OrderSourceService:
                 plan, allocation = pair
                 if plan.status != "planned" or allocation.supply_status == "cancelled":
                     raise DeskError("Складской план или распределение недоступны.")
+                if (allocation.source_type == "partner_x"
+                        and os.getenv("OMS_HATUNA_POST_PICK_ENABLED", "false").lower() == "true"
+                        and request.action in {"set_x_cost", "receive", "post_receipt"}):
+                    raise DeskError(
+                        "Склад Х: поступление и расчётная цена оформляются автоматически "
+                        "только после подтверждения сборки. Ручная операция отключена.")
                 if request.action == "set_x_cost":
                     if allocation.source_type != "partner_x" or allocation.supply_status not in {"awaiting_receipt", "received"}:
                         raise DeskError("Закупочная цена доступна для Х до оприходования, включая физически полученный товар.")
