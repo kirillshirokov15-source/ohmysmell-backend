@@ -48,7 +48,7 @@ def parse_catalog_query(raw: str) -> CatalogTerms:
         value = normalize(token)
         if not value or value in {"+", "-"}:
             continue
-        if len(value) > 100 or not any(ch.isalnum() for ch in value):
+        if len(value) > 100 or not any(ch.isalnum() or ch in "%_" for ch in value):
             raise ValueError("Недопустимый поисковый термин")
         (excludes if negative else includes).append(value)
         if len(includes) + len(excludes) > 16:
