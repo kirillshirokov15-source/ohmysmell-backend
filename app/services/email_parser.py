@@ -7,6 +7,7 @@ indicates an order. Questions are not turned into purchase orders.
 """
 import re
 import unicodedata
+from decimal import Decimal, InvalidOperation
 from dataclasses import dataclass
 
 
@@ -16,12 +17,19 @@ class ExtractedOrderLine:
     qty: int
     quantity_confidence: str = "confirmed"
     quantity_evidence: str = ""
+    quoted_article: str | None = None
+    quoted_unit_price: str | None = None
+    quoted_row_total: str | None = None
+    quoted_currency: str | None = None
+    quote_issues: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class ClassifiedEmail:
     intent: str   # "order", "possible_order" or "inquiry"
     items: tuple[ExtractedOrderLine, ...]
+    quote_issues: tuple[str, ...] = ()
+    quote_reported_total: str | None = None
 
 
 class EmailParser:
@@ -43,7 +51,7 @@ class EmailParser:
     _sku_qty_price = re.compile(
         r"^(?P<product>[a-zа-яё0-9][a-zа-яё0-9._/\-]{1,40})\s+"
         r"(?P<qty>\d{1,4})\s*(?:шт\.?|штук(?:а|и)?|pcs?\.?)\s+"
-        r"(?P<quoted>\d{1,9}(?:[.,]\d{1,2})?)\s*(?:₽|руб\.?|р\.?)?\s*$", re.I,
+        r"(?P<quoted>\d{1,9}(?:[.,]\d{1,2})?)\s*(?P<currency>₽|руб\.?|р\.?|\$|USD|RUB)?\s*$", re.I,
     )
     _table_price_header = frozenset({"цена", "цена, $", "цена,₽", "цена, ₽", "цена, р", "цена, руб", "price", "price, $", "unit price"})
     _table_article_header = frozenset({"артикул", "sku", "код", "article"})
@@ -100,6 +108,44 @@ class EmailParser:
     def _normalize(value):
         return " ".join(unicodedata.normalize("NFKC", value or "").casefold().split())
 
+    @staticmethod
+    def _money(value):
+        """Conservative exact decimal parsing: never infer an ambiguous thousands separator."""
+        if value is None:
+            return None
+        normalized = str(value).replace("\u00a0", " ").strip()
+        pattern = r"(?:\d{1,12}|\d{1,3}(?: \d{3})+)(?:[.,]\d{1,2})?"
+        if not re.fullmatch(pattern, normalized):
+            return None
+        try:
+            return Decimal(normalized.replace(" ", "").replace(",", "."))
+        except InvalidOperation:
+            return None
+
+    @staticmethod
+    def _currency_from_text(value):
+        value = (value or "").casefold()
+        usd = "$" in value or bool(re.search(r"\busd\b", value))
+        rub = "₽" in value or bool(re.search(r"\b(?:rub|руб|рублей)\b", value))
+        return "MIXED" if usd and rub else ("USD" if usd else "RUB" if rub else None)
+
+    @classmethod
+    def _quote_issues(cls, price, quantity, total, currency):
+        if price is None and total is None:
+            return ()
+        problems = []
+        if currency is None:
+            problems.append("currency_unknown")
+        if currency == "MIXED":
+            problems.append("mixed_currency")
+        unit = cls._money(price) if price is not None else None
+        row = cls._money(total) if total is not None else None
+        if (price is not None and unit is None) or (total is not None and row is None):
+            problems.append("invalid_quoted_amount")
+        if unit is not None and row is not None and unit * quantity != row:
+            problems.append("line_total_mismatch")
+        return tuple(problems)
+
     @classmethod
     def _safe_product(cls, name, *, sender_name=None):
         name = name.strip(" \t:;,.–—-")
@@ -119,7 +165,14 @@ class EmailParser:
         if m and int(m.group("qty")) > 0:
             product = cls._safe_product(m.group("product"))
             if product:
-                return ExtractedOrderLine(product, int(m.group("qty")), "confirmed", line[:500])
+                quoted = m.group("quoted")
+                currency = cls._currency_from_text(m.group("currency"))
+                return ExtractedOrderLine(
+                    product, int(m.group("qty")), "confirmed", line[:500],
+                    quoted_article=product, quoted_unit_price=quoted,
+                    quoted_currency=currency,
+                    quote_issues=cls._quote_issues(quoted, int(m.group("qty")), None, currency),
+                )
         for pattern in (cls._suffix_qty, cls._plain_qty, cls._inline_qty, cls._prefix_qty):
             m = pattern.match(line)
             if m:
@@ -160,6 +213,7 @@ class EmailParser:
         lines = body_text.splitlines()
         skip = set()
         product_column, qty_column, article_column, in_order_list = 0, None, None, False
+        price_column, row_total_column, header_currency = None, None, None
         for index, raw in enumerate(lines):
             if index in skip:
                 continue
@@ -196,6 +250,14 @@ class EmailParser:
                     product_column = next((i for i,t in enumerate(titles) if t in self._header_names), 0)
                     qty_column = next((i for i,t in enumerate(titles) if t in self._header_quantities), None)
                     article_column = next((i for i,t in enumerate(titles) if t in self._table_article_header), None)
+                    price_column = next((i for i,t in enumerate(titles)
+                        if t in self._table_price_header or t.startswith(("цена,", "price,"))), None)
+                    row_total_column = next((i for i,t in enumerate(titles)
+                        if t in self._total_header or t.startswith(("итог,", "итого,", "total,"))), None)
+                    currencies = {self._currency_from_text(t) for t in titles}
+                    currencies.discard(None)
+                    header_currency = ("MIXED" if len(currencies) > 1 or "MIXED" in currencies
+                                       else next(iter(currencies), None))
                     in_order_list = True
                     continue
                 # Structured table: use ONLY the designated quantity column.
@@ -211,7 +273,21 @@ class EmailParser:
                                        and article_column < len(cells) else "")
                             # Keep SKU as supporting evidence for human matching.
                             evidence = (f"Артикул {article} | " if article else "") + clean
-                            output.append(ExtractedOrderLine(name, qty, "confirmed", evidence[:500]))
+                            unit_price = (cells[price_column] if price_column is not None
+                                          and price_column < len(cells) else None)
+                            quoted_total = (cells[row_total_column] if row_total_column is not None
+                                            and row_total_column < len(cells) else None)
+                            currency = header_currency or self._currency_from_text(
+                                " ".join(x or "" for x in (unit_price, quoted_total)))
+                            output.append(ExtractedOrderLine(
+                                name, qty, "confirmed", evidence[:500],
+                                quoted_article=article or None,
+                                quoted_unit_price=unit_price or None,
+                                quoted_row_total=quoted_total or None,
+                                quoted_currency=currency,
+                                quote_issues=self._quote_issues(
+                                    unit_price or None, qty, quoted_total or None, currency),
+                            ))
                             continue
                     # A non-item row inside a table must not fall back to
                     # numeric suffix/prefix heuristics.
@@ -297,4 +373,30 @@ class EmailParser:
                 tentative = ExtractedOrderLine(candidate, 0, "unknown", subj[:500])
                 return ClassifiedEmail("possible_order", (tentative,))
             return ClassifiedEmail("inquiry", ())
-        return ClassifiedEmail("order", tuple(item_rows))
+        # Email amounts are audit evidence only. They never override trusted catalog prices.
+        quote_issues = [issue for item in item_rows for issue in item.quote_issues]
+        currencies = {item.quoted_currency for item in item_rows if item.quoted_currency}
+        if len(currencies) > 1:
+            quote_issues.append("mixed_currency")
+        quoted_total = None
+        total_body = body
+        if "<table" in body.casefold():
+            from app.integrations.email.gmail_provider import _HTMLTextExtractor
+            extractor = _HTMLTextExtractor()
+            extractor.feed(body)
+            total_body = extractor.text()
+        for raw_line in total_body.splitlines():
+            cells = [v.strip() for v in re.split(r"\t|\|", raw_line)]
+            if len(cells) > 1 and re.fullmatch(r"(?:итого|итог|всего|total)\s*:?", cells[0], re.I):
+                quoted_total = next((v for v in reversed(cells[1:]) if v), None)
+                if quoted_total is not None:
+                    totals = [self._money(i.quoted_row_total)
+                              for i in item_rows if i.quoted_row_total is not None]
+                    declared = self._money(quoted_total)
+                    if declared is None or (len(totals) == len(item_rows)
+                                            and all(t is not None for t in totals)
+                                            and sum(totals, Decimal(0)) != declared):
+                        quote_issues.append("grand_total_mismatch")
+                break
+        return ClassifiedEmail("order", tuple(item_rows),
+                               tuple(dict.fromkeys(quote_issues)), quoted_total)
