@@ -85,6 +85,28 @@ def build_draft_card(draft: DraftOrder) -> str:
             )
 
     contact = getattr(draft, "contact_details", None) or {}
+    quote_audit = contact.get("mail_quote_audit") or {}
+    quoted_rows = quote_audit.get("items") or []
+    if getattr(draft, "source", None) == "email" and quoted_rows:
+        lines.extend(["", "Данные клиента из письма (не цена CRM):"])
+        for row in quoted_rows[:7]:
+            article = row.get("article") or row.get("product") or "Товар"
+            units = row.get("quantity")
+            unit_price = row.get("unit_price")
+            row_total = row.get("row_total")
+            currency = row.get("currency") or "валюта неизвестна"
+            amount = (" · цена " + str(unit_price) + " " + currency
+                      if unit_price is not None else "")
+            total = (" · сумма " + str(row_total) + " " + currency
+                     if row_total is not None else "")
+            lines.append(f"• {str(article)[:65]} × {units}{amount}{total}")
+        if len(quoted_rows) > 7:
+            lines.append(f"… ещё {len(quoted_rows) - 7} строк в оригинале письма")
+        if quote_audit.get("reported_total"):
+            lines.append("Итого по письму: " + str(quote_audit["reported_total"])[:40])
+        if quote_audit.get("issues"):
+            lines.append("⚠ Расхождение в письме: " +
+                         ", ".join(str(v) for v in quote_audit["issues"])[:120])
     policy = contact.get("customer_type_policy", {})
     if policy.get("profile_conflict"):
         lines.append(f"Профиль клиента: {customer_type_label(policy['profile_type'])}. "
@@ -293,6 +315,9 @@ def compact_draft_card(draft, *, expanded=False):
                 else "количество не указано"))
         if len(draft.items or []) > 3:
             lines.append(f"…ещё {len(draft.items) - 3} позиций")
+        if ((getattr(draft, "contact_details", None) or {})
+                .get("mail_quote_audit") or {}).get("issues"):
+            lines.append("⚠ Проверить валюту и суммы из письма")
     if not inquiry:
         if tentative:
             lines.append("Сначала подтвердите: это заказ или вопрос.")
