@@ -4,6 +4,7 @@ No provider writes. X/external receiving and posting are labelled simulations;
 production cannot use their receipts as shipment evidence.
 """
 import hashlib
+import os
 from collections import defaultdict
 from datetime import datetime, timezone
 
