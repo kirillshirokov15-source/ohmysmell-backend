@@ -118,9 +118,9 @@ def test_counterparty_search_uses_non_blocking_gateway():
         return result, to_thread
 
     result, to_thread = asyncio.run(run())
-    assert result == [
-        {"id": "c1", "name": "Customer", "email": None, "phone": None}
-    ]
+    # A search hit without exact identity evidence is not a safe
+    # counterparty candidate and must not be proposed for automatic linking.
+    assert result == []
     to_thread.assert_called_once_with(
         provider.search_counterparties, "private query"
     )
