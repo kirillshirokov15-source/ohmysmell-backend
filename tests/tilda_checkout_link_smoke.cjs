@@ -56,7 +56,10 @@ const {webcrypto} = require("node:crypto");
     console,
     setTimeout
   };
-  vm.runInNewContext(fs.readFileSync("app/static/tilda_checkout_link.js", "utf8"), browser);
+  const checkoutSource = fs.readFileSync("app/static/tilda_checkout_link.js", "utf8");
+  assert.match(checkoutSource, /const ENDPOINT = "https:\/\/ohmysmell-backend-production\.up\.railway\.app\/integrations\/tilda\/telegram-link"/);
+  assert.doesNotMatch(checkoutSource, /new URL\([^\n]*document\.currentScript/);
+  vm.runInNewContext(checkoutSource, browser);
   assert.equal(typeof mutationCallback, "function", "must watch the dynamic Tilda cart");
 
   availableForms = [form];
