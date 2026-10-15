@@ -29,6 +29,7 @@ jobs:
           python -m pytest -q -m "not staging"
           tests/test_gmail_real_order_samples.py
           tests/test_wholesale_real_email_samples.py
+          tests/test_gmail_quote_audit.py
           tests/test_real_wholesale_mail_formats.py
           tests/test_email_pipeline.py
           tests/test_gmail_acceptance.py
