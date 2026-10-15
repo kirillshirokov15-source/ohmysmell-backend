@@ -13,7 +13,7 @@ from app.services import desk_display
 def test_card_review_requires_approval_and_linked_order(
     monkeypatch, approved, order_id, arithmetic_checked
 ):
-    details = {"reported_total_minor": 168000}
+    details = {"reported_total_minor": 168000, "preferred_contact": "email"}
     if approved is not None:
         details["tilda_review_approved"] = approved
     if arithmetic_checked:
@@ -35,6 +35,7 @@ def test_card_review_requires_approval_and_linked_order(
     monkeypatch.setattr(desk_display, "availability", AsyncMock(return_value={}))
 
     text, _ = asyncio.run(desk_display.desk_card(38, view="details"))
+    assert "Удобная связь: Email" in text
 
     if approved and order_id:
         assert "Проверка суммы: арифметика согласована; одобрено менеджером" in text
