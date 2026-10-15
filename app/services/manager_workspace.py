@@ -179,20 +179,33 @@ def order_card(order, shipments=(), *, site_titles=None):
                      "external": "Внешний поставщик"}
     item_sources = {item.id: [] for item in order.items}
     total_quantity = sum(item.qty for item in order.items)
+    post_pick = False
+    if getattr(order, "manual_fulfillment", False):
+        from app.services.hatuna_post_pick import post_pick_enabled_for_order
+        post_pick = post_pick_enabled_for_order(order.id)
     ready_quantity = 0
+    assigned_quantity = 0
     for shipment in shipments:
         if shipment.status not in {"planned", "exported"}:
             continue
         for allocation in shipment.allocations:
             if allocation.supply_status == "cancelled":
                 continue
+            if getattr(allocation, "managed_source", False):
+                assigned_quantity += allocation.qty
             ready = allocation_ready(allocation, manual=order.manual_fulfillment)
             if ready:
                 ready_quantity += allocation.qty
             label = source_labels.get(allocation.source_type, "Неизвестный источник")
-            state = ("готово" if ready else
-                     "ожидает поступления" if allocation.source_type != "own"
-                     else "ожидает проверки")
+            if (post_pick and allocation.source_type == "partner_x"
+                    and allocation.supply_status in {"awaiting_receipt", "received"}):
+                state = ("назначено, сборщик проверяет наличие"
+                         if order.fulfillment_status in {"new", "assembling"}
+                         else "ожидает внутреннего оприходования")
+            else:
+                state = ("готово" if ready else
+                         "ожидает поступления" if allocation.source_type != "own"
+                         else "ожидает проверки")
             item_sources.setdefault(allocation.order_item_id, []).append(
                 (label, allocation.qty, state))
     all_sources = list(dict.fromkeys(
@@ -224,14 +237,34 @@ def order_card(order, shipments=(), *, site_titles=None):
         f"Итого: {telegram_rubles(order.total)}",
         f"Оплата: {PAYMENT_LABELS.get(order.payment_status, order.payment_status)}",
         f"Сборка: {FULFILLMENT_LABELS.get(order.fulfillment_status, order.fulfillment_status)}",
-        f"Готово к сборке: {min(ready_quantity, total_quantity)} из {total_quantity} шт.",
     ])
+    if post_pick:
+        lines.append(f"Распределено по складам: {min(assigned_quantity, total_quantity)} из {total_quantity} шт.")
+        lines.append("Физическое наличие подтверждает сборщик; распределение не равно оприходованию.")
+    else:
+        lines.append(f"Готово к сборке: {min(ready_quantity, total_quantity)} из {total_quantity} шт.")
     pending_x = any(shipment.status in {"planned", "exported"} and
         allocation.source_type == "partner_x" and
         allocation.supply_status in {"awaiting_receipt", "received"}
         for shipment in shipments for allocation in shipment.allocations)
     if order.needs_review:
         next_step = "устранить замечания к заказу."
+    elif post_pick and order.fulfillment_status == "new":
+        next_step = "сверить физическое наличие всех назначенных товаров → начать сборку."
+    elif post_pick and order.fulfillment_status == "assembling":
+        next_step = "проверить фактическое наличие и комплектность двух складских позиций → подтвердить «Заказ собран»."
+    elif post_pick and order.fulfillment_status == "assembled":
+        if pending_x:
+            from app.config.settings import settings
+            if settings.external_writes_enabled:
+                next_step = "после проверки учёта провести приход Х → резерв по складам → отгрузку."
+            else:
+                next_step = ("выполнить проверку post-pick; реальные приход Х, резерв "
+                             "и отгрузка отключены до отдельной приёмки.")
+        else:
+            next_step = "сверить созданные документы МойСклад и выполнить дальнейшую отгрузку."
+    elif post_pick and order.fulfillment_status == "shipped":
+        next_step = "сверить документы отгрузки, оплату и доставку."
     elif pending_x:
         next_step = "склад Х → подтвердить физическое получение → оприходовать в МойСклад → резерв → сборка → отгрузка."
     elif ready_quantity < total_quantity:
