@@ -132,15 +132,14 @@ class OrderOperations:
                 if financial_review:
                     raise OperationError("Продажа ниже стоимости X требует отдельного финансового решения; обычная проверка не снимает блокировку.")
             if request.action == "assembling" and order.manual_fulfillment:
-                import os
-                if os.getenv("OMS_HATUNA_POST_PICK_ENABLED", "false").lower() == "true":
+                from app.services.hatuna_post_pick import post_pick_enabled_for_order, require_complete_picking_plan
+                if post_pick_enabled_for_order(order_id):
                     from app.services.order_source_service import source_plans
-                    from app.services.hatuna_post_pick import require_complete_picking_plan
                     plans = await source_plans(session, order_id)
                     require_complete_picking_plan(order, plans)
             if request.action in {"assembling", "shipped"} and not (
                 request.action == "assembling" and order.manual_fulfillment
-                and __import__("os").getenv("OMS_HATUNA_POST_PICK_ENABLED", "false").lower() == "true"
+                and post_pick_enabled_for_order(order_id)
             ):
                 from app.models.fulfillment import WarehouseAllocation
                 from app.services.order_source_service import allocation_ready
