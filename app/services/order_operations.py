@@ -131,7 +131,7 @@ class OrderOperations:
                     XSettlement.order_id == order_id, XSettlement.status == "requires_financial_review"))
                 if financial_review:
                     raise OperationError("Продажа ниже стоимости X требует отдельного финансового решения; обычная проверка не снимает блокировку.")
-            if request.action == "assembling" and order.manual_fulfillment:
+            if request.action in {"assembling", "assembled"} and order.manual_fulfillment:
                 from app.services.hatuna_post_pick import post_pick_enabled_for_order, require_complete_picking_plan
                 if post_pick_enabled_for_order(order_id):
                     from app.services.order_source_service import source_plans
