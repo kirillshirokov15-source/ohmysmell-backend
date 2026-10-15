@@ -127,6 +127,11 @@ def evaluate(snapshot, catalog, *, post_pick=False, auto_process=False,
         blockers.append("В заказе отсутствует активный план склада Х.")
     if quantities != {id: i["qty"] for id, i in snapshot["items"].items()}:
         blockers.append("Распределение товаров по складам неполное или превышает заказ.")
+    if snapshot["fulfillment_status"] == "new" and post_pick:
+        lines.append("Сборка: разрешена только после физической проверки всех позиций "
+                     "и полного распределения. Документы МойСклад этим не создаются.")
+    elif snapshot["fulfillment_status"] == "new":
+        lines.append("Сборка: сценарий после подтверждения наличия ещё не подключён для заказа.")
     lines.extend(["",
         "Реальные складские операции: " + ("ПОКА ЗАПРЕЩЕНЫ" if blockers else "локальные условия проверены"),
         *("• " + reason for reason in dict.fromkeys(blockers))])
@@ -189,9 +194,10 @@ async def check_hatuna_order(order_id, actor, chat_id):
         return (f"Проверка склада Х · заказ №{order_id}\n"
                 "МойСклад сейчас недоступен: достоверная сверка товаров и остатков невозможна. "
                 "Не запускайте оприходование.")
+    from app.services.hatuna_post_pick import post_pick_enabled_for_order
     return evaluate(
         snapshot, catalog,
-        post_pick=os.getenv("OMS_HATUNA_POST_PICK_ENABLED", "false").lower() == "true",
+        post_pick=post_pick_enabled_for_order(order_id),
         auto_process=os.getenv("OMS_HATUNA_AUTO_PROCESS_ENABLED", "false").lower() == "true",
         external_writes=settings.external_writes_enabled,
         environment=settings.environment)
