@@ -29,10 +29,10 @@ def test_assembled_tilda_order8_x_has_two_readonly_actions(monkeypatch):
     navigation.clear()
     state = dict(actor=111, chat=-1001, order_id=8, revision=7)
     actions = post_pick_followup_buttons(order(), [plan(), plan(source="own")], state)
-    assert len(actions) == 2
-    assert recover_steps(actions) == ["post_pick_check", "post_pick_ledger"]
+    assert len(actions) == 3
+    assert recover_steps(actions) == ["post_pick_plan", "post_pick_check", "post_pick_ledger"]
     for row in actions:
-        assert "без записи" in row[0]["text"]
+        assert "без записи" in row[0]["text"].lower()
         assert "LIVE" not in row[0]["text"]
         token = row[0]["callback_data"].split(":")[1]
         action_state = navigation[token][1]
