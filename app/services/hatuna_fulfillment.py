@@ -56,8 +56,27 @@ class HatunaFulfillment:
                 raise HatunaPreflightError("Сначала сборщик должен подтвердить сборку заказа")
             if order.delivery_method == "unselected":
                 raise HatunaPreflightError("Сначала выберите способ доставки")
-            if "test oms" in (order.customer_name or "").casefold() and settings.environment == "production":
+            if ("test oms" in ((order.customer_name or "") + " " + (order.comment or "")).casefold()
+                    and settings.environment == "production"):
                 raise HatunaPreflightError("Реальные документы по тестовому заказу запрещены")
+            # The X receipt would be created before per-warehouse reservations.
+            # A missing/unverified buyer must therefore block BEFORE even the
+            # first stock-entry document, to avoid a stranded partial workflow.
+            _uuid(order.counterparty_id, "Контрагент покупателя")
+            if settings.environment == "production":
+                import asyncio
+                from app.integrations.moysklad.client import MoySkladClient
+                try:
+                    buyer = await asyncio.to_thread(
+                        MoySkladClient().get_counterparty, order.counterparty_id)
+                except Exception as exc:
+                    raise HatunaPreflightError(
+                        "Контрагент покупателя МойСклад не подтверждён; приход Х запрещён"
+                    ) from exc
+                if (buyer.get("id") != order.counterparty_id
+                        or buyer.get("archived") is True):
+                    raise HatunaPreflightError(
+                        "Контрагент покупателя отсутствует либо архивирован; приход Х запрещён")
             plans = await source_plans(session, order_id)
             quantities = defaultdict(int)
             x_plans = []
