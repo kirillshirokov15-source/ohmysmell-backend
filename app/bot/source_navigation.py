@@ -119,6 +119,8 @@ def post_pick_followup_buttons(order, plans, state):
     ):
         return []
     return [
+        button("План 5 документов · БЕЗ ЗАПИСИ",
+               dict(state, step="post_pick_plan")),
         button("Проверить post-pick и остатки · без записи",
                dict(state, step="post_pick_check")),
         button("Журнал складских документов · без записи",
@@ -261,7 +263,12 @@ def register(dp, check_access, safe_callback_answer):
             }:
                 raise DeskError("Старая операция склада Х отключена: "
                                 "после физической сборки используется post-pick.")
-            if step == "post_pick_check":
+            if step == "post_pick_plan":
+                from app.services.hatuna_document_preview import preview_hatuna_document_plan
+                text = await preview_hatuna_document_plan(
+                    state["order_id"], state["actor"], state["chat"])
+                rows.append(button("← К обеспечению", dict(state, step="source_home")))
+            elif step == "post_pick_check":
                 from app.services.hatuna_readonly_check import check_hatuna_order
                 text = await check_hatuna_order(
                     state["order_id"], state["actor"], state["chat"])
