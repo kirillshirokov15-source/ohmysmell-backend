@@ -26,6 +26,19 @@ def inquiry_original_body(draft) -> str:
     return raw.replace("\x00", "").strip()
 
 
+def old_inquiry_order_lines(draft):
+    """Show previously misclassified email lines without mutating the saved draft."""
+    if ((getattr(draft, "contact_details", None) or {}).get("mail_intent") != "inquiry"
+            or getattr(draft, "source", None) != "email"):
+        return ()
+    from app.services.email_parser import EmailParser
+    classified = EmailParser().parse_message(
+        getattr(draft, "subject", None),
+        inquiry_original_body(draft),
+        sender_name=getattr(draft, "customer_name", None))
+    return classified.items if classified.intent == "order" and classified.items else ()
+
+
 def build_inquiry_message(draft) -> str:
     """Dedicated manager Telegram message, independent of editMessageText."""
     body = inquiry_original_body(draft)
@@ -64,6 +77,13 @@ def build_draft_card(draft: DraftOrder) -> str:
         "Позиции:" if not inquiry else "Письмо клиента (требуется ответ):",
     ]
     if inquiry:
+        candidate_lines = old_inquiry_order_lines(draft)
+        if candidate_lines:
+            lines.append("⚠️ Исходное письмо содержит товарные строки заказа. "
+                         "Используйте «Разобрать как заказ» – существующая заявка не дублируется.")
+            for line in candidate_lines[:5]:
+                lines.append(f"• {line.raw_product_text[:100]} · "
+                             + (f"{line.qty} шт." if line.qty > 0 else "количество уточнить"))
         excerpt = " ".join(inquiry_original_body(draft).split())[:650]
         lines.append(excerpt or "(письмо без текста; посмотрите исходное письмо в Gmail)")
         lines.append("⚠ Это письмо не является оформленным заказом.")
@@ -269,11 +289,14 @@ def compact_draft_keyboard(draft, *, expanded=False):
     if (getattr(draft, "contact_details", None) or {}).get("tilda"):
         primary = buttons[0] if buttons else None
     elif not primary and str(draft.status) not in {"new", "rejected"}:
+        if (getattr(draft, "contact_details", None) or {}).get("mail_intent") == "inquiry":
+            primary = next((b for b in buttons if ":reconsider:" in b["callback_data"]), None)
         wording = "🧾 Проверить заказ" if (
             getattr(draft, "source", None) == "email"
             and (getattr(draft, "contact_details", None) or {}).get("mail_intent") != "inquiry"
         ) else "Проверить заявку"
-        primary = {"text": wording, "callback_data": f"draft:actions:{draft.id}"}
+        if primary is None:
+            primary = {"text": wording, "callback_data": f"draft:actions:{draft.id}"}
     rows = [[primary]] if primary else []
     rows += [[{"text": label, "callback_data": f"draft:{action}:{draft.id}"}]
              for label, action in (("Подробнее", "details"), ("⋯ Действия", "actions"))]
@@ -288,11 +311,13 @@ def compact_draft_card(draft, *, expanded=False):
     email = getattr(draft, "source", "email") == "email"
     mail_intent = (getattr(draft, "contact_details", None) or {}).get("mail_intent")
     inquiry = mail_intent == "inquiry"
+    historic_order_lines = old_inquiry_order_lines(draft) if inquiry else ()
     tentative = mail_intent == "possible_order"
     visible_status = draft_status_label(draft.status)
     if email and not inquiry and str(draft.status) == "needs_review":
         visible_status = "Заказ получен · требуется проверить товары/контрагента"
-    lines = (["📩 Уточнение по почте · не заказ"] if inquiry else
+    lines = (["⚠️ Сохранённое письмо содержит заказ · требуется разбор"] if historic_order_lines else
+             ["📩 Уточнение по почте · не заказ"] if inquiry else
              ["⚠️ Возможный заказ · товар в теме"] if tentative else
              ["📦 Оптовый заказ из почты"] if email else []) + [
         f"Заявка №{draft.id}", f"Статус: {visible_status}"]
@@ -300,7 +325,14 @@ def compact_draft_card(draft, *, expanded=False):
         lines.append("Клиент: " + (draft.customer_name or draft.sender_email or "Не указан")[:120])
         if inquiry:
             lines.append("Тема: " + (draft.subject or "Без темы")[:170])
-            lines.append("Вопрос: " + " ".join(inquiry_original_body(draft).split())[:220])
+            if historic_order_lines:
+                lines.append("Товарные строки в оригинале:")
+                for item in historic_order_lines[:4]:
+                    lines.append(f"• {item.raw_product_text[:100]} · "
+                                 + (f"{item.qty} шт." if item.qty > 0 else "количество уточнить"))
+                lines.append("Сейчас: «Разобрать как заказ» – без повторного чтения Gmail.")
+            else:
+                lines.append("Вопрос: " + " ".join(inquiry_original_body(draft).split())[:220])
         for item in (draft.items or [])[:3]:
             title = " ".join((item.raw_product_text or "Товар").split())[:90]
             lines.append(f"• {title} — " + (
@@ -317,7 +349,7 @@ def compact_draft_card(draft, *, expanded=False):
             "Сумма: " + (telegram_rubles(draft.total) if draft.total is not None else "требует проверки"),
             "Оплата: после подтверждения заказа",
             "Наличие: требует согласования", f"Сейчас: {next_step}"]
-    else:
+    elif not historic_order_lines:
         lines.append("Сейчас: ответить клиенту в исходной переписке Gmail")
     return "\n".join(lines)[:3900]
 
