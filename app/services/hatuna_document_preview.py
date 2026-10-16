@@ -15,7 +15,6 @@ from app.services.hatuna_readonly_check import (
 )
 from app.services.product_service import ProductService
 from app.services.telegram_display import telegram_rubles
-from app.services.warehouse_documents import plan_key
 
 
 def build_document_plan(snapshot, catalog, *, post_pick=False, external_writes=False):
@@ -76,7 +75,7 @@ def build_document_plan(snapshot, catalog, *, post_pick=False, external_writes=F
                 blockers.append(f"Товар {a['item_id']}: карточка МойСклад не подтверждена.")
                 continue
             stores = [s for s in product.get("stocks", []) if s.get("id") == plan["warehouse_id"]]
-            if len(stores) != 1 or clean_warehouse(stores[0].get("name")) == "складх" != is_x:
+            if len(stores) != 1 or (clean_warehouse(stores[0].get("name")) == "складх") != is_x:
                 blockers.append(f"Товар {a['item_id']}: склад МойСклад не соответствует назначению.")
                 continue
             stock = stores[0]
