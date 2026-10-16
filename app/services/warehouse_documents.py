@@ -20,6 +20,7 @@ from app.services.external_operation_service import ExternalOperationService
 from app.integrations.moysklad.documents import FakeDocumentAdapter, MoySkladDocumentAdapter
 from app.integrations.moysklad.payloads import reservation, supply, demand, enter
 from app.integrations.write_guard import require_external_writes
+from app.services.hatuna_post_pick import post_pick_enabled_for_order
 
 
 def plan_generation(plan):
@@ -216,9 +217,7 @@ class WarehouseDocumentService:
                 raise DeskError('Organization mapping required')
             bare_key=key.removeprefix('simulation:')
             if action=='receipt':
-                import os
-                if (a.source_type == "partner_x"
-                        and os.getenv("OMS_HATUNA_POST_PICK_ENABLED", "false").lower() == "true"):
+                if (a.source_type == "partner_x" and post_pick_enabled_for_order(order.id)):
                     raise DeskError("Для Хатуны используйте только одно автоматическое оприходование после сборки.")
                 if order.fulfillment_status!='new' or a.source_type=='own' or a.supply_status!='received':
                     raise DeskError('Для прихода требуется фактическое получение товара и новый заказ.')
@@ -290,9 +289,7 @@ class WarehouseDocumentService:
                     raise DeskError('All sources must be received and posted')
                 for a in rows:
                     if a.source_type!='own':
-                        import os
-                        if (a.source_type == 'partner_x' and
-                                os.getenv('OMS_HATUNA_POST_PICK_ENABLED', 'false').lower() == 'true'):
+                        if a.source_type == 'partner_x' and post_pick_enabled_for_order(order.id):
                             from app.services.hatuna_accounting import hatuna_operation_keys
                             receipt_key=hatuna_operation_keys(order_id, plan.id)['receipt']
                         else:
@@ -329,9 +326,7 @@ class WarehouseDocumentService:
                         document['applicable']=False
                         document['syncId']=reserve.result['syncId']
                 elif action=='reserve':
-                    import os
-                    post_pick=(order.manual_fulfillment and
-                        os.getenv('OMS_HATUNA_POST_PICK_ENABLED', 'false').lower() == 'true')
+                    post_pick=(order.manual_fulfillment and post_pick_enabled_for_order(order.id))
                     if (post_pick and order.fulfillment_status != 'assembled') or (
                             not post_pick and order.fulfillment_status != 'new'):
                         raise DeskError('Резерв требует корректного этапа сборки заказа.')
