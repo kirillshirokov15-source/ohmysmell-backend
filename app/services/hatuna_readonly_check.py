@@ -139,8 +139,8 @@ def evaluate(snapshot, catalog, *, post_pick=False, auto_process=False,
     return "\n".join(lines)[:3900]
 
 
-async def check_hatuna_order(order_id, actor, chat_id):
-    """Authorized read-only DB snapshot, then fresh provider lookup, no lock or write."""
+async def load_hatuna_snapshot(order_id, actor, chat_id):
+    """Read-only authorized snapshot reused by diagnostics and document plans."""
     if order_id <= 0:
         raise DeskError("Укажите положительный номер заказа.")
     async with async_session() as session:
@@ -163,9 +163,13 @@ async def check_hatuna_order(order_id, actor, chat_id):
                      "source_type": a.source_type, "status": a.supply_status}
                     for a in plan.allocations],
             })
+            keys = [plan_key(plan, "reserve", False),
+                    plan_key(plan, "ship", False),
+                    plan_key(plan, "release", False)]
             if any(a.source_type == "partner_x" and a.supply_status != "cancelled"
                    for a in plan.allocations):
-                key = hatuna_operation_keys(order_id, plan.id)["receipt"]
+                keys.append(hatuna_operation_keys(order_id, plan.id)["receipt"])
+            for key in keys:
                 for name in (key, "simulation:" + key):
                     recorded = await session.get(ExternalOperation, name)
                     if recorded:
@@ -187,6 +191,12 @@ async def check_hatuna_order(order_id, actor, chat_id):
                       for i in order.items},
             "plans": plan_data, "operations": operations,
         }
+    return snapshot
+
+
+async def check_hatuna_order(order_id, actor, chat_id):
+    """Read-only preflight of current X stock and CRM warehouse plans."""
+    snapshot = await load_hatuna_snapshot(order_id, actor, chat_id)
     try:
         catalog = {row["id"]: row for row in await ProductService().get_catalog_async(
             include_supply=False, fresh_stock=True)}
