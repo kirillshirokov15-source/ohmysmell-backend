@@ -8,6 +8,7 @@ from app.integrations.http_tls import verified_session
 from app.models.draft_order import DraftOrder
 from app.models.manager import Manager
 from app.models.sales import channel_customer_type
+from app.services.email_order_quote import compact_quote, full_quote
 from app.services.telegram_display import (
     customer_type_label,
     draft_status_label,
@@ -83,6 +84,13 @@ def build_draft_card(draft: DraftOrder) -> str:
             lines.append(
                 f"  {item.qty} шт. — {product_match_label(item.match_status)}"
             )
+
+    if getattr(draft, "source", None) == "email" and not inquiry:
+        quote = full_quote(draft)
+        if quote:
+            lines.extend(["", "Цены/валюта, заявленные в исходном письме:"])
+            lines.extend(quote)
+            lines.append("Это данные клиента, не цены МойСклад и не итог CRM.")
 
     contact = getattr(draft, "contact_details", None) or {}
     policy = contact.get("customer_type_policy", {})
@@ -261,7 +269,11 @@ def compact_draft_keyboard(draft, *, expanded=False):
     if (getattr(draft, "contact_details", None) or {}).get("tilda"):
         primary = buttons[0] if buttons else None
     elif not primary and str(draft.status) not in {"new", "rejected"}:
-        primary = {"text": "Проверить заявку", "callback_data": f"draft:actions:{draft.id}"}
+        wording = "🧾 Проверить заказ" if (
+            getattr(draft, "source", None) == "email"
+            and (getattr(draft, "contact_details", None) or {}).get("mail_intent") != "inquiry"
+        ) else "Проверить заявку"
+        primary = {"text": wording, "callback_data": f"draft:actions:{draft.id}"}
     rows = [[primary]] if primary else []
     rows += [[{"text": label, "callback_data": f"draft:{action}:{draft.id}"}]
              for label, action in (("Подробнее", "details"), ("⋯ Действия", "actions"))]
@@ -277,10 +289,13 @@ def compact_draft_card(draft, *, expanded=False):
     mail_intent = (getattr(draft, "contact_details", None) or {}).get("mail_intent")
     inquiry = mail_intent == "inquiry"
     tentative = mail_intent == "possible_order"
+    visible_status = draft_status_label(draft.status)
+    if email and not inquiry and str(draft.status) == "needs_review":
+        visible_status = "Заказ получен · требуется проверить товары/контрагента"
     lines = (["📩 Уточнение по почте · не заказ"] if inquiry else
              ["⚠️ Возможный заказ · товар в теме"] if tentative else
-             ["📨 Новый оптовый заказ из почты"] if email else []) + [
-        f"Заявка №{draft.id}", f"Статус: {draft_status_label(draft.status)}"]
+             ["📦 Оптовый заказ из почты"] if email else []) + [
+        f"Заявка №{draft.id}", f"Статус: {visible_status}"]
     if email:
         lines.append("Клиент: " + (draft.customer_name or draft.sender_email or "Не указан")[:120])
         if inquiry:
@@ -293,6 +308,8 @@ def compact_draft_card(draft, *, expanded=False):
                 else "количество не указано"))
         if len(draft.items or []) > 3:
             lines.append(f"…ещё {len(draft.items) - 3} позиций")
+        if not inquiry:
+            lines.extend(compact_quote(draft)[:5])
     if not inquiry:
         if tentative:
             lines.append("Сначала подтвердите: это заказ или вопрос.")
