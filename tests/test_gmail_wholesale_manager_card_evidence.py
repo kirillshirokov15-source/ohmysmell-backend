@@ -120,3 +120,32 @@ def test_true_inquiry_is_not_mislabelled_order():
     card=compact_draft_card(d)
     assert "Уточнение по почте · не заказ" in card
     assert "Оптовый заказ из почты" not in card
+
+
+def test_old_inquiry_with_structured_order_is_recoverable_not_duplicated():
+    d=draft("Заказ от Хуршеда", table(
+        ("Артикул","Наименование","Цена, $","Количество","Итого, $"),
+        ("CT023","Charlotte Tilbury Glowgasm Face Palette","87.64","1","87.64")))
+    d.items=[]
+    d.contact_details={"mail_intent":"inquiry"}
+    from app.services.draft_telegram_service import old_inquiry_order_lines
+    candidate=old_inquiry_order_lines(d)
+    assert len(candidate)==1 and candidate[0].qty==1
+    card=compact_draft_card(d)
+    assert "Сохранённое письмо содержит заказ" in card
+    assert "Charlotte Tilbury" in card
+    assert "«Разобрать как заказ»" in card
+    kb=compact_draft_keyboard(d)
+    assert ":reconsider:" in kb["inline_keyboard"][0][0]["callback_data"]
+    assert kb["inline_keyboard"][0][0]["callback_data"].endswith(":v2")
+    assert d.items==[]  # preview did not create a second order or alter draft
+
+
+def test_old_question_is_never_auto_reclassified():
+    d=draft("Вопрос по цене","Сколько стоит Chanel Coco Mademoiselle?")
+    d.contact_details={"mail_intent":"inquiry"}
+    from app.services.draft_telegram_service import old_inquiry_order_lines
+    assert old_inquiry_order_lines(d)==()
+    card=compact_draft_card(d)
+    assert "Уточнение по почте · не заказ" in card
+    assert "Сохранённое письмо содержит заказ" not in card
