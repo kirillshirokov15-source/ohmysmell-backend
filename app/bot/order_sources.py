@@ -82,6 +82,27 @@ def register(dp, check_access):
             await message.answer("Проверка склада Х недоступна. Ничего не проводите до сверки.",
                                  parse_mode=None)
 
+    @dp.message(Command('hatunaplan'))
+    async def hatuna_plan_preview(message):
+        if not await check_access(message):
+            return
+        from app.services.hatuna_document_preview import preview_hatuna_document_plan
+        try:
+            parts = (message.text or "").split()
+            if len(parts) != 2:
+                raise ValueError()
+            report = await preview_hatuna_document_plan(
+                int(parts[1]), message.from_user.id, message.chat.id)
+            await message.answer(report, parse_mode=None)
+        except (ValueError, DeskError):
+            await message.answer("Формат: /hatunaplan НОМЕР_ЗАКАЗА (только ответственный менеджер)",
+                                 parse_mode=None)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("hatuna_document_plan_unavailable")
+            await message.answer("Предпросмотр недоступен. Никакие документы не создавались.",
+                                 parse_mode=None)
+
     @dp.message(Command('warehousedoc'))
     async def warehouse_document(message):
         if not await check_access(message):
