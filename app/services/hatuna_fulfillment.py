@@ -33,6 +33,27 @@ def enabled(order_id):
     return post_pick_enabled_for_order(order_id)
 
 
+async def verified_buyer_mapping(counterparty_id, *, environment=None, client=None):
+    """Fail closed before first receipt; no counterparty is created or changed."""
+    _uuid(counterparty_id, "Контрагент покупателя")
+    environment = settings.environment if environment is None else environment
+    if environment != "production":
+        return True
+    import asyncio
+    from app.integrations.moysklad.client import MoySkladClient
+    client = client if client is not None else MoySkladClient()
+    try:
+        buyer = await asyncio.to_thread(client.get_counterparty, counterparty_id)
+    except Exception as error:
+        raise HatunaPreflightError(
+            "Контрагент покупателя МойСклад не подтверждён; приход Х запрещён"
+        ) from error
+    if (buyer.get("id") != counterparty_id or buyer.get("archived") is True):
+        raise HatunaPreflightError(
+            "Контрагент покупателя отсутствует либо архивирован; приход Х запрещён")
+    return True
+
+
 class HatunaFulfillment:
     def __init__(self, *, adapter=None, catalog=None, sessions=None):
         self.adapter = adapter
@@ -59,24 +80,8 @@ class HatunaFulfillment:
             if ("test oms" in ((order.customer_name or "") + " " + (order.comment or "")).casefold()
                     and settings.environment == "production"):
                 raise HatunaPreflightError("Реальные документы по тестовому заказу запрещены")
-            # The X receipt would be created before per-warehouse reservations.
-            # A missing/unverified buyer must therefore block BEFORE even the
-            # first stock-entry document, to avoid a stranded partial workflow.
-            _uuid(order.counterparty_id, "Контрагент покупателя")
-            if settings.environment == "production":
-                import asyncio
-                from app.integrations.moysklad.client import MoySkladClient
-                try:
-                    buyer = await asyncio.to_thread(
-                        MoySkladClient().get_counterparty, order.counterparty_id)
-                except Exception as exc:
-                    raise HatunaPreflightError(
-                        "Контрагент покупателя МойСклад не подтверждён; приход Х запрещён"
-                    ) from exc
-                if (buyer.get("id") != order.counterparty_id
-                        or buyer.get("archived") is True):
-                    raise HatunaPreflightError(
-                        "Контрагент покупателя отсутствует либо архивирован; приход Х запрещён")
+            # Do not create X inventory if future customer reservations would fail.
+            await verified_buyer_mapping(order.counterparty_id)
             plans = await source_plans(session, order_id)
             quantities = defaultdict(int)
             x_plans = []
