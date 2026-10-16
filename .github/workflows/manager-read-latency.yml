@@ -1,7 +1,7 @@
 name: Manager Bot Read Performance Acceptance
 on:
   push:
-    branches: [release/manager-read-latency-20261016, feature/manager-order-card-fast-20261016, feature/hatuna-order8-postpick-20261016, feature/hatuna-order-card-clarity-20261016]
+    branches: [release/manager-read-latency-20261016, feature/manager-order-card-fast-20261016, feature/hatuna-order8-postpick-20261016, feature/hatuna-order-card-clarity-20261016, feature/hatuna-postpick-document-preview-20261016]
   workflow_dispatch:
 jobs:
   manager:
@@ -22,6 +22,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: '123456:TEST_CI_TOKEN_NO_NETWORK'
         run: >-
           python -m pytest -q -m "not staging"
+          tests/test_hatuna_postpick_followup_buttons.py
           tests/test_manager_order8_postpick_card.py
           tests/test_hatuna_order8_post_pick_scope.py
           tests/test_hatuna_readonly_check.py
