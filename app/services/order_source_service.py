@@ -277,8 +277,8 @@ class OrderSourceService:
             return after
 
     async def _assign(self, session, order, plans, parts, actor):
-        import os
-        if (os.getenv("OMS_HATUNA_POST_PICK_ENABLED", "false").lower() == "true"
+        from app.services.hatuna_post_pick import post_pick_enabled_for_order
+        if (order.manual_fulfillment and post_pick_enabled_for_order(order.id)
                 and any(part.source_type == "external" for part in parts)):
             raise DeskError("Заказы Tilda обеспечиваются только основным складом и складом Х. Buying отдельно.")
         items = {i.id: i for i in order.items}
