@@ -105,6 +105,27 @@ def button(label, state):
     return [{"text": label, "callback_data": "sourceui:" + token}]
 
 
+def post_pick_followup_buttons(order, plans, state):
+    """Only read-only actions at assembled boundary; no old document writes."""
+    if (not getattr(order, "manual_fulfillment", False)
+            or getattr(order, "needs_review", False)
+            or getattr(order, "fulfillment_status", None) != "assembled"
+            or not post_pick_enabled(order.id)):
+        return []
+    if not any(
+        allocation.source_type == "partner_x"
+        and allocation.supply_status != "cancelled"
+        for plan in plans for allocation in plan.allocations
+    ):
+        return []
+    return [
+        button("Проверить post-pick и остатки · без записи",
+               dict(state, step="post_pick_check")),
+        button("Журнал складских документов · без записи",
+               dict(state, step="post_pick_ledger")),
+    ]
+
+
 async def show_sources(message, actor, order_id, *, edit=False):
     view = await OrderSourceService().read(order_id, actor, message.chat.id)
     from app.repositories.order_repository import get_order
@@ -169,9 +190,8 @@ async def show_sources(message, actor, order_id, *, edit=False):
         if not frozen:
             rows.append(button(f"Убрать источник: {label} · {allocation['qty']} шт.", dict(state, step="confirm_cancel",
                 allocation_id=allocation["id"])))
-    # Documents are ordered: real receipt → customer reserve → assembly → shipment.
-    # Only local readiness is used for visibility; final confirmation rechecks
-    # all prerequisites and invokes the idempotent external operation ledger.
+    # Legacy provider buttons are only for orders outside the opted-in
+    # post-pick workflow; assembled Tilda/X orders get read-only checks.
     from app.services.order_source_service import allocation_ready
     for plan in plans:
         active_allocations = [a for a in plan.allocations if a.supply_status != "cancelled"]
@@ -188,6 +208,11 @@ async def show_sources(message, actor, order_id, *, edit=False):
                 and order.fulfillment_status == "assembled" and not order.needs_review):
             rows.append(button("Проверить отгрузку МойСклад",
                 dict(state, step="plan_doc_preview", plan_id=plan.id, doc_action="ship")))
+    next_actions = post_pick_followup_buttons(order, plans, state)
+    if next_actions:
+        lines.append("Сборка подтверждена. Следующий этап – проверка операций и остатков.")
+        lines.append("Для тестового заказа реальные приход, резерв и отгрузка отключены.")
+        rows.extend(next_actions)
     rows.append([{"text": "Назад к заказу", "callback_data": f"order:refresh:{order_id}:{view['revision']}"}])
     if edit:
         await replace_screen(message, "\n".join(lines), rows)
@@ -236,7 +261,21 @@ def register(dp, check_access, safe_callback_answer):
             }:
                 raise DeskError("Старая операция склада Х отключена: "
                                 "после физической сборки используется post-pick.")
-            if step == "type":
+            if step == "post_pick_check":
+                from app.services.hatuna_readonly_check import check_hatuna_order
+                text = await check_hatuna_order(
+                    state["order_id"], state["actor"], state["chat"])
+                rows.append(button("Журнал документов · без записи",
+                                   dict(state, step="post_pick_ledger")))
+                rows.append(button("← К обеспечению", dict(state, step="source_home")))
+            elif step == "post_pick_ledger":
+                from app.services.hatuna_reporting import order_hatuna_report
+                text = await order_hatuna_report(
+                    state["order_id"], state["actor"], state["chat"])
+                rows.append(button("Проверить post-pick и остатки",
+                                   dict(state, step="post_pick_check")))
+                rows.append(button("← К обеспечению", dict(state, step="source_home")))
+            elif step == "type":
                 allowed = (("own", "Свой склад"), ("partner_x", "Склад Х")) if post_pick_enabled(state["order_id"]) else (
                     ("own", "Свой склад"), ("partner_x", "Склад Х"), ("external", "Внешний поставщик"))
                 for value, label in allowed:
