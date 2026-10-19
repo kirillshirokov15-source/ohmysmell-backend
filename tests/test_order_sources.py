@@ -50,7 +50,7 @@ def test_one_purchase_supplies_multiple_orders(source_db):
 
 @pytest.fixture
 def source_db(database, monkeypatch):
-    for module in ("app.services.order_source_service", "app.services.order_operations", "app.services.manager_workspace"):
+    for module in ("app.services.order_source_service", "app.services.order_operations", "app.services.manager_workspace", "app.bot.procurement"):
         monkeypatch.setattr(module + ".async_session", database)
     monkeypatch.setattr("app.services.order_source_service.transaction_lock", AsyncMock())
     monkeypatch.setattr(buying, "transaction_lock", AsyncMock())
