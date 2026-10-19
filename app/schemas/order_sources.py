@@ -7,7 +7,7 @@ class SourcePart(BaseModel):
     item_id: int = Field(strict=True, gt=0)
     qty: int = Field(strict=True, gt=0, le=10000)
     warehouse_id: str = Field(min_length=1, max_length=255, pattern=r"^[A-Za-z0-9_-]+$")
-    source_type: Literal["own", "partner_x", "external"]
+    source_type: Literal["own", "own_x", "partner_x", "external"]
     supplier_id: int | None = Field(default=None, strict=True, gt=0)
     base_cost_minor: int | None = Field(default=None, strict=True, ge=0, le=100_000_000_000)
     offer_id: int | None = Field(default=None, strict=True, gt=0)
@@ -20,6 +20,9 @@ class SourcePart(BaseModel):
         if self.source_type == "partner_x":
             if self.supplier_id is None or self.base_cost_minor is None or self.offer_id is not None:
                 raise ValueError("Для X нужны supplier_id и base_cost_minor, без offer_id")
+        elif self.source_type == "own_x":
+            if self.base_cost_minor is None or self.supplier_id is not None or self.offer_id is not None:
+                raise ValueError("Для собственного X нужна себестоимость, без поставщика")
         elif self.supplier_id is not None or self.base_cost_minor is not None:
             raise ValueError("supplier_id и base_cost_minor используются только для X")
         if (self.source_type == "external") != (self.offer_id is not None):

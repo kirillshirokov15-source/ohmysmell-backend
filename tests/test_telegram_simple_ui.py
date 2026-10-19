@@ -201,7 +201,7 @@ def test_source_buttons_reuse_service_and_bind_actor(source_db, catalog, dispatc
     assert len(send(item, actor=222)) == 1  # callback acknowledgement only
     calls = send(item)
     assert all(any(label == b.text for call in calls if getattr(call, "reply_markup", None)
-        for row in call.reply_markup.inline_keyboard for b in row) for label in ("Свой склад", "X", "Внешний поставщик"))
+        for row in call.reply_markup.inline_keyboard for b in row) for label in ("Свой склад", "Склад X (собственный)", "Внешний поставщик"))
     calls = send(choose(calls, "Свой склад"))
     calls = send(choose(calls, "wh1"))
     calls = send(choose(calls, "Подтвердить"))

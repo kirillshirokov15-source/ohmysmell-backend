@@ -48,8 +48,11 @@ def _is_stale_callback_error(error: TelegramBadRequest) -> bool:
 
 
 async def safe_callback_answer(callback: CallbackQuery, *args, **kwargs) -> bool:
+    from app.services.telegram_metrics import observe
+    started = perf_counter()
     try:
         await callback.answer(*args, **kwargs)
+        observe("callback_ack", started)
         return True
     except TelegramBadRequest as error:
         if not _is_stale_callback_error(error):
@@ -78,6 +81,10 @@ async def safe_edit_message(
         "telegram_card_refresh_started",
         draft_id=draft_id,
     )
+    if draft_id and isinstance(message, Message):
+        from app.services.telegram_cards import publish
+        await publish(message.bot, message.chat.id, f"draft:{draft_id}", text, reply_markup)
+        return True
     try:
         await message.edit_text(text, reply_markup=reply_markup)
     except TelegramBadRequest as error:
@@ -107,6 +114,17 @@ async def check_access(message: Message) -> bool:
         return False
 
     return True
+
+
+async def publish_draft(message, draft):
+    from app.services.telegram_cards import publish
+    if (draft.contact_details or {}).get("tilda"):
+        from app.services.desk_display import desk_card
+        text, keyboard = await desk_card(draft.id)
+    else:
+        text = build_draft_card(draft)
+        keyboard = InlineKeyboardMarkup.model_validate(build_draft_keyboard(draft))
+    return await publish(message.bot, message.chat.id, f"draft:{draft.id}", text, keyboard)
 
 @dp.message(F.text, Command("chatid"))
 async def chat_id_handler(message: Message):
@@ -227,8 +245,25 @@ async def drafts_page(message: Message):
         offset = 0
     drafts = await DraftOrderRepository().list(limit=10, offset=offset, active_only=True)
     for draft in drafts:
-        await message.answer(build_draft_card(draft), reply_markup=InlineKeyboardMarkup.model_validate(build_draft_keyboard(draft)))
+        await publish_draft(message, draft)
     await message.answer(f"Следующая страница: /drafts {offset + 10}" if len(drafts) == 10 else "Конец списка.")
+
+
+@dp.message(Command("cardreceipt"))
+async def reconcile_card_receipt(message: Message):
+    # Operator recovery only; no user-facing card advertises this command.
+    if not await check_access(message):
+        return
+    try:
+        entity = message.text.split()[1]
+        kind, identifier = entity.split(":")
+        if kind not in {"draft", "order"} or not identifier.isdecimal() or not message.reply_to_message:
+            raise ValueError()
+        from app.services.telegram_cards import reconcile
+        await reconcile(message.bot, entity, message.reply_to_message)
+        await message.answer("Доставка карточки подтверждена. Откройте заявку из списка.")
+    except (ValueError, IndexError):
+        await message.answer("Для сверки ответьте на доставленную карточку: /cardreceipt draft:НОМЕР или order:НОМЕР.")
 
 
 @dp.message(Command("match"))
@@ -239,7 +274,7 @@ async def search_product_for_draft(message: Message):
         _, draft_id, item_id, query = (message.text or "").split(maxsplit=3)
         await message.answer("Ищу варианты товара…")
         draft = await DraftOrderService().search_item(int(draft_id), int(item_id), query)
-        await message.answer(build_draft_card(draft), reply_markup=InlineKeyboardMarkup.model_validate(build_draft_keyboard(draft)))
+        await publish_draft(message, draft)
     except (ValueError, DraftOrderError, InvalidOrderTransitionError):
         await message.answer("Формат: /match НОМЕР_ЧЕРНОВИКА НОМЕР_ПОЗИЦИИ название или артикул")
 
@@ -292,6 +327,10 @@ async def draft_callback_handler(callback: CallbackQuery):
         if not authorized:
             outcome = "unauthorized"
             return
+        if isinstance(callback.message, Message):
+            from app.services.telegram_cards import obsolete
+            if await obsolete(callback.message.chat.id, callback.message.message_id):
+                return
         action_started_at = perf_counter()
         log_event(
             logger,
@@ -317,7 +356,18 @@ async def draft_callback_handler(callback: CallbackQuery):
             draft = await service.review(draft_id, draft)
         elif action == "qtymanual":
             if callback.message:
-                await callback.message.answer(f"Введите: /quantity {draft_id} {int(parts[3])} КОЛИЧЕСТВО {int(parts[-1][1:])}")
+                from app.bot.manager_inputs import prompt_input
+                message = callback.message.model_copy(update={"from_user": callback.from_user}).as_(callback.bot)
+                await prompt_input(message, "draft_quantity", {"draft_id": draft_id, "item_id": int(parts[3]),
+                    "revision": int(parts[-1][1:])}, "Введите количество целым положительным числом.")
+            return
+        elif action in {"cpmanual", "searchmanual"}:
+            from app.bot.manager_inputs import prompt_input
+            message = callback.message.model_copy(update={"from_user": callback.from_user}).as_(callback.bot)
+            await prompt_input(message, "counterparty" if action == "cpmanual" else "product",
+                {"draft_id": draft_id, "revision": int(parts[-1][1:]),
+                 "item_id": int(parts[3]) if action == "searchmanual" else None},
+                "Введите название или реквизиты для поиска.")
             return
         elif action == "ambiguous":
             draft = await DraftOrderRepository().get(draft_id)
@@ -335,7 +385,7 @@ async def draft_callback_handler(callback: CallbackQuery):
                 )
                 for item in ambiguous
             ) or "Неоднозначных позиций нет"
-            text += f"\n\nПоиск товара: /match {draft_id} НОМЕР_ПОЗИЦИИ название или артикул"
+            text += "\n\nДля поиска нажмите «Найти товар» в действиях заявки."
             if callback.message:
                 await callback.message.answer(text)
         elif action == "pick":
@@ -351,7 +401,7 @@ async def draft_callback_handler(callback: CallbackQuery):
             if candidate_index < 0 or candidate_index >= len(current.counterparty_candidates):
                 raise DraftOrderError("Вариант контрагента устарел")
             candidate = current.counterparty_candidates[candidate_index]
-            draft = await service.link_counterparty(draft_id, candidate["id"], candidate.get("name") or candidate["id"])
+            draft = await service.link_counterparty(draft_id, candidate["id"], candidate.get("name") or candidate["id"], require_candidate=True)
         elif action == "product":
             item_id = int(parts[3])
             product_id = parts[4]
@@ -375,9 +425,26 @@ async def draft_callback_handler(callback: CallbackQuery):
                 draft_id,
                 counterparty_id,
                 candidate.get("name") or counterparty_id,
+                require_candidate=True,
             )
         elif action == "counterparty_select":
             draft = await service.load_counterparty_candidates(draft_id)
+        elif action == "cpnew":
+            current = await service._get_required(draft_id)
+            contact = current.contact_details or {}
+            candidates = await service.counterparty_service.candidates_async(contact.get("inn"), current.sender_email,
+                contact.get("phone"), current.customer_name)
+            draft = await service.repository.set_counterparty_candidates(draft_id, candidates)
+            if not candidates:
+                await callback.message.answer(f"Создать контрагента «{current.customer_name}» в МойСклад? Это отдельная внешняя запись.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                        {"text": "Да, создать", "callback_data": f"draft:cpcreate:{draft_id}:v{draft.revision}"},
+                        {"text": "Назад", "callback_data": f"draft:actions:{draft_id}"}]]))
+                return
+        elif action == "cpcreate":
+            from app.services.manager_directory import create_counterparty
+            await create_counterparty(draft_id, callback.from_user.id, int(parts[-1][1:]))
+            draft = await service._get_required(draft_id)
         elif action == "finalize":
             order = await service.finalize(draft_id)
             log_event(
@@ -411,10 +478,10 @@ async def draft_callback_handler(callback: CallbackQuery):
         if draft is not None and callback.message:
             await safe_edit_message(
                 callback.message,
-                build_draft_card(draft, expanded=action == "details"),
+                build_draft_card(draft, expanded=action in {"details", "counterparty_select", "cpnew", "cpcreate"}),
                 draft_id=draft_id,
                 reply_markup=InlineKeyboardMarkup.model_validate(
-                    build_draft_keyboard(draft, expanded=action in {"details", "actions", "ambiguous", "counterparty_select"})
+                    build_draft_keyboard(draft, expanded=action in {"details", "actions", "ambiguous", "counterparty_select", "cpnew", "cpcreate"})
                 ),
             )
         outcome = "success"
@@ -498,6 +565,34 @@ dp.message.outer_middleware(ManagerRecoveryMiddleware())
 dp.callback_query.outer_middleware(ManagerRecoveryMiddleware())
 
 
+@dp.callback_query(F.data.startswith("inputcancel:"))
+@dp.callback_query(F.data.startswith("inputback:"))
+async def cancel_input(callback):
+    if not await safe_callback_answer(callback):
+        return
+    if not await manager_repository.is_active_by_telegram_id(callback.from_user.id):
+        return
+    from app.bot.manager_inputs import pending, close_prompt
+    _, actor, prompt = callback.data.split(":")
+    if int(actor) != callback.from_user.id:
+        return
+    key = (callback.message.chat.id, callback.from_user.id)
+    state = pending.get(key)
+    if state and state[1] == int(prompt):
+        pending.pop(key, None)
+        await callback.message.edit_text("Ввод отменён. Откройте действия заявки, чтобы повторить.", reply_markup=None)
+        await close_prompt(callback.message, int(prompt))
+        if callback.data.startswith("inputback:"):
+            data = state[3]
+            if data.get("draft_id"):
+                draft = await DraftOrderRepository().get(data["draft_id"])
+                if draft:
+                    await publish_draft(callback.message, draft)
+            elif data.get("order_id"):
+                from app.bot.source_navigation import refresh_order
+                await refresh_order(callback.message, data["order_id"])
+
+
 async def show_order_list(message, category, offset):
     orders = await list_orders(limit=10, offset=offset, category=category)
     rows = [[{"text": f"№{o.id} · {FULFILLMENT_LABELS[o.fulfillment_status]} · {o.customer_name[:30]}",
@@ -567,14 +662,17 @@ async def find_order(message):
         if not draft:
             await message.answer("Заявка не найдена.")
             return
-        await message.answer(build_draft_card(draft), reply_markup=InlineKeyboardMarkup.model_validate(build_draft_keyboard(draft)))
+        await publish_draft(message, draft)
     else:
         order = await get_order(identifier)
         if not order:
             await message.answer("Заказ не найден.")
             return
+        from app.services.telegram_cards import publish
         plans = await shipments_for(order.id)
-        await message.answer(await supply_order_card(order, plans), reply_markup=InlineKeyboardMarkup.model_validate(order_keyboard(order, plans)))
+        entity = f"draft:{order.desk_draft_id}" if getattr(order, "desk_draft_id", None) else f"order:{order.id}"
+        await publish(message.bot, message.chat.id, entity, await supply_order_card(order, plans),
+            InlineKeyboardMarkup.model_validate(order_keyboard(order, plans)))
 
 
 @dp.callback_query(F.data.startswith("order:"))
@@ -585,6 +683,9 @@ async def order_callback(callback):
     if not await manager_repository.is_active_by_telegram_id(callback.from_user.id):
         return
     try:
+        from app.services.telegram_cards import obsolete
+        if await obsolete(callback.message.chat.id, callback.message.message_id):
+            return
         _, action, identifier, version = callback.data.split(":")
         order_id, revision = int(identifier), int(version)
         order = await get_order(order_id)
@@ -625,10 +726,9 @@ async def order_callback(callback):
         plans = await shipments_for(order_id)
         text = await supply_order_card(order, plans, details=action == "details")
         keyboard = InlineKeyboardMarkup.model_validate(order_keyboard(order, plans, expanded=action in {"details", "actions"}))
-        try:
-            await safe_edit_message(callback.message, text, draft_id=0, reply_markup=keyboard)
-        except TelegramBadRequest:
-            await callback.message.answer(text, reply_markup=keyboard)
+        from app.services.telegram_cards import publish
+        entity = f"draft:{order.desk_draft_id}" if getattr(order, "desk_draft_id", None) else f"order:{order_id}"
+        await publish(callback.bot, callback.message.chat.id, entity, text, keyboard)
         log_event(logger, "manager_order_callback", order_id=order_id, manager_id=callback.from_user.id,
             action=action, result="success", duration_ms=_duration_ms(started))
     except (ValueError, OperationError) as error:
@@ -654,7 +754,8 @@ async def operational_note(message):
         request = OrderAction(expected_revision=order.revision, idempotency_key=f"msg:{message.chat.id}:{message.message_id}", **args)
         updated = await OrderOperations().act(order.id, message.from_user.id, request)
         plans = await shipments_for(order.id)
-        await message.answer(await supply_order_card(updated, plans), reply_markup=InlineKeyboardMarkup.model_validate(order_keyboard(updated, plans)))
+        from app.bot.source_navigation import refresh_order
+        await refresh_order(message, updated.id)
     except (ValueError, OperationError) as error:
         await message.answer(str(error) if isinstance(error, OperationError) else "Формат: /payment НОМЕР примечание; /tracking НОМЕР номер_доставки")
 

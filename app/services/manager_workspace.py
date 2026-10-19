@@ -66,7 +66,7 @@ def order_details_card(order, shipments=()):
                 if allocation.receipt_simulated:
                     lines.append("  Получение/оприходование: симуляция, без записи МойСклад")
     if not shipments:
-        lines.append("Назначьте источники: /sources НОМЕР_ЗАКАЗА. До подтверждения источников отгрузка заблокирована."
+        lines.append("Нажмите «Выбрать источник». До подтверждения источников отгрузка заблокирована."
             if getattr(order, "manual_fulfillment", False) else "Распределение по складам ещё не выполнено.")
     text = "\n".join(lines)
     raw = text.encode("utf-16-le")
@@ -111,7 +111,6 @@ def available_order_keyboard(order, shipments=()):
                     add(DELIVERY_LABELS[method], "delivery_" + method)
         elif order.delivery_status == "dispatched":
             add("Доставлен", "delivered")
-    add("Обновить", "refresh")
     add("Все товары", "items")
     if getattr(order, "desk_draft_id", None):
         buttons.append([{"text": "Заявка сайта / связь с клиентом", "callback_data": f"desk:refresh:{order.desk_draft_id}"}])

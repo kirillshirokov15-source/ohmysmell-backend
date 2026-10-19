@@ -98,6 +98,7 @@ def database(tmp_path, monkeypatch, catalog):
             session.add(Manager(telegram_id=111, name="Synthetic", is_active=True))
     asyncio.run(setup())
     monkeypatch.setattr(service, "async_session", factory)
+    monkeypatch.setattr("app.services.telegram_cards.async_session", factory)
     monkeypatch.setattr(service, "transaction_lock", AsyncMock())
     yield factory
     asyncio.run(engine.dispose())
@@ -255,7 +256,8 @@ def test_reported_line_arithmetic(amount, catalog):
 
 @pytest.mark.parametrize("stock,expected", [(0, 0), (3, 3), (None, None), ("NaN", None)])
 def test_live_stock_hint_never_infers_missing_stock(monkeypatch, stock, expected):
-    from app.services.tilda_availability import availability
+    from app.services.tilda_availability import availability, invalidate
+    invalidate()
     gateway = SimpleNamespace(get_stores=AsyncMock(return_value=[{"id": "store"}]),
         get_stock_by_store=AsyncMock(return_value={"rows": [{"meta": {"href": "/product/ms-dsd"},
             "stockByStore": [{"meta": {"href": "/store/store"}, "stock": stock, "reserve": 0}]}]}))

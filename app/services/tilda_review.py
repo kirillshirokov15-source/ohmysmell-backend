@@ -39,7 +39,7 @@ def amounts(payload):
     return sorted(problems), total if not problems else None
 
 
-async def review(payload):
+async def review(payload, manual_products=None):
     problems, total = amounts(payload)
     try:
         matcher = ProductMatchingService()
@@ -52,8 +52,13 @@ async def review(payload):
         products = []
         problems.append("catalog_unavailable")
     rows = []
-    for row in payload["items"]:
+    for index, row in enumerate(payload["items"]):
         match = ProductMatchingService.match_sku(products, row["externalid"], row["qty"])
+        manual_id = (manual_products or {}).get(index)
+        if manual_id:
+            from app.services.product_matching_service import ProductMatch
+            product = next((p for p in products if p.get("id") == manual_id), None)
+            match = ProductMatch(row["name"], row["qty"], "matched" if product else "not_found", product, ())
         product = match.product or {}
         if match.status != "matched":
             problems.append("sku_" + match.status)

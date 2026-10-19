@@ -6,6 +6,9 @@ from app.models.manager import Manager
 
 class ManagerRepository:
     async def is_active_by_telegram_id(self, telegram_id: int) -> bool:
+        from time import perf_counter
+        from app.services.telegram_metrics import observe
+        started = perf_counter()
         async with async_session() as session:
             result = await session.execute(
                 select(Manager.id)
@@ -15,4 +18,6 @@ class ManagerRepository:
                 )
                 .limit(1)
             )
-            return result.scalar_one_or_none() is not None
+            active = result.scalar_one_or_none() is not None
+            observe("authorization", started)
+            return active

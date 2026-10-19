@@ -18,6 +18,18 @@ from app.schemas.order_sources import SourceAction
 navigation = {}
 
 
+async def refresh_order(message, order_id):
+    from app.repositories.order_repository import get_order
+    from app.services.manager_workspace import order_keyboard, shipments_for
+    from app.bot.procurement import supply_order_card
+    from app.services.telegram_cards import publish
+    order = await get_order(order_id)
+    plans = await shipments_for(order_id)
+    entity = f"draft:{order.desk_draft_id}" if order.desk_draft_id else f"order:{order_id}"
+    await publish(message.bot, message.chat.id, entity, await supply_order_card(order, plans),
+        InlineKeyboardMarkup.model_validate(order_keyboard(order, plans)))
+
+
 def button(label, state):
     now = time.monotonic()
     for token in list(navigation):
@@ -34,6 +46,9 @@ async def show_sources(message, actor, order_id, *, edit=False):
     order = await get_order(order_id)
     editable = order.fulfillment_status == "new" and order.status != "rejected" and not order.needs_review
     from app.services.order_source_service import source_plans, simulation_allowed
+    from app.config.settings import settings
+    documents_allowed = simulation_allowed() or (settings.environment == "production" and settings.external_writes_enabled)
+    mode = "симуляция" if simulation_allowed() else "МойСклад"
     from app.services.warehouse_documents import frozen_plan
     async with async_session() as session:
         plans = await source_plans(session, order_id)
@@ -49,23 +64,38 @@ async def show_sources(message, actor, order_id, *, edit=False):
     for allocation in view["allocations"]:
         if allocation["status"] == "cancelled":
             continue
-        label = {"own": "Свой склад", "partner_x": "X", "external": "Поставщик"}[allocation["source_type"]]
+        label = {"own": "Свой склад", "own_x": "Склад X (собственный)", "partner_x": "Партнёр X", "external": "Поставщик"}[allocation["source_type"]]
         lines.append(f"{label}: {allocation['qty']} шт. · " + ("готово" if allocation["ready"] else "ожидаем поступления"))
         if not editable or allocation["plan_status"] != "planned":
             continue
-        if simulation_allowed() and allocation["status"] == "awaiting_receipt" and (
-                allocation["source_type"] == "partner_x" or allocation["purchase_status"] == "received"):
+        if documents_allowed and allocation["status"] == "awaiting_receipt" and (
+                allocation["source_type"] in {"own_x", "partner_x"} or allocation["purchase_status"] == "received"):
             rows.append(button(f"Получено: {label} · {allocation['qty']} шт.", dict(state, step="apply",
                 action="receive", allocation_id=allocation["id"])))
-        if simulation_allowed() and allocation["status"] == "received":
-            rows.append(button(f"Оприходовать: {label} (симуляция)", dict(state, step="apply",
-                action="post_receipt", allocation_id=allocation["id"])))
+        if documents_allowed and allocation["status"] == "received":
+            rows.append(button(f"Оприходовать: {label} ({mode})", dict(state, step="document_confirm",
+                document_action="receipt", target_id=allocation["id"])))
         if not frozen:
             rows.append(button(f"Убрать источник: {label} · {allocation['qty']} шт.", dict(state, step="confirm_cancel",
                 allocation_id=allocation["id"])))
+    if documents_allowed:
+        from app.services.order_source_service import allocation_ready
+        for plan in plans:
+            active = [a for a in plan.allocations if a.supply_status != "cancelled"]
+            if not active or plan.status == "cancelled":
+                continue
+            if order.fulfillment_status == "new" and all(allocation_ready(a, manual=True) for a in active):
+                rows.append(button(f"Резерв склада {plan.warehouse_id} ({mode})", dict(state,
+                    step="document_confirm", document_action="reserve", target_id=plan.id)))
+            if order.fulfillment_status == "assembled":
+                rows.append(button(f"Отгрузить со склада {plan.warehouse_id} ({mode})", dict(state,
+                    step="document_confirm", document_action="ship", target_id=plan.id)))
     rows.append([{"text": "Назад к заказу", "callback_data": f"order:refresh:{order_id}:{view['revision']}"}])
     send = message.edit_text if edit else message.answer
     await send("\n".join(lines)[:3900], parse_mode=None, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    if edit:
+        from app.services.telegram_cards import display_changed
+        await display_changed(message.chat.id, message.message_id)
 
 
 def register(dp, check_access, safe_callback_answer):
@@ -75,6 +105,9 @@ def register(dp, check_access, safe_callback_answer):
             return
         message = callback.message.model_copy(update={"from_user": callback.from_user, "text": "/sources"}).as_(callback.bot)
         if not await check_access(message):
+            return
+        from app.services.telegram_cards import obsolete, display_changed
+        if await obsolete(message.chat.id, message.message_id):
             return
         entry = navigation.get(callback.data.split(":", 1)[1])
         if not entry or entry[0] < time.monotonic():
@@ -91,7 +124,7 @@ def register(dp, check_access, safe_callback_answer):
             rows, text = [], "Выберите источник"
             step = state["step"]
             if step == "type":
-                for value, label in (("own", "Свой склад"), ("partner_x", "X"), ("external", "Внешний поставщик")):
+                for value, label in (("own", "Свой склад"), ("own_x", "Склад X (собственный)"), ("external", "Внешний поставщик")):
                     rows.append(button(label, dict(state, step="warehouse", source_type=value)))
                 rows.append(button(f"Количество: {state['qty']} шт. · изменить", dict(state,
                     step="quantity", quantity_next="type")))
@@ -107,7 +140,7 @@ def register(dp, check_access, safe_callback_answer):
                     if settings.warehouse_ids and stock["id"] not in settings.warehouse_ids:
                         continue
                     rows.append(button(stock.get("name") or stock["id"], dict(state,
-                        step="supplier" if state["source_type"] != "own" else "confirm",
+                        step="cost" if state["source_type"] == "own_x" else "supplier" if state["source_type"] != "own" else "confirm",
                         warehouse_id=stock["id"])))
             elif step == "supplier":
                 text = "Выберите поставщика"
@@ -133,7 +166,7 @@ def register(dp, check_access, safe_callback_answer):
             elif step == "cost":
                 # A price is a deliberate manager input, never inferred from retail price.
                 from app.bot.manager_inputs import prompt_input
-                await prompt_input(message, "source_cost", state, "Введите закупочную цену X за штуку в рублях.")
+                await prompt_input(message, "source_cost", state, "Введите подтверждённую себестоимость за штуку в рублях.")
                 return
             elif step in {"confirm", "confirm_cancel"}:
                 text = "Убрать это назначение источника?" if step == "confirm_cancel" else f"Назначить источник на {state['qty']} шт.?"
@@ -144,6 +177,25 @@ def register(dp, check_access, safe_callback_answer):
                 from app.bot.manager_inputs import prompt_input
                 await prompt_input(message, "source_quantity", state, "Сколько штук назначить этому источнику?")
                 return
+            elif step == "document_confirm":
+                from app.services.order_source_service import simulation_allowed
+                text = ("Симуляция" if simulation_allowed() else "Запись в МойСклад") + ": подтвердите складскую операцию."
+                rows.append(button("Подтвердить операцию", dict(state, step="document_apply")))
+                if state["document_action"] == "receipt":
+                    rows.append(button("Указать себестоимость в рублях", dict(state, step="document_cost")))
+            elif step == "document_cost":
+                from app.bot.manager_inputs import prompt_input
+                await prompt_input(message, "document_cost", state, "Введите фактическую себестоимость за штуку в рублях.")
+                return
+            elif step == "document_apply":
+                from app.services.warehouse_documents import WarehouseDocumentService
+                from app.integrations.moysklad.documents import FakeDocumentAdapter
+                from app.services.order_source_service import simulation_allowed
+                await WarehouseDocumentService(adapter=FakeDocumentAdapter() if simulation_allowed() else None).act(
+                    state["order_id"], state["actor"], state["chat"], state["revision"], state["document_action"], state["target_id"],
+                    receipt_cost_minor=state.get("receipt_cost_minor"))
+                await refresh_order(callback.message, state["order_id"])
+                return
             elif step == "apply":
                 action = state["action"]
                 args = {"allocation_id": state["allocation_id"]} if action != "assign" else {
@@ -151,11 +203,12 @@ def register(dp, check_access, safe_callback_answer):
                         "supplier_id", "base_cost_minor", "offer_id") if key in state}]}
                 await service.act(state["order_id"], state["actor"], state["chat"], SourceAction(
                     action=action, expected_revision=state["revision"], idempotency_key=callback.data, **args))
-                await show_sources(callback.message, state["actor"], state["order_id"], edit=True)
+                await refresh_order(callback.message, state["order_id"])
                 return
             if not rows:
                 text = "Нет доступных вариантов. Проверьте склад или поставщика."
             rows.append([{"text": "Назад к заказу", "callback_data": f"order:refresh:{state['order_id']}:{state['revision']}"}])
             await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode=None)
+            await display_changed(message.chat.id, message.message_id)
         except (DeskError, ValueError) as error:
             await callback.message.answer(str(error) if isinstance(error, DeskError) else "Проверьте выбранные данные.")

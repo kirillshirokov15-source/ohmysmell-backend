@@ -12,9 +12,11 @@ if os.getenv("OMS_STAGING_TESTS") != "1":
 def block_real_io(monkeypatch, request):
     import requests
     import asyncpg
+    import aiohttp
     def blocked(*args, **kwargs):
         __tracebackhide__ = True
         raise AssertionError("Real network I/O is forbidden in automated tests")
     monkeypatch.setattr(requests.Session, "request", blocked)
+    monkeypatch.setattr(aiohttp.ClientSession, "_request", blocked)
     if not (request.node.get_closest_marker("staging") and os.getenv("OMS_STAGING_TESTS") == "1"):
         monkeypatch.setattr(asyncpg, "connect", blocked)

@@ -78,7 +78,7 @@ def test_claim_concurrent_one_winner_and_actor_audit(desk_db):
             events=(await s.scalars(select(DeskEvent).where(DeskEvent.draft_id==did,DeskEvent.action=="manager_claim_succeeded"))).all()
             assert len(events)==1 and events[0].actor_telegram_id==winner
         from app.services.desk_display import desk_card
-        card,_=await desk_card(did)
+        card,_=await desk_card(did, view="details")
         assert "Ответственный: SYNTHETIC manager" in card
         for actor,chat in [(333,-100123456),(winner,-999),(winner,winner)]:
             with pytest.raises(DeskError): await DeskService().claim(did,actor,chat)

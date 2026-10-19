@@ -22,6 +22,9 @@ def test_number_reuses_handler_once(dispatch, monkeypatch, button, action):
 
 def test_existing_search_card_and_missing_order(dispatch, monkeypatch):
     from app.bot import telegram_bot as bot
+    async def publish(transport, chat_id, entity, text, keyboard):
+        return await transport.send_message(chat_id, text, reply_markup=keyboard)
+    monkeypatch.setattr("app.services.telegram_cards.publish", publish)
     lookup = AsyncMock(return_value=None)
     monkeypatch.setattr(bot, 'get_order', lookup)
     dispatch('Найти заказ')

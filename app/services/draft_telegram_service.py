@@ -1,10 +1,8 @@
 import os
-import asyncio
 
 from sqlalchemy import select
 
 from app.database.session import async_session
-from app.integrations.http_tls import verified_session
 from app.models.draft_order import DraftOrder
 from app.models.manager import Manager
 from app.models.sales import channel_customer_type
@@ -76,7 +74,7 @@ def build_draft_card(draft: DraftOrder) -> str:
     if draft.counterparty_candidates:
         lines.extend(["", "Возможные контрагенты:"])
         lines.extend(
-            f"• {candidate.get('name') or 'Без имени'}"
+            f"• {candidate.get('name') or 'Без имени'} · {candidate.get('reason') or 'требует сверки'}"
             for candidate in draft.counterparty_candidates[:5]
         )
     if problems:
@@ -123,7 +121,7 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
                     f"draft:pick:{draft.id}:{item.id}:{candidate_index}"
                 ),
             }])
-    for candidate_index, candidate in enumerate(draft.counterparty_candidates[:3]):
+    for candidate_index, candidate in enumerate(draft.counterparty_candidates[:5]):
         rows.append([{
             "text": (
                 "Контрагент: "
@@ -159,7 +157,12 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
         "callback_data": f"draft:reject:{draft.id}",
     })
     rows.append(final_actions)
-    rows.append([{"text": "Обновить", "callback_data": f"draft:refresh:{draft.id}"}])
+    rows.append([{"text": "Найти контрагента вручную", "callback_data": f"draft:cpmanual:{draft.id}"}])
+    if not draft.counterparty_id:
+        rows.append([{"text": "Создать нового контрагента", "callback_data": f"draft:cpnew:{draft.id}"}])
+    for item in draft.items:
+        if not item.product_id:
+            rows.append([{"text": f"Найти товар · {item.id}", "callback_data": f"draft:searchmanual:{draft.id}:{item.id}"}])
     if hasattr(draft, "revision") and isinstance(draft.revision, int):
         for row in rows:
             for button in row:
@@ -211,12 +214,10 @@ async def notify_managers_about_draft(draft: DraftOrder) -> int:
     from app.bot.manager_group import notification_chats
     chat_ids = notification_chats(managers)
     keyboard, card = compact_draft_keyboard(draft), compact_draft_card(draft)
-    def send():
-        with verified_session() as http_session:
-            for chat_id in chat_ids:
-                response = http_session.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                    json={"chat_id": chat_id, "text": card, "reply_markup": keyboard}, timeout=(5, 20))
-                if not response.ok:
-                    raise RuntimeError(f"Telegram notification HTTP {response.status_code}")
-        return len(chat_ids)
-    return await asyncio.to_thread(send)
+    from aiogram import Bot
+    from aiogram.types import InlineKeyboardMarkup
+    from app.services.telegram_cards import publish
+    async with Bot(token=token) as bot:
+        for chat_id in chat_ids:
+            await publish(bot, chat_id, f"draft:{draft.id}", card, InlineKeyboardMarkup.model_validate(keyboard))
+    return len(chat_ids)

@@ -1,6 +1,6 @@
 """Local fulfillment plans; none of these records reserve external inventory."""
 from datetime import datetime
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, JSON, String, UniqueConstraint, func, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, JSON, String, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database.base import Base
 
@@ -26,7 +26,7 @@ class WarehouseAllocation(Base):
         CheckConstraint("qty > 0", name="ck_warehouse_allocations_qty"),
         Index("uq_allocation_legacy_item", "shipment_id", "order_item_id", unique=True,
               postgresql_where=text("NOT managed_source"), sqlite_where=text("NOT managed_source")),
-        CheckConstraint("source_type IN ('own','partner_x','external')", name="ck_allocation_source"),
+        CheckConstraint("source_type IN ('own','own_x','partner_x','external')", name="ck_allocation_source"),
         CheckConstraint("supply_status IN ('awaiting_receipt','received','confirmed','cancelled')", name="ck_allocation_supply_status"),
     )
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -42,6 +42,7 @@ class WarehouseAllocation(Base):
     buying_purchase_id: Mapped[int | None] = mapped_column(ForeignKey("buying_purchases.id"), index=True)
     receipt_simulated: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     receipt_reference: Mapped[str | None] = mapped_column(String(255))
+    own_cost_minor: Mapped[int | None] = mapped_column(BigInteger)
     buying_purchase: Mapped["BuyingPurchase"] = relationship()
 
 

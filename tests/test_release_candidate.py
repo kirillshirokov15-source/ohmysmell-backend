@@ -238,23 +238,24 @@ def test_operational_api_requires_actor_and_forbids_price(monkeypatch):
     assert asyncio.run(request(app, "POST", "/orders/1/actions", payload, headers))[0] == 422
 
 
-def test_order_edit_failure_sends_fresh_card_without_repeating_action():
+def test_order_publishes_fresh_card_without_repeating_action():
     from app.bot import telegram_bot as bot
     from aiogram.exceptions import TelegramBadRequest
     o = order(payment_status="paid", revision=1)
-    callback = SimpleNamespace(answer=AsyncMock(), from_user=SimpleNamespace(id=1), data="order:paid:1:0",
-        message=SimpleNamespace(edit_text=AsyncMock(side_effect=TelegramBadRequest(method=SimpleNamespace(), message="message to edit not found")), answer=AsyncMock()))
+    callback = SimpleNamespace(answer=AsyncMock(), from_user=SimpleNamespace(id=1), data="order:paid:1:0", bot=SimpleNamespace(),
+        message=SimpleNamespace(chat=SimpleNamespace(id=1), message_id=10, answer=AsyncMock()))
     service = SimpleNamespace(act=AsyncMock(return_value=o))
-    with patch.object(bot.manager_repository, "is_active_by_telegram_id", AsyncMock(return_value=True)), patch.object(bot, "get_order", AsyncMock(return_value=order())), patch.object(bot, "OrderOperations", return_value=service), patch.object(bot, "shipments_for", AsyncMock(return_value=[])):
+    with patch.object(bot.manager_repository, "is_active_by_telegram_id", AsyncMock(return_value=True)), patch.object(bot, "get_order", AsyncMock(return_value=order())), patch.object(bot, "OrderOperations", return_value=service), patch.object(bot, "shipments_for", AsyncMock(return_value=[])), patch.object(bot, "supply_order_card", AsyncMock(return_value="card")), patch("app.services.telegram_cards.obsolete", AsyncMock(return_value=False)), patch("app.services.telegram_cards.publish", AsyncMock()) as publish:
         asyncio.run(bot.order_callback(callback))
     service.act.assert_awaited_once()
-    callback.message.answer.assert_awaited_once()
+    publish.assert_awaited_once()
+    callback.message.answer.assert_not_awaited()
 
 
 def test_temporary_order_db_failure_has_russian_message_without_secret():
     from app.bot import telegram_bot as bot
-    callback = SimpleNamespace(answer=AsyncMock(), from_user=SimpleNamespace(id=1), data="order:refresh:1:0", message=SimpleNamespace(answer=AsyncMock()))
-    with patch.object(bot.manager_repository, "is_active_by_telegram_id", AsyncMock(return_value=True)), patch.object(bot, "get_order", AsyncMock(side_effect=RuntimeError("private DB credential"))):
+    callback = SimpleNamespace(answer=AsyncMock(), from_user=SimpleNamespace(id=1), data="order:refresh:1:0", message=SimpleNamespace(chat=SimpleNamespace(id=1), message_id=10, answer=AsyncMock()))
+    with patch.object(bot.manager_repository, "is_active_by_telegram_id", AsyncMock(return_value=True)), patch("app.services.telegram_cards.obsolete", AsyncMock(return_value=False)), patch.object(bot, "get_order", AsyncMock(side_effect=RuntimeError("private DB credential"))):
         asyncio.run(bot.order_callback(callback))
     assert "временно недоступен" in callback.message.answer.call_args.args[0]
     assert "credential" not in callback.message.answer.call_args.args[0]

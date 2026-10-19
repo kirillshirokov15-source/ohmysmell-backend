@@ -80,7 +80,10 @@ async def run_once(bot, role):
             from app.bot.client_menu import delivery_keyboard
             async with async_session() as session:
                 keyboard = await delivery_keyboard(session, message.destination)
-        if role == "client" and message.kind == "client_card":
+        if role == "manager" and message.kind == "card":
+            from app.services.telegram_cards import publish
+            sent = await publish(bot, message.destination, f"draft:{message.draft_id}", body, keyboard)
+        elif role == "client" and message.kind == "client_card":
             sent = await deliver_client_card(bot, message)
         else:
             sent = await bot.send_message(message.destination, body, parse_mode=None, reply_markup=keyboard,

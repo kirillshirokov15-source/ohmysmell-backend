@@ -54,3 +54,11 @@ def supply(organization_id, supplier_id, warehouse_id, items, operation_key, pur
     if purchase_order_id:
         payload['purchaseOrder'] = reference('purchaseorder', purchase_order_id)
     return payload
+
+
+def inventory_enter(organization_id, warehouse_id, items, operation_key):
+    """Owned inventory recognition has no supplier or purchase relationship."""
+    payload = customerorder(organization_id, organization_id, items, operation_key=operation_key)
+    payload.pop("agent")
+    payload.update(store=reference("store", warehouse_id), applicable=True)
+    return payload

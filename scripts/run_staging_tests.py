@@ -20,7 +20,7 @@ def main():
     environment = dict(os.environ, OMS_STAGING_TESTS="1", OMS_STAGING_SCHEMA=report["schema"])
     result = subprocess.run([sys.executable, "-m", "pytest", "tests/test_postgres_staging.py", "tests/test_tilda_postgres.py",
                              "tests/test_order_desk_hardening_postgres.py", "tests/test_supply_acceptance_postgres.py",
-                             "tests/test_order_sources_postgres.py", "tests/test_ohmysmell_v1_postgres.py", "-q",
+                             "tests/test_order_sources_postgres.py", "tests/test_ohmysmell_v1_postgres.py", "tests/test_telegram_cards_postgres.py", "-q",
                              "--tb=short", "--junitxml=.staging-artifacts/staging-tests.xml", *sys.argv[1:]], env=environment)
     raise SystemExit(result.returncode)
 

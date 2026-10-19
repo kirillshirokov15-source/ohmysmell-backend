@@ -18,7 +18,7 @@ from app.services.order_source_service import OrderSourceService, source_plans, 
 from app.services.order_desk import DeskError, authorized_manager, require_owner
 from app.services.external_operation_service import ExternalOperationService
 from app.integrations.moysklad.documents import FakeDocumentAdapter, MoySkladDocumentAdapter
-from app.integrations.moysklad.payloads import reservation, supply, demand
+from app.integrations.moysklad.payloads import reservation, supply, demand, inventory_enter
 from app.integrations.write_guard import require_external_writes
 
 
@@ -118,6 +118,8 @@ class WarehouseDocumentService:
             return receipt
 
     async def act(self, order_id, actor, chat_id, revision, action, target_id, *, reconcile=False, receipt_cost_minor=None):
+        from app.services.tilda_availability import invalidate
+        invalidate()
         if action not in {'receipt','reserve','ship','release'}:
             raise DeskError('Unsupported warehouse document')
         if receipt_cost_minor is not None and (action!='receipt' or type(receipt_cost_minor) is not int
@@ -174,11 +176,15 @@ class WarehouseDocumentService:
             if action=='receipt':
                 if order.fulfillment_status!='new' or a.source_type=='own' or a.supply_status!='received':
                     raise DeskError('Actual receipt must be recorded before posting')
-                supplier=await session.get(Supplier,a.supplier_id)
-                if not supplier or not supplier.external_reference:
+                supplier=await session.get(Supplier,a.supplier_id) if a.supplier_id else None
+                if a.source_type != 'own_x' and (not supplier or not supplier.external_reference):
                     raise DeskError('Supplier counterparty mapping required')
                 item=items[a.order_item_id]
-                if a.source_type=='external':
+                if a.source_type == 'own_x':
+                    cost = a.own_cost_minor
+                    if cost is None or cost < 0 or (receipt_cost_minor is not None and receipt_cost_minor != cost):
+                        raise DeskError('Confirmed owned inventory cost required')
+                elif a.source_type=='external':
                     p=a.buying_purchase
                     if not p or p.status!='received':
                         raise DeskError('Received purchase required')
@@ -195,9 +201,14 @@ class WarehouseDocumentService:
                     cost=settlement.base_cost_minor//a.qty
                     if receipt_cost_minor is not None and receipt_cost_minor!=cost:
                         raise DeskError('X receipt cost must match the approved settlement')
-                document=supply(settings.moysklad_organization_id,supplier.external_reference,plan.warehouse_id,
-                    [{'id':item.product_id,'qty':a.qty,'price':cost}],bare_key)
-                entity='supply'
+                if a.source_type == 'own_x':
+                    document = inventory_enter(settings.moysklad_organization_id, plan.warehouse_id,
+                        [{'id':item.product_id,'qty':a.qty,'price':cost}], bare_key)
+                    entity = 'enter'
+                else:
+                    document=supply(settings.moysklad_organization_id,supplier.external_reference,plan.warehouse_id,
+                        [{'id':item.product_id,'qty':a.qty,'price':cost}],bare_key)
+                    entity='supply'
             else:
                 rows=[a for a in plan.allocations if a.supply_status!='cancelled']
                 if not rows or not all(allocation_ready(a,manual=order.manual_fulfillment) for a in rows):

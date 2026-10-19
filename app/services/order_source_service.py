@@ -131,6 +131,8 @@ class OrderSourceService:
             items=[dict(id=i.id, name=i.name, qty=i.qty, assigned=assigned[i.id], ready=ready[i.id]) for i in order.items])
 
     async def act(self, order_id, actor, chat_id, request):
+        from app.services.tilda_availability import invalidate
+        invalidate()
         digest = hashlib.sha256(request.model_dump_json(exclude={"idempotency_key"}).encode()).hexdigest()
         async with async_session() as session, session.begin():
             order, manager = await self._order(session, order_id, actor, chat_id)
@@ -252,7 +254,9 @@ class OrderSourceService:
                 source_type=part.source_type, supply_status="confirmed" if part.source_type == "own" else "awaiting_receipt")
             plan.allocations.append(allocation)
             await session.flush()
-            if part.source_type == "partner_x":
+            if part.source_type == "own_x":
+                allocation.own_cost_minor = part.base_cost_minor
+            elif part.source_type == "partner_x":
                 supplier = await session.get(Supplier, part.supplier_id)
                 if not supplier or supplier.supplier_type != "partner_x" or supplier.status != "active":
                     raise DeskError("Партнёр X недоступен.")

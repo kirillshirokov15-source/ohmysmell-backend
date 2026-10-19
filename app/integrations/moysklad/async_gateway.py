@@ -123,6 +123,8 @@ class AsyncMoySkladGateway:
         )
 
     async def create_customer_order(self, **kwargs) -> dict:
+        from app.services.tilda_availability import invalidate
+        invalidate()
         from app.integrations.write_guard import require_external_writes
         require_external_writes()
         return await self._call(

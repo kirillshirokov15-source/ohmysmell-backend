@@ -377,7 +377,8 @@ class DeskService:
                     raise DeskError("Товары, цены, скидка или сумма требуют проверки. Выполните /sitereprice.")
                 # Revalidate identity against a fresh (TTL-bounded) catalog. Never
                 # silently replace a product or approve an expired match.
-                checked, _, problems = await review(payload)
+                manual = {n: draft.contact_details.get("tilda_manual_products", {}).get(str(item.id)) for n, item in enumerate(items)}
+                checked, _, problems = await review(payload, manual_products=manual) if any(manual.values()) else await review(payload)
                 if problems or any(i.product_id != r["product_id"] for i, r in zip(items, checked, strict=True)):
                     raise DeskError("Каталог недоступен или сопоставление изменилось. Выполните /sitereprice.")
                 draft.status = "ready"
@@ -401,7 +402,8 @@ class DeskService:
                 payload, items, bindings = source_rows(draft, desk, inbound)
             except (ValueError, KeyError, TypeError) as error:
                 raise DeskError("Нельзя безопасно восстановить исходные позиции.") from error
-            rows, total, problems = await review(payload)
+            manual = {n: draft.contact_details.get("tilda_manual_products", {}).get(str(item.id)) for n, item in enumerate(items)}
+            rows, total, problems = await review(payload, manual_products=manual) if any(manual.values()) else await review(payload)
             from app.services.tilda_review import REVIEW_NOTE
             changed = (any(any(getattr(i, key) != row[key] for key in ITEM_FIELDS)
                            for i, row in zip(items, rows, strict=True))

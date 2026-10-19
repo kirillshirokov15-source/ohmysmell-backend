@@ -13,6 +13,16 @@ import pytest
 pytestmark = pytest.mark.staging
 
 
+async def link_synthetic_counterparty(service, draft_id, identifier, name):
+    """Provider fixture now includes the required fresh read before linking."""
+    from app.services.counterparty_matching_service import CounterpartyMatchingService
+    candidate = {"id": identifier, "name": name, "inn": None, "email": None, "phone": None}
+    await service.repository.set_counterparty_candidates(draft_id, [candidate])
+    service.counterparty_service.async_gateway = SimpleNamespace(get_counterparty=AsyncMock(return_value=candidate))
+    service.counterparty_service.normalize = CounterpartyMatchingService.normalize
+    return await service.link_counterparty(draft_id, identifier, name)
+
+
 def test_quantity_review_and_correction_postgres(staging_sessions):
     from app.models.manager import Manager
     from app.models.draft_order import DraftQuantityEvent
@@ -35,7 +45,7 @@ def test_quantity_review_and_correction_postgres(staging_sessions):
             message=replace(email_message(uid+str(index),body),sender_email=uid+'@example.invalid')
             draft=await service.ingest_email(message)
             assert draft.items[0].quantity_confidence==confidence
-            await service.link_counterparty(draft.id,'synthetic-cp-'+uid,'SYNTHETIC quantity')
+            await link_synthetic_counterparty(service,draft.id,'synthetic-cp-'+uid,'SYNTHETIC quantity')
             if confidence!='confirmed':
                 with pytest.raises(DraftOrderError):await service.finalize(draft.id)
                 await service.repository.correct_quantity(draft.id,draft.items[0].id,3,actor)
@@ -184,7 +194,7 @@ def test_supply_external_email_and_website_channels(staging_sessions):
             counterparty_service=SimpleNamespace(candidates_async=AsyncMock(return_value=[])),notifier=AsyncMock())
         draft = await service.ingest_email(replace(email_message(uuid4().hex,'Product x3'),sender_email=uuid4().hex+'@example.invalid'))
         assert draft.source == 'email' and draft.customer_type == 'wholesale' and draft.items[0].price == 56000
-        await service.link_counterparty(draft.id,'synthetic-email-'+pid,'Synthetic')
+        await link_synthetic_counterparty(service,draft.id,'synthetic-email-'+pid,'Synthetic')
         email_order = await service.finalize(draft.id)
         assert (await service.finalize(draft.id)).id == email_order.id
         key = uuid4().hex
@@ -194,7 +204,7 @@ def test_supply_external_email_and_website_channels(staging_sessions):
         await CheckoutService(catalog).submit(payload,key)
         async with factory() as session:
             checkout = await session.get(CheckoutRequest,key)
-        await service.link_counterparty(checkout.draft_id,'synthetic-web-'+pid,'Synthetic')
+        await link_synthetic_counterparty(service,checkout.draft_id,'synthetic-web-'+pid,'Synthetic')
         web_order = await service.finalize(checkout.draft_id)
         assert web_order.source == 'website' and web_order.customer_type == 'retail' and web_order.items[0].price == 99000
         async with factory() as session:
@@ -304,7 +314,7 @@ def test_supply_procurement_vertical_slice_concurrency_and_immutable_cost(stagin
                 await session.execute(update(XSettlement).where(XSettlement.id==settlement.id).values(partner_due_minor=1))
         received = await service.act(request.id,tid,'received',4)
         assert received.status == 'received'
-        card = await supply_order_card(order)
+        card = await supply_order_card(order, details=True)
         assert all(label in card for label in ('Наш склад','X-склад','Внешние поставщики','к выплате X','Наша маржа','USD'))
         negative = await create_order(dict(customer_name='SYNTHETIC negative '+uid,phone='',customer_type='retail',source='website',total=1,
             items=[dict(id=x,name='SYNTHETIC below cost',price=1,qty=1,sum=1)]))
@@ -345,6 +355,7 @@ def staging_sessions(monkeypatch):
                    "app.repositories.order_repository", "app.repositories.email_cursor_repository",
                    "app.services.checkout_service", "app.services.fulfillment_service",
                    "app.services.external_operation_service", "app.workers.notifications",
+                   "app.services.telegram_cards", "app.services.manager_directory", "app.services.tilda_source_review",
                    "app.services.order_operations", "app.services.client_channel", "app.services.manager_workspace", "app.services.supply_service", "app.bot.procurement", "app.api.supply", "app.api.buying", "app.workers.supplier_replies", "app.workers.buying_notifications"):
         monkeypatch.setattr(importlib.import_module(module), "async_session", factory)
     monkeypatch.setattr(importlib.import_module("app.services.order_source_service"), "async_session", factory)

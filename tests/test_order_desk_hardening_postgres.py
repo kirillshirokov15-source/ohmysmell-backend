@@ -61,7 +61,7 @@ def test_confirmed_lifecycle_projects_to_desk_client_and_order_without_backfill(
                 desk=await s.get(OrderDesk,did)
                 assert desk.stage=='awaiting_payment'  # Historical storage untouched.
                 public=await public_status(s,desk)
-            assert label in public and f'Этап: {label}' in card and label in order_card(order)
+            assert label in public and f'Статус: {label}' in card and label in order_card(order)
             assert 'Ожидает оплаты' not in public+card
             assert not any(b.callback_data in (f'desk:payment:{did}',f'desk:claim:{did}') for row in kb.inline_keyboard for b in row)
             with pytest.raises(OperationError):
@@ -161,7 +161,7 @@ def test_unpaid_confirmed_order_can_be_cancelled_idempotently(desk_db):
         action=OrderAction(action='cancel',expected_revision=0,idempotency_key=uuid4().hex)
         for _ in range(2):await OrderOperations().act(order.id,actors[0],action)
         text,kb=await desk_card(did)
-        assert 'Этап: Отменён' in text
+        assert 'Статус: Отменён' in text
         assert not any(b.callback_data==f'desk:payment:{did}' for row in kb.inline_keyboard for b in row)
         async with factory() as s:
             assert 'Отменён' in await public_status(s,await s.get(OrderDesk,did))

@@ -13,6 +13,9 @@ from app.services.tilda_availability import availability, stock_label
 
 
 async def desk_card(draft_id, *, view="compact"):
+    from time import perf_counter
+    from app.services.telegram_metrics import observe
+    started = perf_counter()
     async with async_session() as session:
         desk = await session.get(OrderDesk, draft_id)
         draft = await session.scalar(select(DraftOrder).where(DraftOrder.id == draft_id).options(selectinload(DraftOrder.items)))
@@ -61,6 +64,17 @@ async def desk_card(draft_id, *, view="compact"):
             rows.append([{"text": "Ответить клиенту", "callback_data": f"desk:reply:{draft_id}"}])
         if not desk.order_id and draft.status != "rejected":
             if desk.manager_id:
+                if not draft.contact_details.get("tilda_source_data_confirmed"):
+                    rows.append([{"text": "Подтвердить позиции и сумму сайта", "callback_data": f"desk:checksource:{draft_id}:{draft.revision}"}])
+                else:
+                    for item in draft.items:
+                        intent = draft.contact_details.get("tilda_source_intents", {}).get(str(item.id), {})
+                        lines.append(f"Источник позиции {item.id}: " + {"own": "Свой склад", "own_x": "Склад X (собственный товар)",
+                            "external": "Внешние поставщики"}.get(intent.get("source"), "не выбран"))
+                        rows.append([{"text": f"#{item.id}: {label}", "callback_data": f"desk:src:{draft_id}:{draft.revision}:{item.id}:{value}"}
+                            for value, label in (("own", "Свой"), ("own_x", "Склад X"), ("external", "Поставщики"))])
+                        if not item.product_id:
+                            rows.append([{"text": f"#{item.id}: сопоставить товар", "callback_data": f"desk:findproduct:{draft_id}:{draft.revision}:{item.id}"}])
                 rows.append([{"text": "Ожидает подтверждения", "callback_data": f"desk:wait:{draft_id}"}])
                 if (draft.total is not None and draft.items and
                         not draft.contact_details.get("tilda_review_problems") and
@@ -73,7 +87,8 @@ async def desk_card(draft_id, *, view="compact"):
                 rows.append([{"text": "Уведомить: ожидает оплаты", "callback_data": f"desk:payment:{draft_id}"}])
         rows.append([{"text": "История действий", "callback_data": f"desk:history:{draft_id}"}])
         rows.append([{"text": "Все товары", "callback_data": f"desk:items:{draft_id}"}])
-        rows.append([{"text": "Обновить", "callback_data": f"desk:refresh:{draft_id}"}])
+        if not desk.order_id and draft.contact_details.get("tilda_review_problems"):
+            rows.append([{"text": "Повторить сверку данных", "callback_data": f"desk:recheck:{draft_id}"}])
         if view != "details":
             primary = next((b for action in ("claim", "confirm", "refresh") for row in rows for b in row
                 if b["callback_data"].startswith(f"desk:{action}:") and action != "refresh"), None)
@@ -95,6 +110,7 @@ async def desk_card(draft_id, *, view="compact"):
             rows.append([{"text": "Назад", "callback_data": f"desk:refresh:{draft_id}"}])
         # Bound in UTF-16 units, including astral emoji.
         text = "\n".join(lines).encode("utf-16-le")[:7800].decode("utf-16-le", errors="ignore")
+        observe("card_data", started)
         return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
 

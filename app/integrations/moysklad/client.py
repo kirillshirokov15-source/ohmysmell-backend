@@ -84,9 +84,18 @@ class MoySkladClient:
     def get_counterparty(self, counterparty_id):
         return self._get(f"entity/counterparty/{self._id(counterparty_id)}")
 
+    def create_directory_entry(self, entity, payload):
+        require_external_writes()
+        if entity not in {"product", "counterparty"}:
+            raise ValueError("Unsupported directory")
+        response = self.session.post(f"{self.base_url}/entity/{entity}",
+            headers=self.headers, json=payload, timeout=(5, 30))
+        response.raise_for_status()
+        return response.json()
+
     def create_document(self, entity, payload):
         require_external_writes()
-        if entity not in {"customerorder", "demand", "supply", "purchaseorder"}:
+        if entity not in {"customerorder", "demand", "supply", "purchaseorder", "enter"}:
             raise ValueError("Unsupported document entity")
         response = self.session.post(f"{self.base_url}/entity/{entity}",
             headers=self.headers, json=payload, timeout=(5, 30))
@@ -94,7 +103,7 @@ class MoySkladClient:
         return response.json()
 
     def find_documents(self, entity, operation_key):
-        if entity not in {'customerorder', 'demand', 'supply', 'purchaseorder'}:
+        if entity not in {'customerorder', 'demand', 'supply', 'purchaseorder', 'enter'}:
             raise ValueError('Unsupported document entity')
         if not re.fullmatch(r'[A-Za-z0-9:_-]{1,128}', operation_key):
             raise ValueError('Invalid operation key')
@@ -103,7 +112,7 @@ class MoySkladClient:
 
     def update_document(self, entity, identifier, payload):
         require_external_writes()
-        if entity not in {'customerorder', 'demand', 'supply', 'purchaseorder'}:
+        if entity not in {'customerorder', 'demand', 'supply', 'purchaseorder', 'enter'}:
             raise ValueError('Unsupported document entity')
         response = self.session.put(f'{self.base_url}/entity/{entity}/{self._id(identifier)}',
             headers=self.headers, json=payload, timeout=(5, 30))
