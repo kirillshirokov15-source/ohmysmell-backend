@@ -385,8 +385,19 @@ class DraftOrderService:
         return await self.review(draft_id, draft)
 
     async def link_counterparty(
-        self, draft_id: int, counterparty_id: str, counterparty_name: str
+        self, draft_id: int, counterparty_id: str, counterparty_name: str, *, require_candidate: bool = False
     ) -> DraftOrder:
+        current = await self._get_required(draft_id)
+        self._ensure_reviewable(current)
+        selected = next((c for c in current.counterparty_candidates if c.get("id") == counterparty_id), None)
+        fresh = await self.counterparty_service.async_gateway.get_counterparty(counterparty_id)
+        if (require_candidate and not selected) or fresh.get("id") != counterparty_id or fresh.get("archived"):
+            raise DraftOrderError("Контрагент недоступен. Повторите поиск.")
+        normalize = self.counterparty_service.normalize
+        if ((selected and any(normalize(selected.get(field)) != normalize(fresh.get(field)) for field in ("name", "inn", "email", "phone")))
+                or (not selected and normalize(counterparty_name) != normalize(fresh.get("name")))):
+            raise DraftOrderError("Реквизиты изменились. Повторите поиск и подтвердите выбор.")
+        counterparty_name = fresh.get("name") or counterparty_id
         draft = await self.repository.set_counterparty(
             draft_id, counterparty_id, counterparty_name
         )

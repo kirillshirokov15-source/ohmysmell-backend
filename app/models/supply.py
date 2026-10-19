@@ -1,7 +1,7 @@
 """Local supply overlay; product_id is the existing commercial catalog identity."""
 from datetime import datetime, date
 from decimal import Decimal
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, JSON, Numeric, String, func
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 from app.database.base import Base
 
@@ -70,9 +70,12 @@ class OrderItemSupply(Timestamps, Base):
 
 class XSettlement(Timestamps, Base):
     __tablename__ = "x_settlements"
+    __table_args__ = (Index("uq_x_legacy_item", "order_item_id", unique=True,
+        postgresql_where=text("allocation_id IS NULL"), sqlite_where=text("allocation_id IS NULL")),)
     id: Mapped[int] = mapped_column(primary_key=True)
     order_id: Mapped[int] = mapped_column(ForeignKey("orders.id", ondelete="CASCADE"), index=True)
-    order_item_id: Mapped[int] = mapped_column(ForeignKey("order_items.id", ondelete="CASCADE"), unique=True)
+    order_item_id: Mapped[int] = mapped_column(ForeignKey("order_items.id", ondelete="CASCADE"))
+    allocation_id: Mapped[int | None] = mapped_column(ForeignKey("warehouse_allocations.id"), unique=True)
     supplier_id: Mapped[int] = mapped_column(ForeignKey("suppliers.id"))
     base_cost_minor: Mapped[int] = mapped_column(BigInteger)
     sale_price_minor: Mapped[int] = mapped_column(BigInteger)

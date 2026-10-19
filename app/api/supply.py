@@ -9,8 +9,21 @@ from app.models.manager import Manager
 from app.models.supply import Supplier, ProductSupply, SupplierOffer
 from app.services.supply_service import ProcurementService, SupplyError
 from app.services.fx import FxError
+from app.schemas.order_sources import SourceAction
+from app.services.order_source_service import OrderSourceService
+from app.services.order_desk import DeskError, manager_chat
 
 router = APIRouter(prefix="/internal/supply", tags=["Internal supply"], dependencies=[Depends(require_internal_api_token)])
+
+
+class WarehouseDocumentAction(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    action: Literal['receipt','reserve','ship','release']
+    target_id: int = Field(gt=0, strict=True)
+    expected_revision: int = Field(ge=0, strict=True)
+    simulate: bool = True
+    reconcile: bool = False
+    receipt_cost_minor: int | None = Field(default=None,ge=0,le=10**12,strict=True)
 
 
 async def manager_access(x_manager_telegram_id: int = Header()):
@@ -18,6 +31,36 @@ async def manager_access(x_manager_telegram_id: int = Header()):
         if not await session.scalar(select(Manager.id).where(Manager.telegram_id == x_manager_telegram_id, Manager.is_active.is_(True))):
             raise HTTPException(403, detail="Нет доступа менеджера")
     return x_manager_telegram_id
+
+
+@router.post('/orders/{order_id}/warehouse-documents')
+async def warehouse_document(order_id: int, request: WarehouseDocumentAction, actor: int = Depends(manager_access)):
+    from app.services.warehouse_documents import WarehouseDocumentService
+    from app.integrations.moysklad.documents import FakeDocumentAdapter
+    from app.services.external_operation_service import ExternalOperationConflict
+    from app.integrations.write_guard import ExternalWritesDisabled
+    try:
+        return await WarehouseDocumentService(adapter=FakeDocumentAdapter() if request.simulate else None).act(
+            order_id, actor, manager_chat(), request.expected_revision, request.action, request.target_id,
+            reconcile=request.reconcile,receipt_cost_minor=request.receipt_cost_minor)
+    except (DeskError, ExternalOperationConflict, ExternalWritesDisabled, ValueError) as error:
+        raise HTTPException(409, detail=str(error)) from error
+
+
+@router.get("/orders/{order_id}/sources")
+async def order_sources(order_id: int, actor: int = Depends(manager_access)):
+    try:
+        return await OrderSourceService().read(order_id, actor, manager_chat())
+    except DeskError as error:
+        raise HTTPException(409, detail=str(error)) from error
+
+
+@router.post("/orders/{order_id}/sources")
+async def order_sources_action(order_id: int, payload: SourceAction, actor: int = Depends(manager_access)):
+    try:
+        return await OrderSourceService().act(order_id, actor, manager_chat(), payload)
+    except DeskError as error:
+        raise HTTPException(409, detail=str(error)) from error
 
 
 class StrictBody(BaseModel):

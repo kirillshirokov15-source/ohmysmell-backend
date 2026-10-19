@@ -1,6 +1,6 @@
 """Local fulfillment plans; none of these records reserve external inventory."""
 from datetime import datetime
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, JSON, String, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, JSON, String, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database.base import Base
 
@@ -23,13 +23,27 @@ class Shipment(Base):
 class WarehouseAllocation(Base):
     __tablename__ = "warehouse_allocations"
     __table_args__ = (
-        UniqueConstraint("shipment_id", "order_item_id", name="uq_allocation_shipment_item"),
         CheckConstraint("qty > 0", name="ck_warehouse_allocations_qty"),
+        Index("uq_allocation_legacy_item", "shipment_id", "order_item_id", unique=True,
+              postgresql_where=text("NOT managed_source"), sqlite_where=text("NOT managed_source")),
+        CheckConstraint("source_type IN ('own','own_x','partner_x','external')", name="ck_allocation_source"),
+        CheckConstraint("supply_status IN ('awaiting_receipt','received','confirmed','cancelled')", name="ck_allocation_supply_status"),
     )
     id: Mapped[int] = mapped_column(primary_key=True)
     shipment_id: Mapped[int] = mapped_column(ForeignKey("shipments.id", ondelete="CASCADE"), index=True)
     order_item_id: Mapped[int] = mapped_column(ForeignKey("order_items.id", ondelete="CASCADE"), index=True)
     qty: Mapped[int] = mapped_column(Integer)
+    # Legacy allocations keep their previous semantics; explicit source parts
+    # use managed_source=True and require the receipt/confirmation checks.
+    managed_source: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    source_type: Mapped[str] = mapped_column(String(20), default="own", server_default="own")
+    supply_status: Mapped[str] = mapped_column(String(20), default="confirmed", server_default="confirmed")
+    supplier_id: Mapped[int | None] = mapped_column(ForeignKey("suppliers.id"))
+    buying_purchase_id: Mapped[int | None] = mapped_column(ForeignKey("buying_purchases.id"), index=True)
+    receipt_simulated: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    receipt_reference: Mapped[str | None] = mapped_column(String(255))
+    own_cost_minor: Mapped[int | None] = mapped_column(BigInteger)
+    buying_purchase: Mapped["BuyingPurchase"] = relationship()
 
 
 class CheckoutRequest(Base):

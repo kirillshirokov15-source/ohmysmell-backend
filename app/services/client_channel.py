@@ -18,7 +18,7 @@ from app.models.sales import CustomerIdentityType
 from app.logging_utils import log_event
 
 logger = logging.getLogger(__name__)
-MENU = "Заявки OhMySmell\n/request — новая заявка\n/status НОМЕР — статус своей заявки\n/manager — связаться с менеджером\n/cancel — отменить ввод\nЦены и наличие подтвердит менеджер."
+MENU = "Выберите действие в меню. Цены и наличие подтвердит менеджер."
 
 
 def parse_items(value):
@@ -38,6 +38,12 @@ def parse_items(value):
 
 
 class ClientChannel:
+    async def keyboard(self, telegram_id):
+        from app.bot.client_menu import client_keyboard
+        async with async_session() as session:
+            conversation = await session.get(ClientConversation, telegram_id)
+            return client_keyboard(intake=conversation.state if conversation else False)
+
     async def handle(self, telegram_id: int, message_id: int, text: str, *, name="Клиент Telegram", verified_phone=None):
         if telegram_id <= 0 or message_id <= 0:
             raise ValueError("Invalid Telegram envelope")
@@ -63,6 +69,18 @@ class ClientChannel:
 
     async def _handle(self, session, conversation, key, text, name, verified_phone):
         tid = conversation.telegram_id
+        aliases = {"💬 Написать менеджеру": "/manager", "Новая заявка": "/request",
+                   "Отправить заявку": "/send", "Отмена": "/cancel"}
+        text = aliases.get(text, text)
+        if text in {"📦 Мои заказы", "🔎 Статус заказа"}:
+            drafts = list((await session.scalars(select(DraftOrder).where(DraftOrder.source == "telegram",
+                DraftOrder.contact_details["telegram"].as_string() == str(tid))
+                .order_by(DraftOrder.id.desc()).limit(10))).all())
+            conversation.state = "lookup"
+            return "\n".join([f"Заявка №{d.id}" for d in drafts]) + "\nВведите номер заявки." if drafts else "Заявок пока нет. Нажмите «Новая заявка»."
+        if conversation.state == "lookup" and text.isascii() and text.isdigit():
+            text = "/status " + text
+
         if text in {"/start", "/help"}:
             return MENU
         if text == "/cancel":
@@ -75,7 +93,7 @@ class ClientChannel:
             try:
                 draft_id = int(text.split()[1])
             except (IndexError, ValueError):
-                return "Формат: /status НОМЕР_ЗАЯВКИ"
+                return "Введите номер своей заявки."
             if not 1 <= draft_id <= 2147483647:
                 return "Заявка не найдена среди ваших заявок."
             draft = await session.get(DraftOrder, draft_id)
@@ -84,8 +102,9 @@ class ClientChannel:
                 return "Заявка не найдена среди ваших заявок."
             if draft.finalized_order_id:
                 order = await session.get(Order, draft.finalized_order_id)
-                from app.services.manager_workspace import FULFILLMENT_LABELS, PAYMENT_LABELS
-                return f"Заявка №{draft.id}, заказ №{order.id}: {FULFILLMENT_LABELS[order.fulfillment_status]}. {PAYMENT_LABELS[order.payment_status]}."
+                from types import SimpleNamespace
+                from app.services.desk_status import public_summary
+                return public_summary(SimpleNamespace(draft_id=draft.id, order_id=order.id), draft, order)
             return f"Заявка №{draft.id}: " + ("отклонена; свяжитесь с менеджером." if draft.status == "rejected" else "менеджер проверяет товары, наличие и условия.")
         if text == "/manager":
             drafts = list((await session.execute(select(DraftOrder).where(DraftOrder.source == "telegram",
@@ -93,7 +112,7 @@ class ClientChannel:
                 .order_by(DraftOrder.id.desc()).limit(1))).scalars())
             own = next((d for d in drafts if (d.contact_details or {}).get("telegram") == str(tid)), None)
             if not own:
-                return "Создайте /request и укажите контакт. Менеджер свяжется с вами по заявке."
+                return "Нажмите «Новая заявка» и укажите контакт. Менеджер свяжется с вами по заявке."
             notice = (await session.execute(select(DraftNotification).where(DraftNotification.draft_id == own.id).with_for_update())).scalar_one_or_none()
             if notice:
                 notice.status, notice.available_at = "pending", datetime.now(timezone.utc)
@@ -111,10 +130,10 @@ class ClientChannel:
             data["contact"] = verified_phone or text
             data["verified_phone"] = verified_phone
             conversation.data, conversation.state = data, "confirm"
-            return "Проверьте заявку:\n" + "\n".join(f"{i['name']} × {i['qty']}" for i in data["items"])[:3000] + "\n/send — отправить; /cancel — отменить. Цену подтвердит менеджер."
+            return "Проверьте заявку:\n" + "\n".join(f"{i['name']} × {i['qty']}" for i in data["items"])[:3000] + "\nНажмите «Отправить заявку» или «Отмена». Цену подтвердит менеджер."
         if conversation.state == "confirm" and text == "/send":
             return await self._submit(session, conversation, key, name)
-        return "Для новой заявки: /request. Для отправки подготовленной: /send."
+        return "Нажмите «Новая заявка» или продолжите заполнение."
 
     async def _submit(self, session, conversation, key, name):
         data, tid = conversation.data, conversation.telegram_id
@@ -133,7 +152,7 @@ class ClientChannel:
         customers = list((await session.execute(select(Customer).join(CustomerIdentity).where(
             tuple_(CustomerIdentity.identity_type, CustomerIdentity.normalized_value).in_(identities)))).scalars().unique())
         if len(customers) > 1:
-            return "Контакты относятся к разным профилям. Отправьте контакт текстом для проверки менеджером: /request."
+            return "Контакты относятся к разным профилям. Отправьте контакт текстом для проверки менеджером в новой заявке."
         # An unverified contact can route a request to a known profile, like the
         # website intake. It cannot attach a new identity or expose profile data.
         claimed_customer = None
@@ -169,4 +188,4 @@ class ClientChannel:
         session.add(DraftNotification(draft_id=draft.id))
         conversation.state, conversation.data = "idle", {}
         log_event(logger, "draft_created", draft_id=draft.id, action="telegram_intake", result="pending_commit")
-        return f"Заявка №{draft.id} принята. Менеджер подтвердит цену и наличие.\n/status {draft.id} — статус; /manager — связь с менеджером."
+        return f"Заявка №{draft.id} принята. Менеджер подтвердит цену и наличие."

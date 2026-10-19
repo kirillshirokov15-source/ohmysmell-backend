@@ -121,9 +121,9 @@ def test_telegram_normalization(value):
 
 
 def test_card_displays_two_warehouses_and_context_actions():
-    from app.services.manager_workspace import order_card, order_keyboard
+    from app.services.manager_workspace import order_details_card as order_card, available_order_keyboard as order_keyboard
     item = SimpleNamespace(id=1, name="Свеча", qty=4, price=2500, item_total=10000)
-    plans = [SimpleNamespace(warehouse_id=w, allocations=[SimpleNamespace(order_item_id=1, qty=2)]) for w in ("w1", "w2")]
+    plans = [SimpleNamespace(warehouse_id=w, status="planned", allocations=[SimpleNamespace(order_item_id=1, qty=2)]) for w in ("w1", "w2")]
     o = order(items=[item])
     card = order_card(o, plans)
     assert "Склад 1" in card and "Склад 2" in card and "Свеча: 2 шт." in card
@@ -238,23 +238,24 @@ def test_operational_api_requires_actor_and_forbids_price(monkeypatch):
     assert asyncio.run(request(app, "POST", "/orders/1/actions", payload, headers))[0] == 422
 
 
-def test_order_edit_failure_sends_fresh_card_without_repeating_action():
+def test_order_publishes_fresh_card_without_repeating_action():
     from app.bot import telegram_bot as bot
     from aiogram.exceptions import TelegramBadRequest
     o = order(payment_status="paid", revision=1)
-    callback = SimpleNamespace(answer=AsyncMock(), from_user=SimpleNamespace(id=1), data="order:paid:1:0",
-        message=SimpleNamespace(edit_text=AsyncMock(side_effect=TelegramBadRequest(method=SimpleNamespace(), message="message to edit not found")), answer=AsyncMock()))
+    callback = SimpleNamespace(answer=AsyncMock(), from_user=SimpleNamespace(id=1), data="order:paid:1:0", bot=SimpleNamespace(),
+        message=SimpleNamespace(chat=SimpleNamespace(id=1), message_id=10, answer=AsyncMock()))
     service = SimpleNamespace(act=AsyncMock(return_value=o))
-    with patch.object(bot.manager_repository, "is_active_by_telegram_id", AsyncMock(return_value=True)), patch.object(bot, "get_order", AsyncMock(return_value=order())), patch.object(bot, "OrderOperations", return_value=service), patch.object(bot, "shipments_for", AsyncMock(return_value=[])):
+    with patch.object(bot.manager_repository, "is_active_by_telegram_id", AsyncMock(return_value=True)), patch.object(bot, "get_order", AsyncMock(return_value=order())), patch.object(bot, "OrderOperations", return_value=service), patch.object(bot, "shipments_for", AsyncMock(return_value=[])), patch.object(bot, "supply_order_card", AsyncMock(return_value="card")), patch("app.services.telegram_cards.obsolete", AsyncMock(return_value=False)), patch("app.services.telegram_cards.publish", AsyncMock()) as publish:
         asyncio.run(bot.order_callback(callback))
     service.act.assert_awaited_once()
-    callback.message.answer.assert_awaited_once()
+    publish.assert_awaited_once()
+    callback.message.answer.assert_not_awaited()
 
 
 def test_temporary_order_db_failure_has_russian_message_without_secret():
     from app.bot import telegram_bot as bot
-    callback = SimpleNamespace(answer=AsyncMock(), from_user=SimpleNamespace(id=1), data="order:refresh:1:0", message=SimpleNamespace(answer=AsyncMock()))
-    with patch.object(bot.manager_repository, "is_active_by_telegram_id", AsyncMock(return_value=True)), patch.object(bot, "get_order", AsyncMock(side_effect=RuntimeError("private DB credential"))):
+    callback = SimpleNamespace(answer=AsyncMock(), from_user=SimpleNamespace(id=1), data="order:refresh:1:0", message=SimpleNamespace(chat=SimpleNamespace(id=1), message_id=10, answer=AsyncMock()))
+    with patch.object(bot.manager_repository, "is_active_by_telegram_id", AsyncMock(return_value=True)), patch("app.services.telegram_cards.obsolete", AsyncMock(return_value=False)), patch.object(bot, "get_order", AsyncMock(side_effect=RuntimeError("private DB credential"))):
         asyncio.run(bot.order_callback(callback))
     assert "временно недоступен" in callback.message.answer.call_args.args[0]
     assert "credential" not in callback.message.answer.call_args.args[0]
@@ -302,11 +303,13 @@ def test_manager_email_projection_preserves_existing_identity():
 
 
 def test_manager_menu_exposes_all_daily_sections_in_russian():
-    from app.bot.telegram_bot import main_menu
-    labels = {button.text for row in main_menu.keyboard for button in row}
-    assert {"📦 Новые заказы", "Требуют проверки", "Готовые заявки", "В сборке", "Собранные", "Отгруженные", "Неоплаченные", "Оплаченные", "Отменённые", "Поиск заказа"} <= labels
+    from app.bot.manager_menu import menu_options
+    menu = menu_options(SimpleNamespace(chat=SimpleNamespace(type="private")))["reply_markup"]
+    labels = {button.text for row in menu.keyboard for button in row}
+    assert labels == {"📦 Заказы", "🔎 Найти заказ", "☰ Ещё"}
+    assert menu.resize_keyboard
 
 
 def test_order_card_contains_email():
-    from app.services.manager_workspace import order_card
+    from app.services.manager_workspace import order_details_card as order_card
     assert "Email: existing@example.invalid" in order_card(order(customer_email="existing@example.invalid"))

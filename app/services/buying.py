@@ -117,7 +117,7 @@ async def confirm_import(session, supplier_id, import_id, mappings=None):
         else:
             product_id = row["product_id"]
             if not product_id:
-                candidates = (await session.scalars(select(BuyingProduct).where(BuyingProduct.normalized_name == normalize(row["name"])))).all()
+                candidates = [] if record.source_key else (await session.scalars(select(BuyingProduct).where(BuyingProduct.normalized_name == normalize(row["name"])))).all()
                 if len(candidates) > 1:
                     fail("Product mapping became ambiguous; upload again")
                 product_id = candidates[0].product_id if candidates else "buying-" + str(uuid4())
@@ -187,14 +187,47 @@ async def checkout_confirm(session, key, expected, actor):
         fail("Cart or prices changed; review a new preview")
     ids = []
     for snapshot in preview["suppliers"]:
-        purchase = BuyingPurchase(supplier_id=snapshot["supplier_id"], snapshot=snapshot, status="draft", send_state="disabled")
-        session.add(purchase)
-        await session.flush()
+        purchase = await create_purchase(session, snapshot, actor)
         ids.append(purchase.id)
-        session.add(BuyingEvent(purchase_id=purchase.id, action="created", actor=actor))
     session.add(BuyingCheckout(key=key, fingerprint=expected, purchase_ids=ids))
     await session.execute(delete(BuyingCart))
     return ids
+
+
+async def create_purchase(session, snapshot, actor):
+    """Shared purchase creation; caller owns transaction and idempotency lock.
+
+    Both shared-cart checkout and explicit order allocations use this path. No
+    customer contacts or selling prices are copied into the supplier snapshot.
+    """
+    purchase = BuyingPurchase(supplier_id=snapshot["supplier_id"], snapshot=snapshot,
+                              status="draft", send_state="disabled")
+    session.add(purchase)
+    await session.flush()
+    session.add(BuyingEvent(purchase_id=purchase.id, action="created", actor=actor))
+    return purchase
+
+
+async def cancel_unsubmitted_purchase(session, identifier, actor):
+    """Cancelling a source may withdraw its exclusive, still-unsent purchase.
+
+    A sent/received purchase is retained for reconciliation, never undone by
+    pretending that an already ordered or received quantity disappeared.
+    """
+    await lock(session)
+    purchase = await purchase_get(session, identifier)
+    await session.refresh(purchase, with_for_update=True)
+    # A purchase can supply multiple orders. Cancelling one portion must not
+    # cancel another order's purchase. The caller marks its portion cancelled.
+    from app.models.fulfillment import WarehouseAllocation, Shipment
+    active = await session.scalar(select(func.count()).select_from(WarehouseAllocation).join(Shipment).where(
+        WarehouseAllocation.buying_purchase_id == identifier, WarehouseAllocation.supply_status != 'cancelled',
+        Shipment.status != 'cancelled'))
+    if active:
+        return
+    if purchase.status == "draft" and purchase.send_state not in {'inflight','uncertain'}:
+        purchase.status = "cancelled"
+        session.add(BuyingEvent(purchase_id=purchase.id, action="cancelled", actor=actor))
 
 
 async def purchase_get(session, identifier):
@@ -216,6 +249,8 @@ async def simulate_send(session, identifier, actor):
     p = await purchase_get(session, identifier)
     if p.send_state == "simulated":
         return p
+    if p.send_state in {'inflight','uncertain'}:
+        fail('Sending result requires reconciliation')
     if p.status != "draft":
         fail("Purchase cannot be sent")
     sent = await FakeSupplierEmailSender().send(key=str(p.id), recipient=p.snapshot["recipient"], body=p.snapshot["email_body"])
@@ -231,7 +266,7 @@ async def receive(session, identifier, actor):
     p = await purchase_get(session, identifier)
     if p.status == "received":
         return p
-    if p.status != "sent":
+    if p.status not in {"sent", "confirmed"}:
         fail("Only sent purchases can be received")
     p.status, p.received_at = "received", now()
     if isinstance(actor, dict):
@@ -241,6 +276,18 @@ async def receive(session, identifier, actor):
         actor = f"user:{actor['id']}"
     p.external_ids = {**p.external_ids, **await FakeProcurementAdapter().receipt(p.id)}
     session.add(BuyingEvent(purchase_id=p.id, action="received", actor=actor))
+    return p
+
+
+async def confirm_supplier(session, identifier, actor):
+    await lock(session)
+    p = await purchase_get(session, identifier)
+    if p.status in {'confirmed', 'received'}:
+        return p
+    if p.status != 'sent':
+        fail('Only sent purchases can be confirmed')
+    p.status = 'confirmed'
+    session.add(BuyingEvent(purchase_id=p.id, action='supplier_confirmed', actor=actor))
     return p
 
 

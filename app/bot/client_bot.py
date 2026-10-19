@@ -3,6 +3,7 @@ import logging
 from aiogram import Dispatcher, Router
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 from app.services.client_channel import ClientChannel
+from app.bot.client_menu import client_keyboard
 from app.logging_utils import log_event
 
 logger = logging.getLogger(__name__)
@@ -42,9 +43,9 @@ def create_dispatcher(service=None):
         try:
             reply = await channel.handle(message.from_user.id, message.message_id, message.text or "Контакт",
                 name=message.from_user.full_name, verified_phone=phone)
-            await message.answer(reply, reply_markup=ReplyKeyboardMarkup(keyboard=[
-                [KeyboardButton(text="Мой контакт", request_contact=True)]], resize_keyboard=True))
+            keyboard = await channel.keyboard(message.from_user.id) if isinstance(channel, ClientChannel) else client_keyboard()
+            await message.answer(reply, reply_markup=keyboard)
         except Exception as error:
             log_event(logger, "client_request_failed", level=logging.ERROR, result=type(error).__name__)
-            await message.answer("Сервис временно недоступен. Повторите сообщение; /status НОМЕР проверит уже отправленную заявку.")
+            await message.answer("Сервис временно недоступен. Попробуйте ещё раз.")
     return dp

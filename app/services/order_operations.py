@@ -131,24 +131,56 @@ class OrderOperations:
                     XSettlement.order_id == order_id, XSettlement.status == "requires_financial_review"))
                 if financial_review:
                     raise OperationError("Продажа ниже стоимости X требует отдельного финансового решения; обычная проверка не снимает блокировку.")
-            if request.action == "assembling" and not order.manual_fulfillment:
+            if request.action in {"assembling", "shipped"}:
+                from app.models.fulfillment import WarehouseAllocation
+                from app.services.order_source_service import allocation_ready
                 plans = list((await session.execute(select(Shipment).where(Shipment.order_id == order_id)
-                    .options(selectinload(Shipment.allocations)))).scalars())
+                    .options(selectinload(Shipment.allocations).selectinload(WarehouseAllocation.buying_purchase)))).scalars())
                 quantities = {}
                 for plan in plans:
-                    if plan.status == "cancelled":
+                    if plan.status not in {"planned", "exported"}:
                         continue
+                    from app.config.settings import settings
+                    if settings.external_writes_enabled:
+                        from app.services.warehouse_documents import plan_key
+                        from app.models.fulfillment import ExternalOperation
+                        reserve = await session.get(ExternalOperation, plan_key(plan,'reserve',False))
+                        release = await session.get(ExternalOperation, plan_key(plan,'release',False))
+                        if not reserve or reserve.status!='succeeded' or release:
+                            raise OperationError('Подтверждённый внешний резерв отсутствует.')
+                        if request.action=='shipped' and (plan.status!='exported' or not plan.external_id):
+                            raise OperationError('Документ отгрузки не подтверждён.')
                     for allocation in plan.allocations:
+                        if allocation.supply_status == "cancelled" or not allocation_ready(allocation, manual=order.manual_fulfillment):
+                            continue
                         quantities[allocation.order_item_id] = quantities.get(allocation.order_item_id, 0) + allocation.qty
                 from app.services.supply_service import ready_supply_quantities, SupplyError
                 try:
-                    quantities.update(await ready_supply_quantities(session, order_id))
+                    if not order.manual_fulfillment:
+                        quantities.update(await ready_supply_quantities(session, order_id))
                 except SupplyError as error:
                     raise OperationError(str(error)) from error
                 if quantities != {item.id: item.qty for item in order.items}:
                     raise OperationError("Сначала распределите все товары по складам.")
+            if request.action == 'cancel':
+                from app.services.warehouse_documents import frozen_plan
+                from app.services.order_source_service import source_plans
+                if any([await frozen_plan(session,p) for p in await source_plans(session,order_id)]):
+                    raise OperationError('Сначала сверить и снять внешний резерв.')
             apply_action(order, request, manager.id, datetime.now(timezone.utc))
             if request.action == "cancel":
+                if order.manual_fulfillment:
+                    from app.services.order_source_service import source_plans
+                    from app.services.buying import cancel_unsubmitted_purchase
+                    for plan in await source_plans(session, order.id):
+                        for allocation in plan.allocations:
+                            if allocation.managed_source:
+                                allocation.supply_status = "cancelled"
+                                await session.flush()
+                                if allocation.buying_purchase_id:
+                                    await cancel_unsubmitted_purchase(session, allocation.buying_purchase_id, f"telegram:{telegram_id}")
+                                allocation.supply_status = "cancelled"
+                        plan.status = "cancelled"
                 from app.models.supply import ProcurementRequest, SupplyEvent
                 procurements = list((await session.scalars(select(ProcurementRequest).where(
                     ProcurementRequest.order_id == order_id,

@@ -33,7 +33,7 @@ async def confirmed(factory,actors):
 
 def test_confirmed_lifecycle_projects_to_desk_client_and_order_without_backfill(desk_db):
     from app.services.manager_workspace import order_card
-    from app.models.fulfillment import Shipment,ExternalOperation
+    from app.models.fulfillment import Shipment,ExternalOperation,WarehouseAllocation
     from app.models.supply import ProcurementRequest
     factory,engine,actors=desk_db
     async def run():
@@ -46,6 +46,14 @@ def test_confirmed_lifecycle_projects_to_desk_client_and_order_without_backfill(
             ('delivery',{'delivery_status':'delivered'},'Доставлен')]
         for action,extra,label in steps:
             request=OrderAction(action=action,expected_revision=order.revision,idempotency_key=uuid4().hex,**extra)
+            if action == 'assembling':
+                with pytest.raises(OperationError, match='складам'):
+                    await ops.act(order.id,actors[0],request)
+                # Synthetic source evidence to test downstream projections.
+                async with factory() as s,s.begin():
+                    shipment=Shipment(order_id=order.id,warehouse_id='synthetic-projection-source')
+                    shipment.allocations=[WarehouseAllocation(order_item_id=i.id,qty=i.qty,managed_source=True) for i in order.items]
+                    s.add(shipment)
             order=await ops.act(order.id,actors[0],request)
             assert (await ops.act(order.id,actors[0],request)).revision==order.revision
             card,kb=await desk_card(did)
@@ -53,7 +61,9 @@ def test_confirmed_lifecycle_projects_to_desk_client_and_order_without_backfill(
                 desk=await s.get(OrderDesk,did)
                 assert desk.stage=='awaiting_payment'  # Historical storage untouched.
                 public=await public_status(s,desk)
-            assert label in public and f'Этап: {label}' in card and label in order_card(order)
+            client_label = {'В сборке': 'Собираем ваш заказ', 'Собран': 'Готов к отправке',
+                            'Отгружен': 'Передан в доставку'}.get(label, label)
+            assert client_label in public and f'Статус: {label}' in card and label in order_card(order)
             assert 'Ожидает оплаты' not in public+card
             assert not any(b.callback_data in (f'desk:payment:{did}',f'desk:claim:{did}') for row in kb.inline_keyboard for b in row)
             with pytest.raises(OperationError):
@@ -67,8 +77,8 @@ def test_confirmed_lifecycle_projects_to_desk_client_and_order_without_backfill(
                 assert 'Доставлен' in ack.body and 'Ожидает оплаты' not in ack.body
             assert await s.scalar(select(func.count()).select_from(OrderEvent).where(OrderEvent.order_id==order.id))==6
             assert await s.scalar(select(func.count()).select_from(DeskEvent).where(DeskEvent.draft_id==did,DeskEvent.action=='tilda_review_approved'))==1
-            for model in (Shipment,ProcurementRequest):
-                assert await s.scalar(select(func.count()).select_from(model).where(model.order_id==order.id))==0
+            assert await s.scalar(select(func.count()).select_from(Shipment).where(Shipment.order_id==order.id))==1
+            assert await s.scalar(select(func.count()).select_from(ProcurementRequest).where(ProcurementRequest.order_id==order.id))==0
             assert await s.scalar(select(func.count()).select_from(ExternalOperation))==external_before
         await engine.dispose()
     asyncio.run(run())
@@ -153,7 +163,7 @@ def test_unpaid_confirmed_order_can_be_cancelled_idempotently(desk_db):
         action=OrderAction(action='cancel',expected_revision=0,idempotency_key=uuid4().hex)
         for _ in range(2):await OrderOperations().act(order.id,actors[0],action)
         text,kb=await desk_card(did)
-        assert 'Этап: Отменён' in text
+        assert 'Статус: Отменён' in text
         assert not any(b.callback_data==f'desk:payment:{did}' for row in kb.inline_keyboard for b in row)
         async with factory() as s:
             assert 'Отменён' in await public_status(s,await s.get(OrderDesk,did))
@@ -258,7 +268,9 @@ def test_manager_help_history_and_client_blank_input_are_authorized(desk_db):
             return Update.model_validate({'update_id':1,'message':{'message_id':1,'date':1,
                 'chat':{'id':chat,'type':'supergroup'},'from':{'id':actor,'is_bot':False,'first_name':'Synthetic'},'text':'/help'}})
         await dp.feed_update(bot,help_update(CHAT,actors[0]))
-        assert '/site НОМЕР' in transport.calls[-1].text and '/procurements' in transport.calls[-1].text
+        assert 'Выберите заказ' in transport.calls[-1].text
+        assert {button.callback_data for row in transport.calls[-1].reply_markup.inline_keyboard
+                for button in row} == {'orders:all:0', 'draftpage:needs_review:0'}
         count=len(transport.calls)
         await dp.feed_update(bot,help_update(-999,actors[0]))
         await dp.feed_update(bot,help_update(CHAT,333))
@@ -271,6 +283,6 @@ def test_manager_help_history_and_client_blank_input_are_authorized(desk_db):
         async with factory() as s:
             assert await s.scalar(select(func.count()).select_from(DeskEvent).where(DeskEvent.draft_id==did))==before
             response=await s.scalar(select(DeskMessage).where(DeskMessage.idempotency_key==f'desk:client:{customer}:90:ack'))
-            assert 'Сообщение пустое' in response.body
+            assert 'Выберите действие в меню' in response.body
         await bot.session.close();await engine.dispose()
     asyncio.run(run())

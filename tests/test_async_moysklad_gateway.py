@@ -114,16 +114,13 @@ def test_counterparty_search_uses_non_blocking_gateway():
                 *args, **kwargs
             ),
         ) as to_thread:
-            result = await service.candidates_async("private query")
+            result = await service.candidates_async("Customer")
         return result, to_thread
 
     result, to_thread = asyncio.run(run())
-    assert result == [
-        {"id": "c1", "name": "Customer", "email": None, "phone": None}
-    ]
-    to_thread.assert_called_once_with(
-        provider.search_counterparties, "private query"
-    )
+    assert len(result) == 1 and result[0]["id"] == "c1"
+    assert result[0]["reason"]
+    to_thread.assert_any_call(provider.search_counterparties, "customer")
 
 
 def test_async_product_matching_preserves_matching_result():

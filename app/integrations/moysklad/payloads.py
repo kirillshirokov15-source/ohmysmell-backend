@@ -36,3 +36,29 @@ def demand(organization_id, counterparty_id, warehouse_id, customer_order_id, it
     payload["store"] = reference("store", warehouse_id)
     payload["customerOrder"] = reference("customerorder", customer_order_id)
     return payload
+
+
+def reservation(organization_id, counterparty_id, warehouse_id, items, operation_key):
+    payload = customerorder(organization_id, counterparty_id, items, operation_key=operation_key)
+    payload['store'] = reference('store', warehouse_id)
+    for position in payload['positions']:
+        position['reserve'] = position['quantity']
+    return payload
+
+
+def supply(organization_id, supplier_id, warehouse_id, items, operation_key, purchase_order_id=None):
+    """Receipt costs are purchase costs, never the customer's retail prices."""
+    payload = customerorder(organization_id, supplier_id, items, operation_key=operation_key)
+    payload['store'] = reference('store', warehouse_id)
+    payload['applicable'] = True
+    if purchase_order_id:
+        payload['purchaseOrder'] = reference('purchaseorder', purchase_order_id)
+    return payload
+
+
+def inventory_enter(organization_id, warehouse_id, items, operation_key):
+    """Owned inventory recognition has no supplier or purchase relationship."""
+    payload = customerorder(organization_id, organization_id, items, operation_key=operation_key)
+    payload.pop("agent")
+    payload.update(store=reference("store", warehouse_id), applicable=True)
+    return payload

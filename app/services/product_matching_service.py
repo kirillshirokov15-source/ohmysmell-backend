@@ -110,6 +110,19 @@ class ProductMatchingService:
     async def match_async(self, raw_product_text: str, qty: int) -> ProductMatch:
         return self._match(await self.products_async(), raw_product_text, qty)
 
+    @staticmethod
+    def match_sku(products: list[dict], sku: str, qty: int) -> ProductMatch:
+        """Exact, case-sensitive identifiers; article and code have equal priority."""
+        query = sku.strip()
+        matches = {p["id"]: p for p in products if p.get("id") and not p.get("archived")
+                   and query and any(str(p.get(key) or "").strip() == query
+                                     for key in ("article", "code"))}
+        if len(matches) == 1:
+            return ProductMatch(sku, qty, ProductMatchStatus.MATCHED, next(iter(matches.values())), ())
+        candidates = tuple(ProductMatchingService._candidate(p, 1.0) for p in matches.values())
+        return ProductMatch(sku, qty, ProductMatchStatus.AMBIGUOUS if matches
+                            else ProductMatchStatus.NOT_FOUND, None, candidates)
+
     def _match(
         self, products: list[dict], raw_product_text: str, qty: int
     ) -> ProductMatch:

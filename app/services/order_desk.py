@@ -17,7 +17,8 @@ from app.models.order import Order
 from app.models.order_desk import OrderDesk, OrderLink, DeskEvent, DeskMessage
 from app.models.operations import ClientUpdate
 from app.services.checkout_service import transaction_lock
-from app.integrations.tilda import digest, product_map
+from app.integrations.tilda import digest
+from app.services.tilda_review import (review, apply_review, source_rows, confirmation_problems, ITEM_FIELDS)
 from app.logging_utils import log_event
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,21 @@ def audit(session, desk, action, actor=None, **details):
     log_event(logger, action, draft_id=desk.draft_id, actor_telegram_id=actor, result="pending_commit")
 
 
+async def client_navigation_desks(session, actor):
+    """Navigation has a real owned order context; never bypass outbox scope.
+
+With a staging draft scope, neither the list nor its keyboard may borrow an
+approved draft's envelope to show orders outside that scope. Message-ID-only
+approval still requires explicit approval of the individual outbox row.
+"""
+    from app.services.desk_delivery_policy import DeskDeliveryPolicy
+    policy = DeskDeliveryPolicy.load("client")
+    query = select(OrderDesk).where(OrderDesk.customer_telegram_id == actor)
+    if policy.restricted and policy.draft_ids:
+        query = query.where(OrderDesk.draft_id.in_(policy.draft_ids))
+    return (await session.scalars(query.order_by(OrderDesk.draft_id.desc()).limit(10))).all()
+
+
 class TildaIntake:
     async def submit(self, payload):
         fingerprint = digest(payload)
@@ -97,8 +113,7 @@ class TildaIntake:
                 received_at=now(), processing_status="processed", customer_id=customer.id)
             session.add(inbound)
             await session.flush()
-            mapping = product_map()
-            problems = list(payload["problems"])
+            rows, total, problems = await review(payload)
             draft = DraftOrder(inbound_message_id=inbound.id, customer_id=customer.id, source="website",
                 customer_type="retail", customer_name=payload["name"] or "Клиент сайта", sender_email=email,
                 subject="Заказ Tilda", status="needs_review", counterparty_candidates=[],
@@ -107,22 +122,12 @@ class TildaIntake:
                     "discount_minor": payload["discount"], "currency": payload["currency"],
                     "external_products": [i["externalid"] for i in payload["items"]]})
             for row in payload["items"]:
-                product = mapping.get(row["externalid"])
-                price = product["retail_price_minor"] if product else None
-                if not product or price is None:
-                    problems.append("retail_mapping_required")
-                elif price != row["price_minor"]:
-                    problems.append("retail_price_mismatch")
-                draft.items.append(DraftOrderItem(raw_product_text=row["name"], qty=row["qty"],
-                    product_id=product["product_id"] if product else None, product_name=row["name"],
-                    price=price, item_total=price * row["qty"] if price is not None else None,
-                    match_status="matched" if product else "not_found", candidates=[]))
-            if payload["discount"]:
-                problems.append("discount_requires_agreement")
-            draft.total = sum(i.item_total for i in draft.items) if not problems else None
-            draft.review_notes = ", ".join(sorted(set(problems))) or "Подтвердите наличие, розничную сумму и условия с клиентом."
+                draft.items.append(DraftOrderItem(raw_product_text=row["name"], qty=row["qty"]))
+            apply_review(draft, rows, total, problems)
             session.add(draft)
             await session.flush()
+            draft.contact_details = {**draft.contact_details,
+                "tilda_item_sources": {str(item.id): n for n, item in enumerate(draft.items)}}
             desk = OrderDesk(draft_id=draft.id, external_id=payload["external_id"], payload_hash=fingerprint)
             session.add(desk)
             await session.flush()
@@ -147,8 +152,6 @@ class DeskService:
             desk.manager_id, desk.actor_telegram_id, desk.assigned_at = manager.id, actor, now()
             desk.stage = "working"
             audit(session, desk, "manager_claim_succeeded", actor)
-            enqueue(session, draft_id=draft_id, key=f"claim:{draft_id}", direction="to_manager", destination=chat_id,
-                body=f"Заявку с сайта №{draft_id} взял менеджер {manager.name or manager.id}.")
             return desk
 
     async def issue_link(self, draft_id):
@@ -188,7 +191,7 @@ class DeskService:
         link.consumed_by, link.consumed_at = actor, now()
         audit(session, desk, "telegram_customer_linked", actor)
         enqueue(session, draft_id=desk.draft_id, key=f"linked:{desk.draft_id}", direction="to_manager",
-            destination=manager_chat(), body=f"К заявке №{desk.draft_id} подключён клиент Telegram. /site {desk.draft_id}")
+            destination=manager_chat(), body=f"К заявке №{desk.draft_id} подключён клиент Telegram.")
         return desk
 
     async def client(self, actor, message_id, text):
@@ -206,48 +209,78 @@ class DeskService:
             except DeskError as error:
                 response = str(error)
             session.add(ClientUpdate(key=key, response=response))
-            enqueue(session, draft_id=draft_id, key=key + ":ack", direction="to_customer", destination=actor, body=response)
+            reply = enqueue(session, draft_id=draft_id, key=key + ":ack", direction="to_customer",
+                destination=actor, body=response, kind="client_menu", source_message_id=message_id)
+            await session.flush()
+            from app.services.desk_delivery_policy import DeskDeliveryPolicy
+            delivery = ("sending_disabled" if os.getenv("ORDER_DESK_SEND_ENABLED", "false").lower() != "true"
+                        else "scope_allowed" if DeskDeliveryPolicy.load("client").permits(reply) else "scope_blocked")
+            log_event(logger, "client_reply_queued", message_id=reply.id, draft_id=draft_id, result=delivery)
 
     async def _client(self, session, actor, message_id, text, key):
+        from app.models.operations import ClientConversation
+        conversation = await session.get(ClientConversation, actor)
+        if not conversation:
+            conversation = ClientConversation(telegram_id=actor, state="idle", data={})
+            session.add(conversation)
         if text is None:
-            return "Поддерживаются только текстовые сообщения. Вложения передайте менеджеру другим согласованным способом.", None
+            return "Отправьте текст сообщения. Вложения передайте менеджеру напрямую.", None
         text = text.strip()
-        if not text:
-            return "Сообщение пустое. /help — доступные команды.", None
+        if text.startswith("/"):
+            conversation.state, conversation.data = "idle", {}
         if text.startswith("/start "):
             desk = await self.consume(session, text.split(maxsplit=1)[1], actor)
-            return (f"Спасибо за заказ (заявка №{desk.draft_id})! Telegram подключён.\n"
-                + await public_status(session, desk) + "\n"
-                "Менеджер поможет с наличием, оплатой и доставкой.\n"
-                f"/status {desk.draft_id} — статус; /message {desk.draft_id} текст — написать менеджеру; /orders — мои заказы.", desk.draft_id)
-        help_text = ("Здесь можно проверить заказ и написать менеджеру.\n"
-            "/orders — ваши заявки\n/status НОМЕР — актуальный статус\n"
-            "/message НОМЕР текст — сообщение по выбранной заявке\n"
-            "Откройте персональную ссылку после оформления заказа и нажмите Start. "
-            "Если ссылки нет или она истекла, запросите новую у менеджера. "
-            "Оплата согласуется с менеджером; бот не принимает платежи.")
-        if text in {"/start", "/help"}:
-            return help_text, None
-        if text in {"/orders", "Мой заказ"}:
-            desks = (await session.scalars(select(OrderDesk).where(OrderDesk.customer_telegram_id == actor)
-                .order_by(OrderDesk.draft_id.desc()).limit(10))).all()
-            return ("Ваши заявки (до 10 последних):\n" + "\n".join([
-                f"{await public_status(session, d)}\n/status {d.draft_id} · /message {d.draft_id} текст" for d in desks])
-                if desks else "Откройте персональную ссылку после оформления заказа. Если ссылки нет, свяжитесь с менеджером.", None)
+            conversation.state, conversation.data = "idle", {}
+            return "Спасибо за заказ!\n" + await public_status(session, desk), desk.draft_id
+        if text in {"/start", "/help", "/cancel"}:
+            conversation.state, conversation.data = "idle", {}
+            desks = await client_navigation_desks(session, actor)
+            return ("Здесь можно посмотреть свои заказы и написать менеджеру. Выберите действие в меню.",
+                    desks[0].draft_id if desks else None)
+        if text in {"/orders", "Мой заказ", "📦 Мои заказы", "🔎 Статус заказа", "💬 Написать менеджеру", "/status", "/manager"}:
+            conversation.state = "choose_message" if text in {"💬 Написать менеджеру", "/manager"} else "choose_status"
+            conversation.data = {}
+            desks = await client_navigation_desks(session, actor)
+            return ("Выберите заказ:\n" + "\n".join([await public_status(session, d) for d in desks])
+                if desks else "Заказов пока нет. Откройте персональную ссылку, полученную после оформления заказа.",
+                desks[0].draft_id if desks else None)
+        if text.startswith(("Заказ №", "Заявка №")):
+            number = text.split("№", 1)[1]
+            if not number.isascii() or not number.isdigit() or len(number) > 10 or not 0 < int(number) <= 2147483647:
+                raise DeskError("Выберите заказ кнопкой под сообщением.")
+            identifier = int(number)
+            if text.startswith("Заказ №"):
+                desk = await session.scalar(select(OrderDesk).where(OrderDesk.order_id == identifier,
+                    OrderDesk.customer_telegram_id == actor))
+            else:
+                desk = await session.get(OrderDesk, identifier)
+            if not desk or desk.customer_telegram_id != actor:
+                raise DeskError("Заказ не найден среди ваших заказов.")
+            identifier = desk.draft_id
+            if conversation.state == "choose_message":
+                conversation.state, conversation.data = "desk_message", {"draft_id": identifier}
+                return f"Напишите сообщение менеджеру по заявке №{identifier}.", identifier
+            conversation.state, conversation.data = "idle", {}
+            return await public_status(session, desk), identifier
+        if conversation.state == "desk_message" and not text.startswith("/"):
+            text = f"/message {conversation.data['draft_id']} {text}"
+        if not text:
+            return "Выберите действие в меню.", None
         parts = text.split(maxsplit=2)
         if parts[0] not in {"/status", "/message", "/manager"} or len(parts) < 2 or not parts[1].isascii() or not parts[1].isdigit() or len(parts[1]) > 9:
-            return "Укажите заявку явно: /orders, /status НОМЕР или /message НОМЕР текст. Обычный текст не пересылается.", None
+            return "Выберите заказ через меню, чтобы посмотреть статус или написать менеджеру.", None
         desk = await session.get(OrderDesk, int(parts[1]))
         if not desk or desk.customer_telegram_id != actor:
             raise DeskError("Заявка не найдена среди ваших заказов.")
         if parts[0] == "/status":
             return await public_status(session, desk), desk.draft_id
         if len(parts) != 3 or not parts[2].strip() or len(parts[2].encode("utf-16-le")) // 2 > 3000:
-            raise DeskError("Формат: /message НОМЕР текст (до 3000 символов Telegram).")
+            raise DeskError("Введите сообщение длиной до 3000 символов.")
         enqueue(session, draft_id=desk.draft_id, key=key, direction="to_manager", destination=manager_chat(),
-            body=f"Сообщение от клиента по заявке №{desk.draft_id}:\n{parts[2]}\n\n/reply {desk.draft_id} текст",
+            body=f"Сообщение от клиента по заявке №{desk.draft_id}:\n{parts[2]}",
             sender_type="customer", actor=actor, source_message_id=message_id)
         audit(session, desk, "customer_message_received", actor)
+        conversation.state, conversation.data = "idle", {}
         return "Сообщение передано менеджеру.", desk.draft_id
 
     async def reply(self, draft_id, actor, chat_id, message_id, text):
@@ -335,40 +368,63 @@ class DeskService:
             if not draft.finalized_order_id:
                 if draft.revision != revision or draft.status == "rejected":
                     raise DeskError("Карточка устарела или заявка отменена.")
-                if not draft.items or any(i.price is None or i.price <= 0 or not i.product_id or i.qty <= 0
-                        or i.quantity_confidence != "confirmed" or i.match_status != "matched" for i in draft.items):
-                    raise DeskError("Нужны проверенные товары и розничные цены. Исправьте mapping и выполните /sitereprice.")
-                draft.total = sum(i.price * i.qty for i in draft.items)
-                for item in draft.items:
-                    item.item_total = item.price * item.qty
+                inbound = await session.get(InboundMessage, draft.inbound_message_id)
+                try:
+                    payload, items, _ = source_rows(draft, desk, inbound)
+                except (ValueError, KeyError, TypeError) as error:
+                    raise DeskError("Исходные позиции требуют проверки. Выполните /sitereprice.") from error
+                if confirmation_problems(draft, payload, items):
+                    raise DeskError("Товары, цены, скидка или сумма требуют проверки. Выполните /sitereprice.")
+                # Revalidate identity against a fresh (TTL-bounded) catalog. Never
+                # silently replace a product or approve an expired match.
+                manual = {n: draft.contact_details.get("tilda_manual_products", {}).get(str(item.id)) for n, item in enumerate(items)}
+                checked, _, problems = await review(payload, manual_products=manual) if any(manual.values()) else await review(payload)
+                if problems or any(i.product_id != r["product_id"] for i, r in zip(items, checked, strict=True)):
+                    raise DeskError("Каталог недоступен или сопоставление изменилось. Выполните /sitereprice.")
                 draft.status = "ready"
                 draft.contact_details = {**draft.contact_details, "tilda_review_approved": True}
                 audit(session, desk, "tilda_review_approved", actor, total_minor=draft.total, revision=revision)
             from app.repositories.draft_order_repository import DraftOrderRepository
             return await DraftOrderRepository().finalize(draft_id, session=session)
 
-    async def reprice(self, draft_id, actor, chat_id):
-        mapping = product_map()
+    async def reprice(self, draft_id, actor, chat_id, *, dry_run=False):
         async with async_session() as session, session.begin():
             await authorized_manager(session, actor, chat_id)
             draft = await session.scalar(select(DraftOrder).where(DraftOrder.id == draft_id)
                 .options(selectinload(DraftOrder.items)).with_for_update())
             desk = await session.get(OrderDesk, draft_id, with_for_update=True)
-            if not desk or not draft or draft.finalized_order_id or draft.status == "rejected":
+            if (not desk or not draft or desk.order_id or draft.finalized_order_id
+                    or draft.status in {"rejected", "new"} or draft.source != "website"):
                 raise DeskError("Заявка недоступна.")
             require_owner(desk, actor)
-            external = draft.contact_details["external_products"]
-            for item, identifier in zip(sorted(draft.items, key=lambda i: i.id), external):
-                product = mapping.get(identifier)
-                item.product_id = product["product_id"] if product else None
-                item.price = product["retail_price_minor"] if product else None
-                item.item_total = item.price * item.qty if item.price is not None else None
-                item.match_status = "matched" if product else "not_found"
-            draft.total = None
-            draft.status = "needs_review"
-            draft.revision += 1
-            draft.contact_details = {**draft.contact_details, "tilda_review_approved": False}
-            audit(session, desk, "tilda_repriced", actor, revision=draft.revision)
+            inbound = await session.get(InboundMessage, draft.inbound_message_id)
+            try:
+                payload, items, bindings = source_rows(draft, desk, inbound)
+            except (ValueError, KeyError, TypeError) as error:
+                raise DeskError("Нельзя безопасно восстановить исходные позиции.") from error
+            manual = {n: draft.contact_details.get("tilda_manual_products", {}).get(str(item.id)) for n, item in enumerate(items)}
+            rows, total, problems = await review(payload, manual_products=manual) if any(manual.values()) else await review(payload)
+            from app.services.tilda_review import REVIEW_NOTE
+            changed = (any(any(getattr(i, key) != row[key] for key in ITEM_FIELDS)
+                           for i, row in zip(items, rows, strict=True))
+                or draft.total != total or draft.review_notes != (", ".join(problems) or REVIEW_NOTE)
+                or draft.status != "needs_review" or draft.contact_details.get("tilda_review_approved") is not False
+                or draft.contact_details.get("tilda_item_sources") != bindings
+                or draft.contact_details.get("tilda_review_problems") != problems
+                or draft.contact_details.get("tilda_price_source") != "webhook")
+            result = {"draft_id": draft.id, "revision": draft.revision, "changed": changed,
+                      "total_minor": total, "problems": problems,
+                      "items": [{"item_id": i.id, "sku": r["externalid"], **row}
+                                for i, r, row in zip(items, payload["items"], rows, strict=True)]}
+            if dry_run:
+                return result
+            if changed:
+                apply_review(draft, rows, total, problems, items)
+                draft.contact_details = {**draft.contact_details, "tilda_item_sources": bindings}
+                draft.revision += 1
+            audit(session, desk, "tilda_repriced", actor, revision=draft.revision, changed=changed)
+            result["revision"] = draft.revision
+            return result
 
 
 async def public_status(session, desk):
@@ -384,5 +440,16 @@ async def status_notification(session, order, actor):
         audit(session, desk, "order_status_changed", actor, order_id=order.id, revision=order.revision,
             payment=order.payment_status, fulfillment=order.fulfillment_status, delivery=order.delivery_status)
     if desk and desk.customer_telegram_id:
+        body = await public_status(session, desk)
+        previous = await session.scalar(select(DeskMessage).where(DeskMessage.draft_id == desk.draft_id,
+            DeskMessage.destination == desk.customer_telegram_id, DeskMessage.kind == "client_card")
+            .order_by(DeskMessage.id.desc()).limit(1))
+        # Preserve separate important events; intermediate assembly updates only edit the card.
+        important = (previous is None or order.needs_review or
+            order.fulfillment_status in {"shipped", "cancelled"} or order.delivery_status == "delivered"
+            or (previous.body.splitlines()[1:] != body.splitlines()[1:]))
+        if important and previous is not None and previous.body != body:
+            enqueue(session, draft_id=desk.draft_id, key=f"status:{order.id}:{order.revision}:notice",
+                direction="to_customer", destination=desk.customer_telegram_id, body=body)
         enqueue(session, draft_id=desk.draft_id, key=f"status:{order.id}:{order.revision}", direction="to_customer",
-            destination=desk.customer_telegram_id, body=await public_status(session, desk), actor=actor)
+            destination=desk.customer_telegram_id, body=await public_status(session, desk), actor=actor, kind="client_card")

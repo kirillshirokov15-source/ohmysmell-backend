@@ -35,8 +35,26 @@ class FulfillmentService:
                 raise StockAllocationError("Планирование недоступно в этом статусе")
             from app.services.supply_service import ready_supply_quantities
             external = await ready_supply_quantities(session, order.id)
+            # Honor explicit Tilda stock claims when the existing automatic
+            # planner is used by another channel. Legacy plan semantics stay
+            # unchanged; both writers serialize against the same stock keys.
+            from app.services.order_source_service import lock_source_stock, claimed_stock
+            from app.services.stock_allocation import available_units
+            physical_ids = {i.product_id for i in order.items if i.id not in external}
+            keys = [(p["id"], s["id"]) for p in catalog if p["id"] in physical_ids for s in p.get("stocks", [])]
+            await lock_source_stock(session, keys)
+            adjusted = []
+            for product in catalog:
+                if product["id"] not in physical_ids:
+                    adjusted.append(product)
+                    continue
+                stocks = []
+                for stock in product.get("stocks", []):
+                    claimed = await claimed_stock(session, product["id"], stock["id"], managed_only=True)
+                    stocks.append({**stock, "stock": max(0, available_units(stock.get("stock"), stock.get("reserve")) - claimed), "reserve": 0})
+                adjusted.append({**product, "stocks": stocks})
             allocations = allocate([{"id": i.product_id, "qty": i.qty} for i in order.items if i.id not in external],
-                                   catalog, settings.warehouse_ids)
+                                   adjusted, settings.warehouse_ids)
             # Repeated product lines are distributed without changing order items.
             remaining = {i.id: i.qty for i in order.items}
             shipments = {}

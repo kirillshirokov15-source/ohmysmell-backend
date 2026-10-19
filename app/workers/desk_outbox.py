@@ -3,7 +3,9 @@ import asyncio
 import logging
 import os
 from datetime import timedelta
-from sqlalchemy import select, update
+from sqlalchemy import select, update, or_
+from sqlalchemy.orm import aliased
+from types import SimpleNamespace
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter, TelegramUnauthorizedError
 from app.database.session import async_session
 from app.models.order_desk import DeskMessage
@@ -12,6 +14,31 @@ from app.logging_utils import log_event
 from app.services.desk_delivery_policy import DeskDeliveryPolicy
 
 logger = logging.getLogger(__name__)
+
+
+async def deliver_client_card(bot, message):
+    # Receipts are durable and scoped to this order AND destination. No in-memory cache.
+    async with async_session() as session:
+        previous = await session.scalar(select(DeskMessage).where(
+            DeskMessage.draft_id == message.draft_id,
+            DeskMessage.destination == message.destination,
+            DeskMessage.direction == "to_customer", DeskMessage.kind == "client_card",
+            DeskMessage.status == "sent", DeskMessage.telegram_message_id.is_not(None),
+            DeskMessage.id < message.id).order_by(DeskMessage.id.desc()).limit(1))
+    if previous:
+        try:
+            await bot.edit_message_text(chat_id=message.destination, message_id=previous.telegram_message_id,
+                text=message.body, parse_mode=None, request_timeout=30)
+            return SimpleNamespace(message_id=previous.telegram_message_id)
+        except TelegramBadRequest as error:
+            reason = str(error).lower()
+            if "message is not modified" in reason:
+                return SimpleNamespace(message_id=previous.telegram_message_id)
+            if not any(value in reason for value in ("message to edit not found", "message can't be edited")):
+                raise
+            # Only a definite edit rejection permits sending a replacement.
+    return await bot.send_message(message.destination, message.body, parse_mode=None,
+        protect_content=True, disable_web_page_preview=True, request_timeout=30)
 
 
 async def run_once(bot, role):
@@ -23,8 +50,14 @@ async def run_once(bot, role):
         # A crash may happen after Telegram accepted a send. Never blindly resend it.
         await session.execute(update(DeskMessage).where(DeskMessage.direction == direction,
             policy.sql_scope(), DeskMessage.status == "sending", DeskMessage.available_at < now()).values(status="uncertain", error_code="lease_expired"))
+        earlier = aliased(DeskMessage)
+        ordered = ~select(earlier.id).where(earlier.direction == direction,
+            earlier.destination == DeskMessage.destination, earlier.draft_id == DeskMessage.draft_id,
+            earlier.kind == "client_card",
+            earlier.id < DeskMessage.id, earlier.status.in_(("pending", "sending", "uncertain"))).exists()
         message = await session.scalar(select(DeskMessage).where(DeskMessage.direction == direction,
             policy.sql_scope(),
+            or_(DeskMessage.kind != "client_card", ordered) if role == "client" else True,
             DeskMessage.status == "pending", DeskMessage.available_at <= now())
             .order_by(DeskMessage.id).limit(1).with_for_update(skip_locked=True))
         if not message:
@@ -39,8 +72,22 @@ async def run_once(bot, role):
         if message.kind == "card":
             from app.services.desk_display import desk_card
             body, keyboard = await desk_card(message.draft_id)
-        sent = await bot.send_message(message.destination, body, parse_mode=None, reply_markup=keyboard,
-            protect_content=True, disable_web_page_preview=True, request_timeout=30)
+        elif role == "manager" and message.sender_type == "customer" and message.draft_id:
+            from aiogram.types import InlineKeyboardMarkup
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[[{
+                "text": "Ответить клиенту", "callback_data": f"desk:reply:{message.draft_id}"}]])
+        if role == "client" and message.kind == "client_menu":
+            from app.bot.client_menu import delivery_keyboard
+            async with async_session() as session:
+                keyboard = await delivery_keyboard(session, message.destination)
+        if role == "manager" and message.kind == "card":
+            from app.services.telegram_cards import publish
+            sent = await publish(bot, message.destination, f"draft:{message.draft_id}", body, keyboard)
+        elif role == "client" and message.kind == "client_card":
+            sent = await deliver_client_card(bot, message)
+        else:
+            sent = await bot.send_message(message.destination, body, parse_mode=None, reply_markup=keyboard,
+                protect_content=True, disable_web_page_preview=True, request_timeout=30)
     except TelegramRetryAfter as error:
         state, reason, delay = "pending", "rate_limit", max(error.retry_after, 1)
     except TelegramForbiddenError:

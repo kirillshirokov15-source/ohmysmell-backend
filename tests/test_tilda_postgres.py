@@ -78,7 +78,7 @@ def test_claim_concurrent_one_winner_and_actor_audit(desk_db):
             events=(await s.scalars(select(DeskEvent).where(DeskEvent.draft_id==did,DeskEvent.action=="manager_claim_succeeded"))).all()
             assert len(events)==1 and events[0].actor_telegram_id==winner
         from app.services.desk_display import desk_card
-        card,_=await desk_card(did)
+        card,_=await desk_card(did, view="details")
         assert "Ответственный: SYNTHETIC manager" in card
         for actor,chat in [(333,-100123456),(winner,-999),(winner,winner)]:
             with pytest.raises(DeskError): await DeskService().claim(did,actor,chat)
@@ -139,7 +139,8 @@ def test_retail_profile_total_review_and_missing_mapping(desk_db, monkeypatch):
             draft=await s.get(DraftOrder,did)
             assert draft.customer_type=="retail" and draft.customer_id==cid and draft.total is None
             assert (await s.get(Customer,cid)).customer_type=="wholesale"
-        monkeypatch.setenv("TILDA_PRODUCT_MAP_JSON","{}")
+        monkeypatch.setattr("app.services.product_matching_service.ProductMatchingService.products_async",
+                            AsyncMock(return_value=[]))
         missing=(await TildaIntake().submit(normalize(payload(uuid4().hex))))["draft_id"]
         async with factory() as s:
             assert (await s.get(DraftOrder,missing)).total is None
@@ -167,13 +168,13 @@ def test_fake_tilda_to_manager_client_helpdesk_and_manual_lifecycle(desk_db,monk
             s.add_all([Manager(telegram_id=a,name="SYNTHETIC",is_active=True) for a in actors])
         app=FastAPI();app.include_router(router)
         code,result,_=await request(app,"POST","/integrations/tilda/orders",payload(uuid4().hex),headers={"X-Tilda-Secret":"synthetic-tilda-secret-32-characters-only"},raise_errors=True)
-        assert code==202;did=result["draft_id"]
+        assert code==200;did=result["draft_id"]
         manager_session,client_session=TelegramSession(),TelegramSession()
         manager_bot=Bot("12345:"+"a"*35,session=manager_session)
         client_bot=Bot("67890:"+"b"*35,session=client_session)
         # Other tests share a schema: drain all prior synthetic notices before measuring.
         while await run_once(manager_bot,"manager"): pass
-        assert any(f"заявка №{did}" in (getattr(c,"text","") or "") for c in manager_session.calls)
+        assert any(f"Заявка №{did}" in (getattr(c,"text","") or "") for c in manager_session.calls)
         def group_update(mid,text,actor=actors[0],chat=-100123456):
             return Update.model_validate({"update_id":mid,"message":{"message_id":mid,"date":1,
                 "chat":{"id":chat,"type":"supergroup","title":"SYNTHETIC"},
@@ -196,15 +197,17 @@ def test_fake_tilda_to_manager_client_helpdesk_and_manual_lifecycle(desk_db,monk
         async with factory() as s:
             replies=(await s.scalars(select(DeskMessage).where(DeskMessage.destination==client_id))).all()
             assert len(replies)==3
-            assert all("Откройте персональную ссылку" in reply.body and reply.draft_id is None for reply in replies)
+            assert all(reply.draft_id is None for reply in replies)
+            assert sum("Выберите действие в меню" in reply.body for reply in replies) == 2
+            assert sum("Откройте персональную ссылку" in reply.body for reply in replies) == 1
         start=client_update(1,"/start "+link)
         await dispatcher.feed_update(client_bot,start);await dispatcher.feed_update(client_bot,start)
         for mid,command in enumerate(("/help", "/orders", f"/status {did}"), 13):
             await dispatcher.feed_update(client_bot,client_update(mid,command))
         async with factory() as s:
             replies={row.idempotency_key:row for row in (await s.scalars(select(DeskMessage).where(DeskMessage.destination==client_id))).all()}
-            for mid in (13,14):
-                assert ("/status НОМЕР" if mid == 13 else f"/status {did}") in replies[f"desk:client:{client_id}:{mid}:ack"].body
+            assert "Выберите действие в меню" in replies[f"desk:client:{client_id}:13:ack"].body
+            assert f"Заявка №{did}: В работе" in replies[f"desk:client:{client_id}:14:ack"].body
             assert replies[f"desk:client:{client_id}:15:ack"].body==f"Заявка №{did}: В работе"
         await dispatcher.feed_update(client_bot,client_update(2,f"/message {did} <b>Здравствуйте</b>"))
         await dp.feed_update(manager_bot,group_update(201,"Internal group conversation"))
@@ -223,15 +226,20 @@ def test_fake_tilda_to_manager_client_helpdesk_and_manual_lifecycle(desk_db,monk
         await DeskService().stage(did,actors[0],-100123456,"awaiting_payment")
         with pytest.raises(ManagerDenied):
             await OrderOperations().act(order.id,actors[1],OrderAction(action="paid",expected_revision=0,idempotency_key="other"))
-        for action,extra in [("paid",{}),("assembling",{}),("assembled",{}),("delivery",{"delivery_method":"manual"}),("shipped",{}),("delivery",{"delivery_status":"delivered"})]:
+        for action,extra in [("paid",{}),("delivery",{"delivery_method":"manual"})]:
             order=await OrderOperations().act(order.id,actors[0],OrderAction(action=action,expected_revision=order.revision,idempotency_key=uuid4().hex,**extra))
-        assert order.delivery_status=="delivered" and order.payment_status=="paid"
+        from app.services.order_operations import OperationError
+        with pytest.raises(OperationError, match="складам"):
+            await OrderOperations().act(order.id,actors[0],OrderAction(action="assembling",expected_revision=order.revision,idempotency_key=uuid4().hex))
+        with pytest.raises(OperationError, match="складам"):
+            await OrderOperations().act(order.id,actors[0],OrderAction(action="shipped",expected_revision=order.revision,idempotency_key=uuid4().hex))
+        assert order.delivery_status=="pending" and order.payment_status=="paid"
         async with factory() as s:
             for model in (Shipment,ProcurementRequest):
                 assert await s.scalar(select(func.count()).select_from(model).where(model.order_id==order.id))==0
             assert order.moysklad_order_id is None
         while await run_once(client_bot,"client"):pass
-        assert any("Доставлен" in c.text for c in client_session.calls)
+        assert not any("Доставлен" in c.text for c in client_session.calls)
         await manager_bot.session.close();await client_bot.session.close();await engine.dispose()
     asyncio.run(run())
 

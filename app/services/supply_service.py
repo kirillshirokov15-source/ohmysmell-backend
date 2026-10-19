@@ -12,7 +12,7 @@ from app.models.supply import Supplier, ProductSupply, SupplierOffer, OrderItemS
 from app.services.fx import CbrFxProvider, FxQuote, convert_minor, rate_value
 from app.logging_utils import log_event
 
-LABELS = {"own": "Наш склад", "partner_x": "X-склад", "external": "Внешние поставщики"}
+LABELS = {"own": "Наш склад", "own_x": "Склад X (собственный)", "partner_x": "X-склад партнёра", "external": "Внешние поставщики"}
 TRANSITIONS = {"needed": {"requested", "cancelled", "unavailable"},
     "requested": {"confirmed", "cancelled", "unavailable"},
     "confirmed": {"received", "cancelled", "unavailable"}, "received": set(), "cancelled": set(), "unavailable": set()}

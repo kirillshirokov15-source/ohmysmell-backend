@@ -1,7 +1,7 @@
 ﻿"""Aiogram transport contract fake: real Updates/dispatch/TelegramMethod models."""
 from datetime import datetime, timezone
 from aiogram.client.session.base import BaseSession
-from aiogram.methods import SendMessage, EditMessageText, AnswerCallbackQuery, GetMe
+from aiogram.methods import SendMessage, EditMessageText, EditMessageReplyMarkup, AnswerCallbackQuery, GetMe
 from aiogram.types import Message, Chat, User
 
 
@@ -25,6 +25,9 @@ class TelegramSession(BaseSession):
                 chat=Chat(id=int(method.chat_id), type="private"), text=method.text)
         if isinstance(method, AnswerCallbackQuery):
             return True
+        if isinstance(method, EditMessageReplyMarkup):
+            return Message(message_id=method.message_id, date=datetime.now(timezone.utc),
+                chat=Chat(id=int(method.chat_id), type="private"), reply_markup=method.reply_markup)
         if isinstance(method, GetMe):
             return User(id=bot.id, is_bot=True, first_name="Fake")
         raise AssertionError("Unhandled Telegram method " + type(method).__name__)

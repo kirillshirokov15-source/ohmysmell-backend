@@ -1,7 +1,5 @@
 import os
 
-import asyncio
-from app.integrations.http_tls import verified_session
 from sqlalchemy import select
 
 from app.database.session import async_session
@@ -45,11 +43,8 @@ async def notify_managers(order_id: int, order: dict) -> None:
 
     from app.bot.manager_group import notification_chats
     chat_ids = notification_chats(managers)
-    def send():
-        with verified_session() as http:
-            for chat_id in chat_ids:
-                response = http.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                    json={"chat_id": chat_id, "text": message[:4000]}, timeout=(5, 20))
-                if not response.ok:
-                    raise RuntimeError(f"Telegram notification HTTP {response.status_code}")
-    await asyncio.to_thread(send)
+    from aiogram import Bot
+    from app.services.telegram_cards import publish
+    async with Bot(token=TELEGRAM_BOT_TOKEN) as bot:
+        for chat_id in chat_ids:
+            await publish(bot, chat_id, f"order:{order_id}", message[:4000])

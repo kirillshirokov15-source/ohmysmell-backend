@@ -62,6 +62,7 @@ class BuyingOffer(Base):
 class BuyingImport(Base):
     __tablename__ = "buying_imports"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    source_key: Mapped[str | None] = mapped_column(String(64), unique=True)
     supplier_id: Mapped[int] = mapped_column(ForeignKey("suppliers.id"), index=True)
     filename: Mapped[str] = mapped_column(String(255))
     currency: Mapped[str] = mapped_column(String(3))
@@ -114,7 +115,7 @@ class BuyingPurchase(Timestamps, Base):
     received_by_role: Mapped[str | None] = mapped_column(String(20))
     received_by_username: Mapped[str | None] = mapped_column(String(80))
     external_ids: Mapped[dict] = mapped_column(JSON, default=dict)
-    __table_args__ = (CheckConstraint("status IN ('draft','sent','received','cancelled','error')", name="ck_buying_purchase_status"),)
+    __table_args__ = (CheckConstraint("status IN ('draft','sent','confirmed','received','cancelled','error')", name="ck_buying_purchase_status"),)
 
 
 class BuyingReply(Base):

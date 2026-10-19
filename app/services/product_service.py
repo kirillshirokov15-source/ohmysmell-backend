@@ -61,6 +61,7 @@ class ProductService:
         customer_type: CustomerType = CustomerType.RETAIL,
         include_price_types: bool = False,
         strict_pricing: bool = False,
+        include_supply: bool = True,
     ) -> list[dict]:
         products = await self.async_gateway.get_products()
         stores = await self.async_gateway.get_stores()
@@ -73,7 +74,7 @@ class ProductService:
             include_price_types,
             strict_pricing,
         )
-        if self.supply_overlay:
+        if self.supply_overlay and include_supply:
             from app.services.supply_service import catalog_supply
             catalog = await catalog_supply(catalog)
         return catalog

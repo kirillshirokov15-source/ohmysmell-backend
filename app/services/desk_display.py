@@ -9,16 +9,22 @@ from app.models.order import Order
 from app.services.desk_status import stage_label, order_details
 from app.services.order_desk import DeskError
 from app.services.telegram_display import telegram_rubles
+from app.services.tilda_availability import availability, stock_label
 
 
-async def desk_card(draft_id):
+async def desk_card(draft_id, *, view="compact"):
+    from time import perf_counter
+    from app.services.telegram_metrics import observe
+    started = perf_counter()
     async with async_session() as session:
         desk = await session.get(OrderDesk, draft_id)
         draft = await session.scalar(select(DraftOrder).where(DraftOrder.id == draft_id).options(selectinload(DraftOrder.items)))
         if not desk or not draft:
             raise DeskError("Заявка не найдена.")
+        stocks = await availability(draft.items) if view == "details" else {}
         manager = await session.get(Manager, desk.manager_id) if desk.manager_id else None
         order = await session.get(Order, desk.order_id) if desk.order_id else None
+        review_approved = bool(draft.contact_details.get("tilda_review_approved") and desk.order_id)
         stage = stage_label(desk, draft, order)
         lines = [f"Заказ с сайта · заявка №{draft.id}", f"Клиент: {draft.customer_name}",
             f"Телефон: {draft.contact_details.get('phone') or 'не указан'}", f"Email: {draft.sender_email or 'не указан'}",
@@ -37,28 +43,74 @@ async def desk_card(draft_id):
             lines.append("Розничная сумма для согласования: " + telegram_rubles(sum(i.price * i.qty for i in draft.items)))
         reported = draft.contact_details.get("reported_total_minor")
         lines.append("Заявлено сайтом: " + (telegram_rubles(reported) if reported is not None else "некорректно/не указано"))
+        lines.append("Проверка суммы: " + ("арифметика согласована; одобрено менеджером"
+            if review_approved else "арифметика согласована; требуется одобрение менеджера"
+            if draft.total is not None and draft.contact_details.get("tilda_price_source") == "webhook"
+            else "требует проверки"))
         if not desk.order_id:
             lines.append("Проверка: " + (draft.review_notes or "Требуется согласование"))
-        lines.append("Источники и наличие проверить. Сборка и отгрузка вручную.")
-        lines.append(f"Все позиции с ценами: /siteitems {draft_id}")
-        lines += [f"{index}. {i.raw_product_text[:80]} × {i.qty}" for index, i in enumerate(draft.items[:15], 1)]
+        lines.append("Цена Tilda заявлена сайтом; одобрена менеджером" if review_approved
+            else "Цена Tilda заявлена сайтом; одобрение менеджера обязательно.")
+        lines.append("Источник товара подтвердить до отгрузки. Остаток не является резервом.")
+        lines += [f"{index}. {i.raw_product_text[:60]} × {i.qty}\n"
+                  f"МойСклад: {(i.product_name or '')[:60] if i.product_id else i.match_status} · "
+                  f"артикул: {i.article or '—'} · Tilda: "
+                  f"{telegram_rubles(i.price) if i.price is not None else 'проверить цену'}\n{stock_label(i, stocks)}"
+                  for index, i in enumerate(sorted(draft.items, key=lambda i: i.id)[:15], 1)]
         if len(draft.items) > 15:
-            lines.append(f"Всего позиций: {len(draft.items)}. Остальные: /siteitems {draft_id}")
+            lines.append(f"Всего позиций: {len(draft.items)}.")
         rows = [[{"text": "Взять заказ", "callback_data": f"desk:claim:{draft_id}"}]] if not desk.manager_id and draft.status != "rejected" and not desk.order_id else []
         if desk.customer_telegram_id:
             rows.append([{"text": "Ответить клиенту", "callback_data": f"desk:reply:{draft_id}"}])
         if not desk.order_id and draft.status != "rejected":
-            rows += [[{"text": "Ожидает подтверждения", "callback_data": f"desk:wait:{draft_id}"}],
-                [{"text": "Подтвердить товары и розничную сумму", "callback_data": f"desk:confirm:{draft_id}:{draft.revision}"}]]
-            rows.append([{"text": "Отменить заявку", "callback_data": f"desk:cancel:{draft_id}"}])
+            if desk.manager_id:
+                if not draft.contact_details.get("tilda_source_data_confirmed"):
+                    rows.append([{"text": "Подтвердить позиции и сумму сайта", "callback_data": f"desk:checksource:{draft_id}:{draft.revision}"}])
+                else:
+                    for item in draft.items:
+                        intent = draft.contact_details.get("tilda_source_intents", {}).get(str(item.id), {})
+                        lines.append(f"Источник позиции {item.id}: " + {"own": "Свой склад", "own_x": "Склад X (собственный товар)",
+                            "external": "Внешние поставщики"}.get(intent.get("source"), "не выбран"))
+                        rows.append([{"text": f"#{item.id}: {label}", "callback_data": f"desk:src:{draft_id}:{draft.revision}:{item.id}:{value}"}
+                            for value, label in (("own", "Свой"), ("own_x", "Склад X"), ("external", "Поставщики"))])
+                        if not item.product_id:
+                            rows.append([{"text": f"#{item.id}: сопоставить товар", "callback_data": f"desk:findproduct:{draft_id}:{draft.revision}:{item.id}"}])
+                rows.append([{"text": "Ожидает подтверждения", "callback_data": f"desk:wait:{draft_id}"}])
+                if (draft.total is not None and draft.items and
+                        not draft.contact_details.get("tilda_review_problems") and
+                        all(i.product_id and i.price is not None for i in draft.items)):
+                    rows.append([{"text": "Подтвердить заказ", "callback_data": f"desk:confirm:{draft_id}:{draft.revision}"}])
+                rows.append([{"text": "Отменить заявку", "callback_data": f"desk:cancel:{draft_id}"}])
         if desk.order_id:
             rows.append([{"text": "Открыть заказ", "callback_data": f"order:refresh:{desk.order_id}:0"}])
             if order and order.payment_status == "unpaid" and order.fulfillment_status == "new" and order.status != "rejected":
                 rows.append([{"text": "Уведомить: ожидает оплаты", "callback_data": f"desk:payment:{draft_id}"}])
         rows.append([{"text": "История действий", "callback_data": f"desk:history:{draft_id}"}])
-        rows.append([{"text": "Обновить", "callback_data": f"desk:refresh:{draft_id}"}])
+        rows.append([{"text": "Все товары", "callback_data": f"desk:items:{draft_id}"}])
+        if not desk.order_id and draft.contact_details.get("tilda_review_problems"):
+            rows.append([{"text": "Повторить сверку данных", "callback_data": f"desk:recheck:{draft_id}"}])
+        if view != "details":
+            primary = next((b for action in ("claim", "confirm", "refresh") for row in rows for b in row
+                if b["callback_data"].startswith(f"desk:{action}:") and action != "refresh"), None)
+            if desk.order_id:
+                primary = {"text": "Открыть заказ", "callback_data": f"order:refresh:{desk.order_id}:0"}
+            lines = [f"Заявка №{draft.id}" + (f" · заказ №{desk.order_id}" if desk.order_id else ""),
+                f"Статус: {stage}", f"Товаров: {sum(i.qty for i in draft.items)} шт.",
+                "Сумма: " + (telegram_rubles(draft.total) if draft.total is not None else "требует проверки"),
+                "Оплата: " + ("Оплачен" if order and order.payment_status == "paid" else "Не оплачено"),
+                "Обеспечение: подтвердите источники в заказе" if desk.order_id else "Наличие: требуется согласование",
+                "Сейчас: " + (primary["text"] if primary else "Действий не требуется")]
+            if view == "compact":
+                rows = [[primary]] if primary else []
+        if view != "actions":
+            rows = (rows if view == "compact" else []) + [
+                [{"text": "Подробнее", "callback_data": f"desk:details:{draft_id}"}],
+                [{"text": "⋯ Действия", "callback_data": f"desk:actions:{draft_id}"}]]
+        if view != "compact":
+            rows.append([{"text": "Назад", "callback_data": f"desk:refresh:{draft_id}"}])
         # Bound in UTF-16 units, including astral emoji.
         text = "\n".join(lines).encode("utf-16-le")[:7800].decode("utf-16-le", errors="ignore")
+        observe("card_data", started)
         return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -67,9 +119,13 @@ async def desk_items(draft_id):
         if not await session.get(OrderDesk, draft_id):
             raise DeskError("Заявка не найдена.")
         draft = await session.scalar(select(DraftOrder).where(DraftOrder.id == draft_id).options(selectinload(DraftOrder.items)))
-        return [f"Заявка №{draft_id} · позиция {n}: {i.raw_product_text}\nТовар: {i.product_id or 'сопоставление не задано'}\n"
-            f"{i.qty} × {telegram_rubles(i.price) if i.price is not None else 'розничная цена требует проверки'}"
-            for n,i in enumerate(draft.items,1)]
+        stocks = await availability(draft.items)
+        return [f"Заявка №{draft_id} · позиция {n}: {i.raw_product_text}\n"
+            f"МойСклад: {i.product_name if i.product_id else i.match_status} ({i.product_id or '—'})\n"
+            f"Артикул: {i.article or '—'} · цена Tilda (заявленная): "
+            f"{i.qty} × {telegram_rubles(i.price) if i.price is not None else 'требует проверки'}\n"
+            f"{stock_label(i, stocks)}."
+            for n,i in enumerate(sorted(draft.items, key=lambda i: i.id),1)]
 
 
 async def desk_history(draft_id):

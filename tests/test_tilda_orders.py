@@ -21,6 +21,7 @@ def payload(identifier="synthetic-order"):
 
 @pytest.fixture
 def tilda_config(monkeypatch):
+    monkeypatch.setattr("app.integrations.moysklad.client.MOYSKLAD_TOKEN", "synthetic-no-network")
     monkeypatch.setenv("ORDER_DESK_SEND_ENABLED", "true")
     monkeypatch.setenv("TILDA_ENABLED", "true")
     monkeypatch.setenv("TILDA_WEBHOOK_SECRET", "synthetic-tilda-secret-32-characters-only")
@@ -33,6 +34,9 @@ def tilda_config(monkeypatch):
     monkeypatch.setenv("MANAGER_TELEGRAM_USER_IDS", "111,222")
     monkeypatch.setenv("CLIENT_TELEGRAM_BOT_USERNAME", "synthetic_client_bot")
     monkeypatch.setenv("CLIENT_TELEGRAM_LINK_TTL_MINUTES", "30")
+    monkeypatch.setattr("app.services.product_matching_service.ProductMatchingService.products_async",
+        AsyncMock(return_value=[{"id": key, "article": key, "name": key}
+                                for key in ("sku-a", "sku-b")]))
 
 
 @pytest.mark.parametrize("value,expected", [("1.01",101),("1,99",199),(Decimal("10.10"),1010),(0,0),("0.29",29)])
@@ -95,6 +99,7 @@ def test_no_wholesale_fallback(monkeypatch):
 def test_webhook_auth_fails_closed(tilda_config, monkeypatch, secret, enabled, status):
     monkeypatch.setenv("TILDA_ENABLED", enabled)
     if secret == "missing-config": monkeypatch.delenv("TILDA_WEBHOOK_SECRET")
+    if secret == "correct": secret = "synthetic-tilda-secret-32-characters-only"
     app = FastAPI(); app.include_router(tilda.router)
     actual = asyncio.run(request(app, "POST", "/integrations/tilda/orders", payload(), headers={"X-Tilda-Secret":secret}))[0]
     assert actual == status
@@ -111,7 +116,7 @@ def test_webhook_form_query_redaction_and_no_pii_logs(tilda_config, monkeypatch,
     with caplog.at_level(logging.INFO):
         response=asyncio.run(request(app,"POST","/integrations/tilda/orders?secret=synthetic-tilda-secret-32-characters-only",
             headers={"Content-Type":"application/x-www-form-urlencoded"}, content=urlencode(data).encode()))
-    assert response[0]==202 and submit.await_args.args[0]["items"][0]["qty"]==2
+    assert response[0]==200 and submit.await_args.args[0]["items"][0]["qty"]==2
     assert "tilda_webhook_accepted" in caplog.text
     for sensitive in (data["Email"],data["Phone"],data["Name"],"synthetic-tilda-secret-32-characters-only"):
         assert sensitive not in caplog.text

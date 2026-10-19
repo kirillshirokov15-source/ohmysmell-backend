@@ -304,7 +304,7 @@ def test_fully_priced_draft_card_shows_exact_item_and_order_totals():
     assert "Итого: 13 280 ₽" in card
 
 
-def test_zero_relevant_counterparties_fall_back_to_recent_existing():
+def test_zero_relevant_counterparties_do_not_suggest_unrelated_recent():
     provider = SimpleNamespace(
         search_counterparties=lambda query: [],
         get_recent_counterparties=lambda limit=10: [{
@@ -316,12 +316,8 @@ def test_zero_relevant_counterparties_fall_back_to_recent_existing():
     candidates = CounterpartyMatchingService(provider).fallback_candidates(
         "unknown@example.com"
     )
-    assert candidates == [{
-        "id": "cp-existing",
-        "name": "Existing Counterparty",
-        "email": "existing@example.com",
-        "phone": None,
-    }]
+    assert candidates == []
+    assert CounterpartyMatchingService(provider).fallback_candidates()[0]["id"] == "cp-existing"
 
 
 @pytest.mark.parametrize(

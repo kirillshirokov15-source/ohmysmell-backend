@@ -115,7 +115,7 @@ class PurchaseRead(SupplierPreviewRead):
     id: int
     item_count: int
     number: str
-    status: Literal['draft','sent','received','cancelled','error']
+    status: Literal['draft','sent','confirmed','received','cancelled','error']
     send_state: str
     created_at: datetime
     updated_at: datetime
@@ -160,7 +160,7 @@ class PickupRead(BaseModel):
     pickup_notes: str | None
     items: list[PickupItemRead]
     sent_at: datetime | None
-    status: Literal['sent', 'received']
+    status: Literal['sent', 'confirmed', 'received']
     received_at: datetime | None
     received_by_user_id: int | None
     received_by_role: str | None
