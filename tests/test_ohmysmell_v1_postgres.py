@@ -71,7 +71,8 @@ def test_received_sources_reserve_ship_documents(sources_postgres,monkeypatch):
             expected_revision=current.revision,idempotency_key=uuid4().hex))
         assert current.delivery_status=='delivered' and current.payment_status=='paid'
         from app.services.manager_workspace import order_card
-        assert 'Заказ завершён' in order_card(current)
+        assert 'Статус: Доставлен' in order_card(current)
+        assert 'Оплата: Оплачен' in order_card(current)
         assert adapter.calls==7  # 3 receipts, 2 warehouse reservations, 2 demands
         assert sum(p['quantity'] for d in adapter.documents.values() if 'customerOrder' in d for p in d['positions'])==8
         assert all(d['simulated'] for d in adapter.documents.values())

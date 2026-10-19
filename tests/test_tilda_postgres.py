@@ -174,7 +174,7 @@ def test_fake_tilda_to_manager_client_helpdesk_and_manual_lifecycle(desk_db,monk
         client_bot=Bot("67890:"+"b"*35,session=client_session)
         # Other tests share a schema: drain all prior synthetic notices before measuring.
         while await run_once(manager_bot,"manager"): pass
-        assert any(f"заявка №{did}" in (getattr(c,"text","") or "") for c in manager_session.calls)
+        assert any(f"Заявка №{did}" in (getattr(c,"text","") or "") for c in manager_session.calls)
         def group_update(mid,text,actor=actors[0],chat=-100123456):
             return Update.model_validate({"update_id":mid,"message":{"message_id":mid,"date":1,
                 "chat":{"id":chat,"type":"supergroup","title":"SYNTHETIC"},
@@ -197,15 +197,17 @@ def test_fake_tilda_to_manager_client_helpdesk_and_manual_lifecycle(desk_db,monk
         async with factory() as s:
             replies=(await s.scalars(select(DeskMessage).where(DeskMessage.destination==client_id))).all()
             assert len(replies)==3
-            assert all("Откройте персональную ссылку" in reply.body and reply.draft_id is None for reply in replies)
+            assert all(reply.draft_id is None for reply in replies)
+            assert sum("Выберите действие в меню" in reply.body for reply in replies) == 2
+            assert sum("Откройте персональную ссылку" in reply.body for reply in replies) == 1
         start=client_update(1,"/start "+link)
         await dispatcher.feed_update(client_bot,start);await dispatcher.feed_update(client_bot,start)
         for mid,command in enumerate(("/help", "/orders", f"/status {did}"), 13):
             await dispatcher.feed_update(client_bot,client_update(mid,command))
         async with factory() as s:
             replies={row.idempotency_key:row for row in (await s.scalars(select(DeskMessage).where(DeskMessage.destination==client_id))).all()}
-            for mid in (13,14):
-                assert ("/status НОМЕР" if mid == 13 else f"/status {did}") in replies[f"desk:client:{client_id}:{mid}:ack"].body
+            assert "Выберите действие в меню" in replies[f"desk:client:{client_id}:13:ack"].body
+            assert f"Заявка №{did}: В работе" in replies[f"desk:client:{client_id}:14:ack"].body
             assert replies[f"desk:client:{client_id}:15:ack"].body==f"Заявка №{did}: В работе"
         await dispatcher.feed_update(client_bot,client_update(2,f"/message {did} <b>Здравствуйте</b>"))
         await dp.feed_update(manager_bot,group_update(201,"Internal group conversation"))
