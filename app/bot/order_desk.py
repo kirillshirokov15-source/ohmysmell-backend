@@ -9,11 +9,16 @@ from app.services.desk_display import desk_card
 
 async def desk_access(actor, chat_id):
     from app.database.session import async_session
+    from app.services.telegram_metrics import observe
+    from time import perf_counter
+    started = perf_counter()
     try:
         async with async_session() as session:
             await authorized_manager(session, actor, chat_id)
     except DeskError:
         return False
+    finally:
+        observe("authorization", started)
     return True
 
 
@@ -133,12 +138,13 @@ def register(dp, check_access, safe_callback_answer):
     async def desk_callback(callback):
         if not allowed_event(callback, callback=True):
             return
+        # Acknowledge before database I/O; authorization still gates actions.
+        if not await safe_callback_answer(callback):
+            return
         from app.repositories.manager_repository import ManagerRepository
         if not await ManagerRepository().is_active_by_telegram_id(callback.from_user.id):
             return
         if not await desk_access(callback.from_user.id, callback.message.chat.id):
-            return
-        if not await safe_callback_answer(callback):
             return
         from app.services.telegram_cards import enabled, obsolete
         if enabled() and await obsolete(callback.message.chat.id, callback.message.message_id):
