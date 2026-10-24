@@ -131,6 +131,28 @@ MANAGER_HELP = ("Выберите заказ, чтобы увидеть след
                 "Обычные сообщения в группе остаются перепиской сотрудников.")
 
 
+@dp.message(Command("cardreceipt"))
+async def reconcile_card_receipt(message: Message):
+    """Manual recovery of an uncertain Telegram send, never an arbitrary message ID."""
+    if not await check_access(message):
+        return
+    from app.services.telegram_cards import enabled, reconcile
+    if not enabled():
+        await message.answer("Журнал доставки карточек не включён.")
+        return
+    try:
+        parts = (message.text or "").split()
+        if len(parts) != 2:
+            raise ValueError()
+        kind, identifier = parts[1].split(":")
+        if kind not in {"draft", "order"} or not identifier.isdecimal() or not message.reply_to_message:
+            raise ValueError()
+        await reconcile(message.bot, parts[1], message.reply_to_message)
+        await message.answer("Квитанция доставки подтверждена. Откройте карточку из списка.")
+    except (ValueError, IndexError):
+        await message.answer("Для сверки ответьте на карточку бота: /cardreceipt draft:НОМЕР или order:НОМЕР.")
+
+
 @dp.message(Command("help"))
 async def help_handler(message: Message):
     if not await check_access(message):
