@@ -28,7 +28,7 @@ def test_counterparty_button_always_returns_explanatory_message(monkeypatch):
     answer.assert_awaited_once()
     text=answer.await_args.args[0]
     assert "Точных совпадений не найдено" in text
-    assert "/cpsearch 8" in text
-    assert "/newcp 8" in text
-    assert "/cpcheck 8" in text
+    assert "Ввести контрагента вручную" in text
+    assert "Создание новой карточки" in text
+    assert "/cp" not in text
     edit.assert_not_awaited()
