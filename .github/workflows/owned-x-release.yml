@@ -34,4 +34,5 @@ jobs:
             tests/test_hatuna_document_runner.py \
             tests/test_hatuna_full_flow.py \
             tests/test_hatuna_order8_post_pick_scope.py \
-            tests/test_x_partner_guided_receipt.py
+            tests/test_x_partner_guided_receipt.py \
+            tests/test_own_x_live_gates.py
