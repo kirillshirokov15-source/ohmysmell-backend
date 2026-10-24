@@ -143,10 +143,7 @@ def build_draft_card(draft: DraftOrder) -> str:
             for candidate in draft.counterparty_candidates[:5]
         )
     if getattr(draft, "source", None) == "email" and not draft.counterparty_id:
-        lines.extend(["", "Поиск юрлица/ИНН: /cpsearch "
-            + str(draft.id) + " НАЗВАНИЕ_ИЛИ_ИНН",
-            "Новый (с проверкой дублей): /newcp "
-            + str(draft.id) + " ПОЛНОЕ_НАЗВАНИЕ"])
+        lines.extend(["", "Контрагент: выберите вариант МойСклад или воспользуйтесь кнопкой ручного поиска."])
     audit = (getattr(draft, "contact_details", None) or {}).get("counterparty_reconciliation")
     if audit:
         lines.append("Сверка контрагента: " + str(audit.get("evidence") or "подтверждено")[:100])
@@ -230,7 +227,7 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
         if str(item.match_status) in {"not_found", "ambiguous"}:
             rows.append([{"text": f"🔎 #{item.id}: другой товар / нет в МойСклад",
                           "callback_data": f"draft:searchhint:{draft.id}:{item.id}"}])
-    for candidate_index, candidate in enumerate(draft.counterparty_candidates[:3]):
+    for candidate_index, candidate in enumerate(draft.counterparty_candidates[:5]):
         rows.append([{
             "text": (
                 "Контрагент: "
@@ -245,6 +242,11 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
             "text": "🔎 Сверить контрагентов МойСклад",
             "callback_data": f"draft:counterparty_select:{draft.id}",
         }])
+        if getattr(draft, "source", None) == "email":
+            rows.append([{"text": "✍️ Ввести контрагента вручную",
+                          "callback_data": f"draft:cpmanual:{draft.id}"}])
+            rows.append([{"text": "➕ Создать нового контрагента",
+                          "callback_data": f"draft:cpnew:{draft.id}"}])
 
     statuses = {str(item.match_status) for item in draft.items}
     if "ambiguous" in statuses or "not_found" in statuses:
@@ -270,7 +272,6 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
         "callback_data": f"draft:reject:{draft.id}",
     })
     rows.append(final_actions)
-    rows.append([{"text": "Обновить", "callback_data": f"draft:refresh:{draft.id}"}])
     if hasattr(draft, "revision") and isinstance(draft.revision, int):
         for row in rows:
             for button in row:
