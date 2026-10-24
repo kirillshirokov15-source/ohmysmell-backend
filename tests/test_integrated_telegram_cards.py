@@ -107,3 +107,54 @@ def test_callback_ack_samples_quantiles_without_real_telegram(monkeypatch):
     assert asyncio.run(telegram_bot.safe_callback_answer(callback))
     assert len(samples["callback_ack"]) == 1
     assert samples["callback_ack"][0] >= 0
+
+def test_order_confirmation_prompt_is_receipted_and_refresh_replaces_it(card_db, monkeypatch):
+    """A confirmation prompt must not leave a stale digest in the order receipt."""
+    from app.bot import telegram_bot
+
+    monkeypatch.setenv("OMS_TELEGRAM_DURABLE_CARDS_ENABLED", "true")
+
+    async def run():
+        bot = SimpleNamespace(
+            send_message=AsyncMock(side_effect=[
+                SimpleNamespace(message_id=111),
+                SimpleNamespace(message_id=112),
+                SimpleNamespace(message_id=113),
+            ]),
+            delete_message=AsyncMock(),
+        )
+        message = SimpleNamespace(
+            bot=bot, chat=SimpleNamespace(id=-1010), edit_text=AsyncMock()
+        )
+        await cards.publish(bot, -1010, "order:8", "Текущий заказ")
+        assert await telegram_bot.safe_edit_message(
+            message, "Отменить этот неоплаченный заказ?",
+            draft_id=0, order_id=8,
+        )
+        assert await telegram_bot.safe_edit_message(
+            message, "Текущий заказ", draft_id=0, order_id=8,
+        )
+        assert bot.send_message.await_count == 3
+        assert bot.delete_message.await_count == 2
+        bot.delete_message.assert_any_await(chat_id=-1010, message_id=111)
+        bot.delete_message.assert_any_await(chat_id=-1010, message_id=112)
+        assert await cards.obsolete(-1010, 111)
+        assert await cards.obsolete(-1010, 112)
+        message.edit_text.assert_not_awaited()
+
+    asyncio.run(run())
+
+
+def test_order_refresh_preserves_legacy_edit_when_flag_off(monkeypatch):
+    from app.bot import telegram_bot
+
+    monkeypatch.setenv("OMS_TELEGRAM_DURABLE_CARDS_ENABLED", "false")
+    bot = SimpleNamespace(send_message=AsyncMock())
+    message = SimpleNamespace(
+        bot=bot, chat=SimpleNamespace(id=-1010), edit_text=AsyncMock()
+    )
+    assert asyncio.run(telegram_bot.safe_edit_message(
+        message, "Старый режим", draft_id=0, order_id=8,
+    ))
+    message.edit_text.assert_awaited_once_with("Старый режим", reply_markup=None)
+    bot.send_message.assert_not_awaited()
