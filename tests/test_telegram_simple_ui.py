@@ -39,7 +39,7 @@ def test_compact_card_only_exposes_next_step_and_preserves_actions():
     from app.services.manager_workspace import order_card, order_keyboard
     o = order(items=[SimpleNamespace(id=1, qty=2)], ui_supply_ready=True)
     rows = order_keyboard(o)["inline_keyboard"]
-    assert len(rows) == 3 and rows[0][0]["text"] == "Начать сборку"
+    assert len(rows) == 2 and rows[0][0]["text"] == "Начать сборку"
     text = order_card(o)
     assert len(text.splitlines()) == 7 and "/" not in text and "Клиент:" not in text
     assert "order:paid:1:0" in str(order_keyboard(o, expanded=True))
@@ -201,7 +201,7 @@ def test_source_buttons_reuse_service_and_bind_actor(source_db, catalog, dispatc
     assert len(send(item, actor=222)) == 1  # callback acknowledgement only
     calls = send(item)
     assert all(any(label == b.text for call in calls if getattr(call, "reply_markup", None)
-        for row in call.reply_markup.inline_keyboard for b in row) for label in ("Свой склад", "X", "Внешний поставщик"))
+        for row in call.reply_markup.inline_keyboard for b in row) for label in ("Свой склад", "Склад Х", "Внешний поставщик"))
     calls = send(choose(calls, "Свой склад"))
     calls = send(choose(calls, "wh1"))
     calls = send(choose(calls, "Подтвердить"))
