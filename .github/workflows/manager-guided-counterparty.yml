@@ -1,0 +1,29 @@
+name: Manager guided counterparty UX
+on:
+  push:
+    branches:
+      - fix/manager-counterparty-guided-20261025
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  manager-guided:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt pytest aiosqlite
+      - name: Validate syntax
+        run: python -m compileall -q app tests
+      - name: Run manager counterparty, Gmail and Telegram regression tests
+        env:
+          APP_ENV: staging
+          EXTERNAL_WRITES_ENABLED: 'false'
+          TELEGRAM_BOT_TOKEN: '123456:TEST_CI_TOKEN_NO_NETWORK'
+        run: |
+          python -m pytest -q tests/test_manager_guided_counterparty.py tests/test_manager_cp_action_feedback.py tests/test_wholesale_counterparty_acceptance.py tests/test_manager_email_orders_navigation.py tests/test_telegram_stale_callbacks.py tests/test_gmail_real_order_samples.py tests/test_wholesale_real_email_samples.py

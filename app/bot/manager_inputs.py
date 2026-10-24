@@ -102,6 +102,52 @@ async def route(message, check_access):
             from app.services.order_desk import DeskService
             await DeskService().reply(data["draft_id"], message.from_user.id, message.chat.id, message.message_id, message.text)
             await message.answer("Сообщение передано клиенту.")
+        elif action in {"qtymanual", "searchhint", "cpmanual", "cpnew"}:
+            from app.services.draft_order_service import DraftOrderService, DraftOrderError
+            from app.services.draft_telegram_service import build_draft_card, build_draft_keyboard
+            service = DraftOrderService()
+            draft = await service._get_required(data["draft_id"])
+            if draft.revision != data["revision"] or draft.status in {"new", "rejected"} or draft.finalized_order_id:
+                await message.answer("Заявка изменилась. Откройте актуальную карточку и повторите действие.")
+                pending.pop(key, None)
+                return True
+            if action in {"cpmanual", "cpnew"} and (draft.source != "email" or draft.counterparty_id):
+                pending.pop(key, None)
+                await message.answer("Контрагент уже привязан или заявка больше не доступна.")
+                return True
+            if action == "cpnew":
+                from app.services.counterparty_creation_service import CounterpartyCreationService, CounterpartyCreationError
+                try:
+                    prepared = await CounterpartyCreationService().preview(
+                        data["draft_id"], message.text, message.from_user.id)
+                except CounterpartyCreationError as error:
+                    await message.answer(str(error).replace(
+                        "Используйте /cpsearch НОМЕР НАЗВАНИЕ", "Воспользуйтесь кнопкой ручного поиска"))
+                    return True
+                markup = InlineKeyboardMarkup(inline_keyboard=[[
+                    {"text": "✅ Создать контрагента в МойСклад",
+                     "callback_data": f"draft:cpcreate:{prepared.id}:v{prepared.revision}"},
+                    {"text": "Отмена", "callback_data": f"draft:actions:{prepared.id}"}
+                ]])
+                await message.answer("Проверьте полное название: " + " ".join(message.text.split())[:180]
+                                     + "\nНовая карточка пока НЕ создана. "
+                                       "Дубли проверены; подтвердите создание отдельной кнопкой.",
+                                     parse_mode=None, reply_markup=markup)
+            else:
+                service.repository.expected_revision = data["revision"]
+                if action == "cpmanual":
+                    draft = await service.search_counterparties(data["draft_id"], message.text)
+                elif action == "searchhint":
+                    draft = await service.search_item(data["draft_id"], data["item_id"], message.text)
+                else:
+                    if not message.text.isascii() or not message.text.isdecimal() or not 0 < int(message.text) <= 10000:
+                        await message.answer("Введите количество от 1 до 10000.")
+                        return True
+                    draft = await service.repository.correct_quantity(
+                        data["draft_id"], data["item_id"], int(message.text), message.from_user.id)
+                    draft = await service.review(data["draft_id"], draft)
+                await message.answer(build_draft_card(draft), parse_mode=None,
+                    reply_markup=InlineKeyboardMarkup.model_validate(build_draft_keyboard(draft)))
         elif action == "source_quantity":
             if not message.text.isascii() or not message.text.isdecimal() or not 0 < int(message.text) <= data["qty"]:
                 await message.answer(f"Введите количество от 1 до {data['qty']}.")
@@ -141,7 +187,14 @@ async def route(message, check_access):
         pending.pop(key, None)
         if action in {"source_quantity", "source_cost"}:
             logger.info("manager_source_input_confirm_ready order_id=%s action=%s", data.get("order_id"), action)
-    except ValueError as error:
+    except Exception as error:
         from app.services.order_desk import DeskError
-        await message.answer(str(error) if isinstance(error, DeskError) else "Проверьте данные и повторите ответ.")
+        from app.services.draft_order_service import DraftOrderError
+        from app.services.order_lifecycle import InvalidOrderTransitionError
+        if not isinstance(error, (ValueError, DeskError, DraftOrderError, InvalidOrderTransitionError)):
+            raise
+        if isinstance(error, (DeskError, DraftOrderError, InvalidOrderTransitionError)):
+            await message.answer(str(error)[:350])
+        else:
+            await message.answer("Проверьте данные и повторите ответ.")
     return True

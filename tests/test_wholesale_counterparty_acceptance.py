@@ -142,7 +142,7 @@ def test_manager_preview_create_once_and_crm_link(database,monkeypatch):
         draft=await repo.create(message(cid))
         preview=await service.preview(draft.id,"ООО Омега",111)
         assert preview.contact_details["counterparty_create_preview"]["name"]=="ООО Омега"
-        assert "newcp" in build_draft_card(preview)
+        assert "ручного поиска" in build_draft_card(preview)
         assert provider.create_calls==0
         result=await service.create_confirmed(draft.id,111)
         assert result.counterparty_id=="new-uuid-001"
@@ -237,7 +237,7 @@ def test_manager_business_name_search_and_counterparty_reconciliation(database,m
         assert "Поиск менеджера" in candidates.counterparty_candidates[0]["reason"]
         fresh=await service.counterparty_reconciliation(draft.id)
         assert "Контрагент CRM: пока не выбран" in fresh
-        assert "cpsearch" in fresh
+        assert "Ввести контрагента вручную" in fresh
         selected=await service.link_counterparty(
             draft.id,"cp-verify","ООО Золотая Роза",actor=111)
         assert selected.counterparty_id=="cp-verify"

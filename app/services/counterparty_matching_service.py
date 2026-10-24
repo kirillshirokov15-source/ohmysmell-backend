@@ -5,6 +5,7 @@ Suggested links require explicit manager selection and fresh provider verificati
 """
 import re
 import unicodedata
+from difflib import SequenceMatcher
 from typing import Protocol
 
 from app.integrations.moysklad.async_gateway import AsyncMoySkladGateway
@@ -18,6 +19,48 @@ class CounterpartySearchProvider(Protocol):
 
 def normalize_text(value):
     return " ".join(unicodedata.normalize("NFKC", str(value or "")).casefold().split())
+
+
+_CYRILLIC_TO_LATIN = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e",
+    "ё": "e", "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k",
+    "л": "l", "м": "m", "н": "n", "о": "o", "п": "p", "р": "r",
+    "с": "s", "т": "t", "у": "u", "ф": "f", "х": "kh", "ц": "ts",
+    "ч": "ch", "ш": "sh", "щ": "shch", "ы": "y", "э": "e",
+    "ю": "yu", "я": "ya", "ь": "", "ъ": "",
+}
+_LATIN_TO_CYRILLIC = {
+    "shch": "щ", "sch": "щ", "zh": "ж", "kh": "х", "ts": "ц",
+    "ch": "ч", "sh": "ш", "yu": "ю", "ya": "я", "yo": "ё",
+    **{v: k for k, v in _CYRILLIC_TO_LATIN.items() if len(v) == 1},
+}
+_LATIN_TO_CYRILLIC.update({"e": "е", "y": "й"})
+_LATIN_PATTERN = re.compile("|".join(sorted(_LATIN_TO_CYRILLIC, key=len, reverse=True)))
+
+
+def transliterate(value):
+    """Comparable Latin key for Russian or English spellings, never legal-entity proof."""
+    return "".join(_CYRILLIC_TO_LATIN.get(c, c) for c in
+                   normalize_text(value).replace("ё", "е"))
+
+
+def search_aliases(value):
+    """Bounded provider lookups for manual candidate discovery."""
+    normalized = normalize_text(value).replace("ё", "е")
+    if not normalized:
+        return ()
+    if "@" in normalized or sum(ch.isdigit() for ch in normalized) >= 5:
+        return (normalized,)
+    aliases = [normalized]
+    if re.search("[а-я]", normalized):
+        aliases.append(transliterate(normalized))
+    elif re.search("[a-z]", normalized):
+        aliases.append(_LATIN_PATTERN.sub(
+            lambda hit: _LATIN_TO_CYRILLIC[hit.group(0)], normalized))
+    compact = "".join(normalized.split())
+    if compact != normalized:
+        aliases.append(compact)
+    return tuple(dict.fromkeys(alias for alias in aliases if len(alias) >= 3))[:3]
 
 
 def normalize_phone(value):
@@ -134,18 +177,30 @@ class CounterpartyMatchingService:
         return self._candidate(record, reason=evidence)
 
     async def manual_search_async(self, query):
-        """Manager-entered business/INN search, never automatic linkage."""
-        value = str(query or "").strip()
+        """Return explicit manager choices, including transliteration; never auto-link."""
+        value = " ".join(str(query or "").strip().split())
         if len(value) < 3 or len(value) > 150:
             raise ValueError("Укажите название или реквизит (от 3 до 150 символов)")
-        matches = await self.async_gateway.search_counterparties(value)
+        matches = []
+        for alias in search_aliases(value):
+            matches.extend(await self.async_gateway.search_counterparties(alias))
         if value.isdigit() and len(value) in {10, 12} and hasattr(self.provider, "find_counterparties_exact"):
             matches.extend(await self.async_gateway.find_counterparties_exact("inn", value))
         if "@" in value and hasattr(self.provider, "find_counterparties_exact"):
             matches.extend(await self.async_gateway.find_counterparties_exact("email", value))
         unique = {row["id"]: row for row in matches if row.get("id") and not row.get("archived")}
+        wanted = transliterate(value).replace(" ", "")
+        def rank(item):
+            candidate = transliterate(item.get("name")).replace(" ", "")
+            exact = wanted == candidate
+            contained = bool(wanted and wanted in candidate)
+            score = SequenceMatcher(None, wanted, candidate).ratio() if wanted and candidate else 0
+            return (-int(exact), -int(contained), -score, normalize_text(item.get("name")))
+        sorted_rows = sorted(unique.values(), key=rank)
+        # The provider has already restricted the candidate set. A weak fuzzy
+        # result is still a suggestion, NOT verified legal-entity identity.
         return [self._candidate(row, reason="Поиск менеджера – сверить реквизиты")
-                for row in list(unique.values())[:10]]
+                for row in sorted_rows[:5]]
 
     async def duplicate_candidates(self, *, name, email=None, phone=None, inn=None):
         """Fail closed if even one likely existing record is found."""
@@ -154,7 +209,8 @@ class CounterpartyMatchingService:
             if value:
                 candidates.extend(await self.async_gateway.find_counterparties_exact(field, str(value)))
         for query in self._queries(email, phone, inn, name):
-            candidates.extend(await self.async_gateway.search_counterparties(query))
+            for alias in search_aliases(query):
+                candidates.extend(await self.async_gateway.search_counterparties(alias))
         # Name and email weak matches should also block create for review.
         seen = set()
         output = []
