@@ -174,7 +174,7 @@ def serialize_draft(draft):
 from app.api.buying_cors import BuyingCORSMiddleware
 app.add_middleware(
     BuyingCORSMiddleware,
-    buying_origins=settings.buying_allowed_origins,
+    buying_origins=list(dict.fromkeys([*settings.buying_allowed_origins, "https://ohmysmell-buying.christiankvyatkovsky.chatgpt.site"])),
     allow_origins=list(dict.fromkeys([
         *settings.cors_origins, "https://ohmysmell.ru", "https://www.ohmysmell.ru"
     ])),
