@@ -1,0 +1,56 @@
+name: Integrated Telegram card migration rehearsal
+on:
+  push:
+    branches:
+      - integration/telegram-release-candidate-20261025
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  postgres-schema:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: ohmysmell_ci
+          POSTGRES_USER: ohmysmell_ci
+          POSTGRES_PASSWORD: postgres_ci_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ohmysmell_ci -d ohmysmell_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      APP_ENV: staging
+      EXTERNAL_WRITES_ENABLED: 'false'
+      OMS_TELEGRAM_DURABLE_CARDS_ENABLED: 'false'
+      DATABASE_URL: postgresql+psycopg2://ohmysmell_ci:postgres_ci_only@localhost:5432/ohmysmell_ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Migrate existing schema only to production baseline
+        run: python -m alembic upgrade r71fd865eb98
+      - name: Upgrade with additive Telegram card receipt tables
+        run: python -m alembic upgrade s82ae976fc09
+      - name: Verify schema and the exact Alembic revision
+        run: |
+          python - <<'PY'
+          from sqlalchemy import create_engine, inspect, text
+          import os
+          engine = create_engine(os.environ["DATABASE_URL"])
+          with engine.connect() as con:
+              revision = con.scalar(text("SELECT version_num FROM alembic_version"))
+              assert revision == "s82ae976fc09", revision
+              tables = set(inspect(con).get_table_names())
+              assert {"telegram_cards", "telegram_card_attempts"} <= tables, tables
+              print("Postgres additive migration verified at", revision)
+          PY
