@@ -370,6 +370,16 @@ async def notify_managers_about_draft(draft: DraftOrder) -> int:
     from app.bot.manager_group import notification_chats
     chat_ids = notification_chats(managers)
     keyboard, card = compact_draft_keyboard(draft), compact_draft_card(draft)
+    from app.services.telegram_cards import enabled
+    if enabled():
+        from aiogram import Bot
+        from aiogram.types import InlineKeyboardMarkup
+        from app.services.telegram_cards import publish
+        async with Bot(token=token) as bot:
+            for chat_id in chat_ids:
+                await publish(bot, chat_id, f"draft:{draft.id}", card,
+                              InlineKeyboardMarkup.model_validate(keyboard))
+        return len(chat_ids)
     def send():
         with verified_session() as http_session:
             for chat_id in chat_ids:
