@@ -500,8 +500,8 @@ class DraftOrderService:
                 raise DraftOrderError("Не удалось получить свежие данные МойСклад") from e
             for item in candidates[:5]:
                 lines.append(f"• {item.get('name')} — {item.get('reason')}")
-            lines.append(f"Поиск вручную: /cpsearch {draft.id} НАЗВАНИЕ_ИЛИ_ИНН")
-            lines.append(f"Создать новый: /newcp {draft.id} ПОЛНОЕ_НАЗВАНИЕ")
+            lines.append("Найдите юридическое лицо через кнопку «Ввести контрагента вручную».")
+            lines.append("Если карточки нет, выберите «Создать нового контрагента» и подтвердите после проверки дублей.")
             return "\n".join(lines)[:3700]
         if not hasattr(self.counterparty_service, "async_gateway"):
             raise DraftOrderError("Проверка через API МойСклад не настроена")
