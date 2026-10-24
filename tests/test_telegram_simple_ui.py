@@ -37,16 +37,16 @@ def test_three_manager_buttons_and_single_group_menu(dispatch, monkeypatch):
 def test_compact_card_only_exposes_next_step_and_preserves_actions():
     from tests.test_release_candidate import order
     from app.services.manager_workspace import order_card, order_keyboard
-    o = order(items=[SimpleNamespace(id=1, qty=2)], ui_supply_ready=True)
+    o = order(items=[SimpleNamespace(id=1, qty=2, name="Тестовый товар", price=50000)], ui_supply_ready=True)
     rows = order_keyboard(o)["inline_keyboard"]
-    assert len(rows) == 3 and rows[0][0]["text"] == "Начать сборку"
+    assert len(rows) == 2 and rows[0][0]["text"] == "Начать сборку"
     text = order_card(o)
-    assert len(text.splitlines()) == 7 and "/" not in text and "Клиент:" not in text
+    assert "Заказ №1" in text and "Товары:" in text and "Оплата:" in text
     assert "order:paid:1:0" in str(order_keyboard(o, expanded=True))
     o.needs_review = True
     assert "assembling" not in str(order_keyboard(o, expanded=True))
     o.fulfillment_status = "cancelled"
-    assert len(order_keyboard(o)["inline_keyboard"]) == 2
+    assert [b["text"] for row in order_keyboard(o)["inline_keyboard"] for b in row] == ["⋯ Действия"]
 
 
 def test_client_navigation_persists_selection_and_rechecks_ownership(database, catalog):
@@ -201,7 +201,7 @@ def test_source_buttons_reuse_service_and_bind_actor(source_db, catalog, dispatc
     assert len(send(item, actor=222)) == 1  # callback acknowledgement only
     calls = send(item)
     assert all(any(label == b.text for call in calls if getattr(call, "reply_markup", None)
-        for row in call.reply_markup.inline_keyboard for b in row) for label in ("Свой склад", "X", "Внешний поставщик"))
+        for row in call.reply_markup.inline_keyboard for b in row) for label in ("Свой склад", "Склад Х", "Внешний поставщик"))
     calls = send(choose(calls, "Свой склад"))
     calls = send(choose(calls, "wh1"))
     calls = send(choose(calls, "Подтвердить"))

@@ -1,0 +1,28 @@
+name: Client bot DB lease recovery
+on:
+  push:
+    branches:
+      - fix/client-db-lease-recovery-20261024
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  safety:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pytest aiosqlite
+      - name: Compile
+        run: python -m compileall -q app tests
+      - name: Verify DB lease recovery and client bot regressions
+        env:
+          APP_ENV: staging
+          EXTERNAL_WRITES_ENABLED: 'false'
+          TELEGRAM_BOT_TOKEN: '123456:TEST_CI_TOKEN_NO_NETWORK'
+        run: python -m pytest -q tests/test_worker_lease_recovery.py tests/test_client_tilda_product_titles.py tests/test_runtime_observability.py tests/test_staging_bot_runner.py tests/test_telegram_stale_callbacks.py tests/test_telegram_simple_ui.py tests/test_order_desk_hardening.py
