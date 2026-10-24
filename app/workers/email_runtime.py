@@ -14,6 +14,11 @@ from app.workers.lifecycle import install_stop_signals
 logger = logging.getLogger("app.workers.email_runtime")
 
 
+def should_rebuild_readonly_session(role, category):
+    """Recreate Gmail transport on auth failure; keep durable inbox cursor intact."""
+    return role == 'customer' and category in {'bad_credentials', 'reauth_required'}
+
+
 def validate_email():
     settings.validate_runtime("email")
     if settings.environment == "production" and os.getenv("EMAIL_PRODUCTION_ACTIVATED", "false").lower() != "true":
@@ -131,8 +136,15 @@ async def run(worker=None, *, mailbox_role='customer'):
                         except Exception:
                             state.update(status='database_unavailable', ready=False)
                         if previous_error != category:
-                            log_event(logger, "email_poll_failed", level=logging.ERROR, result=category)
+                            log_event(logger, "email_poll_failed", level=logging.ERROR,
+                                      result=category, error_type=type(error).__name__)
                         previous_error = category
+                        if worker is not None and should_rebuild_readonly_session(mailbox_role, category):
+                            # Gmail AuthorizedHttp or an in-memory access token may be stale.
+                            # Recreate ONLY the connection on the next (throttled) attempt.
+                            # Never rotate tokens, advance the cursor or perform interactive OAuth.
+                            worker = None
+                            log_event(logger, "email_readonly_session_discarded", result=category)
                     try:
                         await asyncio.wait_for(stop.wait(), delay)
                     except TimeoutError:
@@ -143,7 +155,9 @@ async def run(worker=None, *, mailbox_role='customer'):
                     try:
                         await asyncio.wait_for(conn.scalar(text("SELECT 1")), 5)
                         await conn.commit()
-                    except Exception:
+                    except Exception as error:
+                        log_event(logger, "email_ownership_probe_failed", level=logging.ERROR,
+                                  result=type(error).__name__, role=mailbox_role + '-email')
                         state.update(status='database_unavailable', ready=False)
                         failed.set()
                         stop.set()
