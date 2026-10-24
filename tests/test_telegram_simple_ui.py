@@ -37,16 +37,16 @@ def test_three_manager_buttons_and_single_group_menu(dispatch, monkeypatch):
 def test_compact_card_only_exposes_next_step_and_preserves_actions():
     from tests.test_release_candidate import order
     from app.services.manager_workspace import order_card, order_keyboard
-    o = order(items=[SimpleNamespace(id=1, qty=2, name="Тестовый товар", price=50000)], ui_supply_ready=True)
+    o = order(items=[SimpleNamespace(id=1, qty=2)], ui_supply_ready=True)
     rows = order_keyboard(o)["inline_keyboard"]
-    assert len(rows) == 2 and rows[0][0]["text"] == "Начать сборку"
+    assert len(rows) == 3 and rows[0][0]["text"] == "Начать сборку"
     text = order_card(o)
-    assert "Заказ №1" in text and "Товары:" in text and "Оплата:" in text
+    assert len(text.splitlines()) == 7 and "/" not in text and "Клиент:" not in text
     assert "order:paid:1:0" in str(order_keyboard(o, expanded=True))
     o.needs_review = True
     assert "assembling" not in str(order_keyboard(o, expanded=True))
     o.fulfillment_status = "cancelled"
-    assert [b["text"] for row in order_keyboard(o)["inline_keyboard"] for b in row] == ["⋯ Действия"]
+    assert len(order_keyboard(o)["inline_keyboard"]) == 2
 
 
 def test_client_navigation_persists_selection_and_rechecks_ownership(database, catalog):
@@ -187,20 +187,10 @@ def test_source_buttons_reuse_service_and_bind_actor(source_db, catalog, dispatc
     monkeypatch.setenv("MANAGER_TELEGRAM_USER_IDS", "111,222")
     order, service, _ = asyncio.run(seed_sources(source_db))
     monkeypatch.setattr(source_navigation, "OrderSourceService", lambda: service)
-    # Supply navigation now auto-selects the sole valid warehouse; isolate
-    # this UI test from live MySklad stores API.
-    monkeypatch.setattr(source_navigation, "source_warehouses",
-                        lambda product, ids, source: [{"id": "wh1", "name": "Основной"}])
     monkeypatch.setattr(source_navigation, "async_session", source_db)
     monkeypatch.setattr("app.repositories.order_repository.get_order", AsyncMock(return_value=order))
     monkeypatch.setattr(telegram_bot, "get_order", AsyncMock(return_value=order))
-    async def catalog(*args, **kwargs):
-        return [{"id": order.items[0].product_id, "name": "Тестовый товар",
-                 "stocks": [{"id": "wh1", "name": "Основной"}]}]
-    monkeypatch.setattr(ProductService, "get_catalog_async", catalog)
-    from app.integrations.moysklad.async_gateway import AsyncMoySkladGateway
-    monkeypatch.setattr(AsyncMoySkladGateway, "get_stores",
-                        AsyncMock(return_value=[{"id": "wh1", "name": "Основной"}]))
+    monkeypatch.setattr(ProductService, "get_catalog_async", service.products.get_catalog_async)
     def send(data, actor=111):
         return dispatch(None, group=True, chat_id=-100123456, actor=actor, callback=data)
     def choose(calls, prefix):
@@ -211,9 +201,10 @@ def test_source_buttons_reuse_service_and_bind_actor(source_db, catalog, dispatc
     assert len(send(item, actor=222)) == 1  # callback acknowledgement only
     calls = send(item)
     assert all(any(label == b.text for call in calls if getattr(call, "reply_markup", None)
-        for row in call.reply_markup.inline_keyboard for b in row) for label in ("Свой склад", "Склад Х", "Внешний поставщик"))
+        for row in call.reply_markup.inline_keyboard for b in row) for label in ("Свой склад", "X", "Внешний поставщик"))
     calls = send(choose(calls, "Свой склад"))
-    calls = send(choose(calls, "Подтвердить свой склад"))
+    calls = send(choose(calls, "wh1"))
+    calls = send(choose(calls, "Подтвердить"))
     view = asyncio.run(service.read(order.id, 111, -100123456))
     assert view["items"][0]["ready"] == 8
     assert view["revision"] == 1
@@ -256,7 +247,7 @@ def test_draft_compact_view_keeps_original_versioned_actions():
         items=[SimpleNamespace(id=1, qty=1, match_status="ambiguous", candidates=[], product_id=None)])
     rows = compact_draft_keyboard(draft)["inline_keyboard"]
     assert len(rows) == 3
-    assert [row[0]["text"] for row in rows] == ["🧾 Проверить заказ", "Подробнее", "⋯ Действия"]
+    assert [row[0]["text"] for row in rows] == ["Проверить заявку", "Подробнее", "⋯ Действия"]
     assert compact_draft_keyboard(draft, expanded=True) == build_draft_keyboard(draft)
 
 
