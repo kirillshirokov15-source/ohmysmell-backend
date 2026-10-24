@@ -38,7 +38,16 @@ def source_warehouses(product, allowed_ids, source_type):
 
 
 async def replace_screen(message, text, rows):
-    """Edit one existing manager card; do not stack callback replies."""
+    """Edit one existing manager card without retaining a stale receipt digest.
+
+    Source navigation is intentionally an in-place screen: a ForceReply prompt
+    can still refer to this message. Invalidate the durable digest *before*
+    changing the message so that a later canonical order publish replaces the
+    source screen even when its old text and keyboard equal the stored digest.
+    """
+    from app.services.telegram_cards import enabled, display_changed
+    if enabled():
+        await display_changed(message.chat.id, message.message_id)
     try:
         await message.edit_text(text[:3900], parse_mode=None,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
@@ -225,6 +234,11 @@ def register(dp, check_access, safe_callback_answer):
     @dp.callback_query(F.data.startswith("sourceui:"))
     async def navigate(callback):
         if not await safe_callback_answer(callback):
+            return
+        from app.services.telegram_cards import enabled, obsolete
+        if enabled() and callback.message and await obsolete(
+                callback.message.chat.id, callback.message.message_id):
+            # Never accept source-navigation callbacks from retired cards.
             return
         message = callback.message.model_copy(update={"from_user": callback.from_user, "text": "/sources"}).as_(callback.bot)
         if not await check_access(message):
