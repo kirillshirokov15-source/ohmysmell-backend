@@ -142,7 +142,7 @@ def test_manager_preview_create_once_and_crm_link(database,monkeypatch):
         draft=await repo.create(message(cid))
         preview=await service.preview(draft.id,"ООО Омега",111)
         assert preview.contact_details["counterparty_create_preview"]["name"]=="ООО Омега"
-        assert "newcp" in build_draft_card(preview)
+        assert "ручного поиска" in build_draft_card(preview)
         assert provider.create_calls==0
         result=await service.create_confirmed(draft.id,111)
         assert result.counterparty_id=="new-uuid-001"
