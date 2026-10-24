@@ -34,6 +34,11 @@ async def complete_source_prompt(message, data, prompt_id, label, row):
     origin_id = data.get("origin_message_id")
     updated = False
     if origin_id:
+        from app.services.telegram_cards import enabled, display_changed
+        if enabled():
+            # The ForceReply completion edits the existing order card outside
+            # publish(); invalidate its receipt before the Telegram operation.
+            await display_changed(message.chat.id, origin_id)
         try:
             await message.bot.edit_message_text(
                 chat_id=message.chat.id, message_id=origin_id, text=label,
