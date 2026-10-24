@@ -401,23 +401,36 @@ async def draft_callback_handler(callback: CallbackQuery):
         elif action == "qty":
             draft = await service.repository.correct_quantity(draft_id, int(parts[3]), int(parts[4]), callback.from_user.id)
             draft = await service.review(draft_id, draft)
-        elif action == "qtymanual":
-            if callback.message:
-                await callback.message.answer(f"Введите: /quantity {draft_id} {int(parts[3])} КОЛИЧЕСТВО {int(parts[-1][1:])}")
-            return
-        elif action == "searchhint":
+        elif action in {"qtymanual", "searchhint", "cpmanual", "cpnew"}:
+            from app.bot.manager_inputs import prompt_input
+            from aiogram.types import Message as TelegramMessage
+            if not isinstance(callback.message, TelegramMessage):
+                raise DraftOrderError("Откройте актуальную карточку заявки")
             current = await DraftOrderRepository().get(draft_id)
-            item_id = int(parts[3])
-            if not current or not any(item.id == item_id for item in current.items):
-                raise DraftOrderError("Позиция уже изменена; обновите карточку")
-            if callback.message:
-                await callback.message.answer(
-                    f"Найти другой товар в МойСклад: /match {draft_id} {item_id} НАЗВАНИЕ_ИЛИ_АРТИКУЛ\n"
-                    "Если подходящего товара нет даже после поиска, проверьте наличие "
-                    "на складе Х и создайте карточку в МойСклад после проверки дублей. "
-                    "До сопоставления подтверждение заказа заблокировано.",
-                    parse_mode=None,
-                )
+            expected = int(parts[-1][1:])
+            if current is None or current.revision != expected:
+                raise DraftOrderError("Заявка изменилась; откройте актуальную карточку")
+            if current.status in {"new", "rejected"} or current.finalized_order_id:
+                raise DraftOrderError("Заявка не доступна для редактирования")
+            if action in {"cpmanual", "cpnew"}:
+                if current.source != "email" or current.counterparty_id:
+                    raise DraftOrderError("Поиск контрагента доступен только для оптовой заявки")
+            else:
+                item_id = int(parts[3])
+                if not any(item.id == item_id for item in current.items):
+                    raise DraftOrderError("Позиция заявки изменилась")
+            state = {"draft_id": draft_id, "revision": expected}
+            if action in {"qtymanual", "searchhint"}:
+                state["item_id"] = item_id
+            label = {
+                "qtymanual": "Введите целое количество товара (1–10000).",
+                "searchhint": "Введите название товара или артикул для поиска в МойСклад.",
+                "cpmanual": "Введите название, email или ИНН контрагента. Поиск не создаёт новую карточку.",
+                "cpnew": "Введите полное юридическое название. Сначала проверим дубли, затем отдельно подтвердите создание.",
+            }[action]
+            message = callback.message.model_copy(update={"from_user": callback.from_user}).as_(callback.bot)
+            await prompt_input(message, action, state, label)
+            outcome = "success"
             return
         elif action == "ambiguous":
             draft = await DraftOrderRepository().get(draft_id)
@@ -435,7 +448,7 @@ async def draft_callback_handler(callback: CallbackQuery):
                 )
                 for item in ambiguous
             ) or "Неоднозначных позиций нет"
-            text += f"\n\nПоиск товара: /match {draft_id} НОМЕР_ПОЗИЦИИ название или артикул"
+            text += "\n\nДля поиска выберите кнопку «другой товар» в действиях заявки."
             if callback.message:
                 await callback.message.answer(text)
         elif action == "pick":
@@ -493,19 +506,16 @@ async def draft_callback_handler(callback: CallbackQuery):
             draft = await service.load_counterparty_candidates(draft_id)
             if callback.message:
                 count = len(draft.counterparty_candidates or [])
-                heading = (f"🔎 Сверка МойСклад · заявка №{draft_id}\\n"
-                           + (f"Найдено совпадений по проверяемым реквизитам: {count}.\\n"
-                              if count else "Точных совпадений не найдено.\\n")
-                           + ("Выберите нужного контрагента ниже или проверьте по ИНН.\\n"
-                              if count else "Нельзя выбирать случайные карточки. Попробуйте ручной поиск.\\n")
-                           + f"/cpsearch {draft_id} НАЗВАНИЕ_ИЛИ_ИНН\\n"
-                           + f"/newcp {draft_id} ПОЛНОЕ_НАЗВАНИЕ\\n"
-                           + f"/cpcheck {draft_id}")
+                heading = (f"🔎 Сверка МойСклад · заявка №{draft_id}\n"
+                           + (f"Найдено совпадений по реквизитам: {count}.\n"
+                              if count else "Точных совпадений не найдено.\n")
+                           + "Выберите контрагента из вариантов ниже или нажмите "
+                             "«Ввести контрагента вручную». Создание новой карточки "
+                             "потребует отдельного подтверждения.")
                 await callback.message.answer(
-                    heading.replace("\\n", "\n"),
+                    heading,
                     parse_mode=None,
-                    reply_markup=InlineKeyboardMarkup.model_validate(
-                        build_draft_keyboard(draft)),
+                    reply_markup=InlineKeyboardMarkup.model_validate(build_draft_keyboard(draft)),
                 )
             outcome = "success"
             return
