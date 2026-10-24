@@ -198,6 +198,9 @@ def test_source_buttons_reuse_service_and_bind_actor(source_db, catalog, dispatc
         return [{"id": order.items[0].product_id, "name": "Тестовый товар",
                  "stocks": [{"id": "wh1", "name": "Основной"}]}]
     monkeypatch.setattr(ProductService, "get_catalog_async", catalog)
+    from app.integrations.moysklad.async_gateway import AsyncMoySkladGateway
+    monkeypatch.setattr(AsyncMoySkladGateway, "get_stores",
+                        AsyncMock(return_value=[{"id": "wh1", "name": "Основной"}]))
     def send(data, actor=111):
         return dispatch(None, group=True, chat_id=-100123456, actor=actor, callback=data)
     def choose(calls, prefix):
