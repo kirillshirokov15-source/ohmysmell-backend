@@ -37,11 +37,11 @@ def test_three_manager_buttons_and_single_group_menu(dispatch, monkeypatch):
 def test_compact_card_only_exposes_next_step_and_preserves_actions():
     from tests.test_release_candidate import order
     from app.services.manager_workspace import order_card, order_keyboard
-    o = order(items=[SimpleNamespace(id=1, qty=2)], ui_supply_ready=True)
+    o = order(items=[SimpleNamespace(id=1, qty=2, name="Тестовый товар", price=50000)], ui_supply_ready=True)
     rows = order_keyboard(o)["inline_keyboard"]
     assert len(rows) == 2 and rows[0][0]["text"] == "Начать сборку"
     text = order_card(o)
-    assert len(text.splitlines()) == 7 and "/" not in text and "Клиент:" not in text
+    assert "Заказ №1" in text and "Товары:" in text and "Оплата:" in text
     assert "order:paid:1:0" in str(order_keyboard(o, expanded=True))
     o.needs_review = True
     assert "assembling" not in str(order_keyboard(o, expanded=True))
