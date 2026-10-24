@@ -60,6 +60,22 @@ class HatunaFulfillment:
             # Do not create an X entry if the order cannot be reserved.
             _uuid(order.counterparty_id, "Контрагент покупателя")
             _uuid(settings.moysklad_organization_id, "Организация МойСклад")
+            if settings.environment == "production" and self.adapter is None:
+                # Confirm that MySklad will accept the customer's actual
+                # counterparty before we create any inventory entry.
+                import asyncio
+                from app.integrations.moysklad.client import MoySkladClient
+                try:
+                    buyer = await asyncio.to_thread(
+                        MoySkladClient().get_counterparty, order.counterparty_id)
+                except Exception as error:
+                    raise HatunaPreflightError(
+                        "Не удалось проверить покупателя в МойСклад; приход X остановлен"
+                    ) from error
+                if (buyer.get("id") != order.counterparty_id
+                        or buyer.get("archived") is True):
+                    raise HatunaPreflightError(
+                        "Покупатель МойСклад отсутствует или архивирован; приход X остановлен")
             if "test oms" in (order.customer_name or "").casefold() and settings.environment == "production":
                 raise HatunaPreflightError("Реальные документы по тестовому заказу запрещены")
             plans = await source_plans(session, order_id)
