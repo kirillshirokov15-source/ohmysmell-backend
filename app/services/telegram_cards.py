@@ -4,6 +4,7 @@ Sending/uncertain attempts block new sends even after a restart. Telegram has
 no idempotency key for sendMessage: unknown outcomes need reconciliation.
 """
 import hashlib
+import os
 import json
 from time import perf_counter
 from types import SimpleNamespace
@@ -12,6 +13,17 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, Teleg
 from app.database.session import async_session
 from app.models.telegram_card import TelegramCard, TelegramCardAttempt
 from app.services.telegram_metrics import observe
+
+
+def enabled():
+    """Opt-in only after migration and a supervised staging transport test.
+
+    The new service changes Telegram delivery/deletion behavior. Keep it off
+    until a release operator explicitly enables it per worker environment.
+    """
+    return os.getenv("OMS_TELEGRAM_DURABLE_CARDS_ENABLED", "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
 
 
 class CardDeliveryUncertain(RuntimeError):
