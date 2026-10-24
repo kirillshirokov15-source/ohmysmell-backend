@@ -30,6 +30,8 @@ def test_complete_mixed_owned_and_hatuna_order_after_picker_confirmation(source_
     from app.services.product_service import ProductService
 
     monkeypatch.setenv("OMS_HATUNA_POST_PICK_ENABLED", "true")
+    # Legacy end-to-end scenario explicitly includes a dispatched shipment.
+    monkeypatch.setenv("OMS_HATUNA_AUTO_SHIP_ENABLED", "true")
     monkeypatch.setattr(settings, "moysklad_organization_id", str(uuid4()))
     monkeypatch.setattr(ledger, "async_session", source_db)
     monkeypatch.setattr(ledger, "transaction_lock", AsyncMock())
@@ -90,7 +92,7 @@ def test_complete_mixed_owned_and_hatuna_order_after_picker_confirmation(source_
         result = await HatunaFulfillment(adapter=adapter, catalog=products,
             sessions=source_db).run_order(order_id)
         assert result == {
-            "order_id": order_id, "shipped": True, "warehouses": 2,
+            "order_id": order_id, "shipped": True, "reserved": True, "warehouses": 2,
             "hatuna_receipts": 1, "simulated": True}
         assert adapter.calls == 5
         async with source_db() as session:
