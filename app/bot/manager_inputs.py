@@ -187,10 +187,12 @@ async def route(message, check_access):
         pending.pop(key, None)
         if action in {"source_quantity", "source_cost"}:
             logger.info("manager_source_input_confirm_ready order_id=%s action=%s", data.get("order_id"), action)
-    except ValueError as error:
+    except Exception as error:
         from app.services.order_desk import DeskError
         from app.services.draft_order_service import DraftOrderError
         from app.services.order_lifecycle import InvalidOrderTransitionError
+        if not isinstance(error, (ValueError, DeskError, DraftOrderError, InvalidOrderTransitionError)):
+            raise
         if isinstance(error, (DeskError, DraftOrderError, InvalidOrderTransitionError)):
             await message.answer(str(error)[:350])
         else:
