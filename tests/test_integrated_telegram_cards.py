@@ -77,3 +77,33 @@ def test_unknown_send_result_never_retries_blindly(card_db):
         await cards.publish(bot, -1003, "order:8", "exact")
         assert bot.send_message.await_count == 1
     asyncio.run(run())
+
+
+def test_manager_draft_refresh_uses_receipt_transport_only_when_enabled(monkeypatch):
+    from app.bot import telegram_bot
+    msg = SimpleNamespace(
+        bot=SimpleNamespace(id=15),
+        chat=SimpleNamespace(id=-1007),
+        edit_text=AsyncMock())
+    delivered = AsyncMock(return_value=SimpleNamespace(message_id=900))
+    monkeypatch.setattr(cards, "publish", delivered)
+    monkeypatch.setenv("OMS_TELEGRAM_DURABLE_CARDS_ENABLED", "true")
+    assert asyncio.run(telegram_bot.safe_edit_message(msg, "card", draft_id=75)) is True
+    delivered.assert_awaited_once()
+    args = delivered.await_args.args
+    assert args[1:4] == (-1007, "draft:75", "card")
+    msg.edit_text.assert_not_awaited()
+    monkeypatch.setenv("OMS_TELEGRAM_DURABLE_CARDS_ENABLED", "false")
+    assert asyncio.run(telegram_bot.safe_edit_message(msg, "legacy", draft_id=75)) is True
+    msg.edit_text.assert_awaited_once_with("legacy", reply_markup=None)
+    delivered.assert_awaited_once()
+
+
+def test_callback_ack_samples_quantiles_without_real_telegram(monkeypatch):
+    from app.bot import telegram_bot
+    from app.services.telegram_metrics import samples
+    samples["callback_ack"].clear()
+    callback = SimpleNamespace(answer=AsyncMock(), from_user=SimpleNamespace(id=1))
+    assert asyncio.run(telegram_bot.safe_callback_answer(callback))
+    assert len(samples["callback_ack"]) == 1
+    assert samples["callback_ack"][0] >= 0
