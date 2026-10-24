@@ -158,3 +158,77 @@ def test_order_refresh_preserves_legacy_edit_when_flag_off(monkeypatch):
     ))
     message.edit_text.assert_awaited_once_with("Старый режим", reply_markup=None)
     bot.send_message.assert_not_awaited()
+
+def test_source_screen_edit_invalidates_receipt_before_order_refresh(card_db, monkeypatch):
+    from app.bot.source_navigation import replace_screen
+    monkeypatch.setenv("OMS_TELEGRAM_DURABLE_CARDS_ENABLED", "true")
+
+    async def run():
+        bot = SimpleNamespace(
+            send_message=AsyncMock(side_effect=[
+                SimpleNamespace(message_id=201),
+                SimpleNamespace(message_id=202),
+            ]),
+            delete_message=AsyncMock(),
+        )
+        chat_id = -1012
+        await cards.publish(bot, chat_id, "order:8", "Заказ №8")
+        message = SimpleNamespace(
+            chat=SimpleNamespace(id=chat_id), message_id=201,
+            edit_text=AsyncMock(),
+        )
+        await replace_screen(message, "Выберите источник", [[
+            {"text": "К заказу", "callback_data": "order:refresh:8:0"}
+        ]])
+        async with cards.async_session() as session:
+            receipt = await session.get(TelegramCard, ("order:8", chat_id))
+            assert receipt.digest is None
+        await cards.publish(bot, chat_id, "order:8", "Заказ №8")
+        assert bot.send_message.await_count == 2
+        bot.delete_message.assert_awaited_once_with(
+            chat_id=chat_id, message_id=201
+        )
+        assert await cards.obsolete(chat_id, 201)
+    asyncio.run(run())
+
+
+def test_source_forcereply_completion_invalidates_receipt(card_db, monkeypatch):
+    from app.bot.manager_inputs import complete_source_prompt
+    monkeypatch.setenv("OMS_TELEGRAM_DURABLE_CARDS_ENABLED", "true")
+
+    async def run():
+        bot = SimpleNamespace(
+            send_message=AsyncMock(return_value=SimpleNamespace(message_id=301)),
+            edit_message_text=AsyncMock(),
+            delete_message=AsyncMock(),
+        )
+        chat_id = -1013
+        await cards.publish(bot, chat_id, "order:9", "Заказ №9")
+        user_reply = SimpleNamespace(
+            bot=bot, chat=SimpleNamespace(id=chat_id), message_id=401,
+            answer=AsyncMock(),
+        )
+        row = [{"text": "Продолжить", "callback_data": "sourceui:token"}]
+        assert await complete_source_prompt(
+            user_reply, {"origin_message_id": 301}, 400,
+            "Выбрано количество", row,
+        )
+        async with cards.async_session() as session:
+            receipt = await session.get(TelegramCard, ("order:9", chat_id))
+            assert receipt.digest is None
+        bot.edit_message_text.assert_awaited_once()
+        bot.delete_message.assert_any_await(chat_id=chat_id, message_id=401)
+        bot.delete_message.assert_any_await(chat_id=chat_id, message_id=400)
+        user_reply.answer.assert_not_awaited()
+    asyncio.run(run())
+
+
+def test_source_screen_legacy_flag_does_not_require_receipt_db(monkeypatch):
+    from app.bot.source_navigation import replace_screen
+    monkeypatch.setenv("OMS_TELEGRAM_DURABLE_CARDS_ENABLED", "false")
+    edited = SimpleNamespace(chat=SimpleNamespace(id=-1014),
+                             message_id=999, edit_text=AsyncMock())
+    asyncio.run(replace_screen(
+        edited, "Обычный экран", [[{"text": "Назад", "callback_data": "order:refresh:8:0"}]]
+    ))
+    edited.edit_text.assert_awaited_once()
