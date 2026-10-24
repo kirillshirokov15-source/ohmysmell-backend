@@ -1,0 +1,34 @@
+name: Order durable card refresh regression
+on:
+  push:
+    branches:
+      - fix/order-card-durable-refresh-20261025
+  pull_request:
+    branches:
+      - integration/telegram-release-candidate-20261025
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  order-card-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pytest aiosqlite
+      - name: Compile Telegram code and tests
+        run: python -m compileall -q app/bot app/services/telegram_cards.py tests/test_integrated_telegram_cards.py
+      - name: Safe offline Telegram regression
+        env:
+          APP_ENV: staging
+          EXTERNAL_WRITES_ENABLED: 'false'
+          OMS_TELEGRAM_DURABLE_CARDS_ENABLED: 'false'
+          TELEGRAM_BOT_TOKEN: '123456:TEST_NO_NETWORK'
+          CLIENT_TELEGRAM_BOT_TOKEN: '123456:TEST_NO_NETWORK'
+        run: |
+          python -m pytest -q tests/test_integrated_telegram_cards.py tests/test_telegram_stale_callbacks.py tests/test_manager_email_orders_navigation.py
