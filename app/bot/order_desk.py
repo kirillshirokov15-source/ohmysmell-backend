@@ -120,7 +120,11 @@ def register(dp, check_access, safe_callback_answer):
                         "Подтверждение менеджера обязательно.", parse_mode=None)
                     return
             text, keyboard = await desk_card(identifier)
-            await message.answer(text, reply_markup=keyboard, parse_mode=None)
+            from app.services.telegram_cards import enabled, publish
+            if enabled():
+                await publish(message.bot, message.chat.id, f"draft:{identifier}", text, keyboard)
+            else:
+                await message.answer(text, reply_markup=keyboard, parse_mode=None)
         except (IndexError, ValueError) as error:
             await message.answer(str(error) if isinstance(error, DeskError) else
                 "Формат: /site ЗАЯВКА; /reply ЗАЯВКА текст; /sitereprice ЗАЯВКА; /outbox_retry ID; /outbox_sent ID TELEGRAM_MESSAGE_ID", parse_mode=None)
@@ -135,6 +139,9 @@ def register(dp, check_access, safe_callback_answer):
         if not await desk_access(callback.from_user.id, callback.message.chat.id):
             return
         if not await safe_callback_answer(callback):
+            return
+        from app.services.telegram_cards import enabled, obsolete
+        if enabled() and await obsolete(callback.message.chat.id, callback.message.message_id):
             return
         try:
             parts = callback.data.split(":")
@@ -252,12 +259,16 @@ def register(dp, check_access, safe_callback_answer):
             elif action not in {"refresh", "details", "actions"}:
                 return
             text, keyboard = await desk_card(draft_id)
-            from aiogram.exceptions import TelegramBadRequest
-            try:
-                await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=None)
-            except TelegramBadRequest as error:
-                if "message is not modified" not in str(error).lower():
-                    raise
+            if enabled():
+                from app.services.telegram_cards import publish
+                await publish(callback.bot, callback.message.chat.id, f"draft:{draft_id}", text, keyboard)
+            else:
+                from aiogram.exceptions import TelegramBadRequest
+                try:
+                    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=None)
+                except TelegramBadRequest as error:
+                    if "message is not modified" not in str(error).lower():
+                        raise
         except (ValueError, IndexError) as error:
             notice = str(error) if isinstance(error, DeskError) else "Действие недоступно. Обновите карточку."
             draft_id = locals().get("draft_id")
