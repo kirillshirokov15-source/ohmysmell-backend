@@ -78,6 +78,10 @@ async def safe_edit_message(
         "telegram_card_refresh_started",
         draft_id=draft_id,
     )
+    from app.services.telegram_cards import enabled, publish
+    if enabled() and draft_id > 0:
+        await publish(message.bot, message.chat.id, f"draft:{draft_id}", text, reply_markup)
+        return True
     try:
         await message.edit_text(text, reply_markup=reply_markup)
     except TelegramBadRequest as error:
@@ -359,6 +363,10 @@ async def draft_callback_handler(callback: CallbackQuery):
         )
         if not authorized:
             outcome = "unauthorized"
+            return
+        from app.services.telegram_cards import enabled, obsolete
+        if enabled() and callback.message and await obsolete(callback.message.chat.id, callback.message.message_id):
+            outcome = "obsolete_card"
             return
         action_started_at = perf_counter()
         log_event(
@@ -749,6 +757,9 @@ async def order_callback(callback):
         return
     if not await manager_repository.is_active_by_telegram_id(callback.from_user.id):
         return
+    from app.services.telegram_cards import enabled, obsolete
+    if enabled() and callback.message and await obsolete(callback.message.chat.id, callback.message.message_id):
+        return
     try:
         _, action, identifier, version = callback.data.split(":")
         order_id, revision = int(identifier), int(version)
@@ -816,8 +827,14 @@ async def order_callback(callback):
         text = await supply_order_card(order, plans, details=action == "details")
         keyboard = InlineKeyboardMarkup.model_validate(order_keyboard(order, plans, expanded=action in {"details", "actions"}))
         try:
-            await safe_edit_message(callback.message, text, draft_id=0, reply_markup=keyboard)
+            if enabled():
+                from app.services.telegram_cards import publish
+                await publish(callback.bot, callback.message.chat.id, f"order:{order_id}", text, keyboard)
+            else:
+                await safe_edit_message(callback.message, text, draft_id=0, reply_markup=keyboard)
         except TelegramBadRequest:
+            if enabled():
+                raise
             await callback.message.answer(text, reply_markup=keyboard)
         log_event(logger, "manager_order_callback", order_id=order_id, manager_id=callback.from_user.id,
             action=action, result="success", duration_ms=_duration_ms(started))
