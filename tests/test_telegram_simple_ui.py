@@ -46,7 +46,7 @@ def test_compact_card_only_exposes_next_step_and_preserves_actions():
     o.needs_review = True
     assert "assembling" not in str(order_keyboard(o, expanded=True))
     o.fulfillment_status = "cancelled"
-    assert len(order_keyboard(o)["inline_keyboard"]) == 2
+    assert [b["text"] for row in order_keyboard(o)["inline_keyboard"] for b in row] == ["⋯ Действия"]
 
 
 def test_client_navigation_persists_selection_and_rechecks_ownership(database, catalog):
