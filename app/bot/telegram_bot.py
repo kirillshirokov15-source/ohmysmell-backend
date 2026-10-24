@@ -76,6 +76,7 @@ async def safe_edit_message(
     *,
     draft_id: int,
     reply_markup=None,
+    order_id: int | None = None,
 ) -> bool:
     log_event(
         logger,
@@ -83,8 +84,13 @@ async def safe_edit_message(
         draft_id=draft_id,
     )
     from app.services.telegram_cards import enabled, publish
-    if enabled() and draft_id > 0:
-        await publish(message.bot, message.chat.id, f"draft:{draft_id}", text, reply_markup)
+    # Order actions can temporarily show confirmation/error screens. Those
+    # updates must change the durable order receipt too, or a later refresh
+    # with the previous digest would incorrectly leave the prompt on screen.
+    entity = (f"order:{order_id}" if order_id and order_id > 0 else
+              f"draft:{draft_id}" if draft_id > 0 else None)
+    if enabled() and entity:
+        await publish(message.bot, message.chat.id, entity, text, reply_markup)
         return True
     try:
         await message.edit_text(text, reply_markup=reply_markup)
@@ -817,11 +823,11 @@ async def order_callback(callback):
             plans = read_plans if read_plans is not None else await shipments_for(order_id)
             text = "Карточка обновлена: состояние заказа изменилось.\n" + await supply_order_card(order, plans)
             keyboard = InlineKeyboardMarkup.model_validate(order_keyboard(order, plans))
-            await safe_edit_message(callback.message, text, draft_id=0, reply_markup=keyboard)
+            await safe_edit_message(callback.message, text, draft_id=0, order_id=order_id, reply_markup=keyboard)
             return
         if action == "cancel_confirm":
             await safe_edit_message(callback.message, "Отменить этот неоплаченный заказ?",
-                draft_id=0, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                draft_id=0, order_id=order_id, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                     {"text": "Да, отменить", "callback_data": f"order:cancel:{order_id}:{revision}"},
                     {"text": "Оставить", "callback_data": f"order:refresh:{order_id}:0"}]]))
             return
@@ -840,7 +846,7 @@ async def order_callback(callback):
             text = "\n".join(lines)
             if len(text.encode("utf-16-le")) // 2 > 3500:
                 text = text[:3400] + "\n… Остальные позиции: /items " + str(order_id)
-            await safe_edit_message(callback.message, text, draft_id=0,
+            await safe_edit_message(callback.message, text, draft_id=0, order_id=order_id,
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                     {"text": "← Назад к заказу", "callback_data": f"order:refresh:{order_id}:0"}]]))
             return
@@ -869,7 +875,7 @@ async def order_callback(callback):
                 from app.services.telegram_cards import publish
                 await publish(callback.bot, callback.message.chat.id, f"order:{order_id}", text, keyboard)
             else:
-                await safe_edit_message(callback.message, text, draft_id=0, reply_markup=keyboard)
+                await safe_edit_message(callback.message, text, draft_id=0, order_id=order_id, reply_markup=keyboard)
         except TelegramBadRequest:
             if enabled():
                 raise
@@ -882,7 +888,7 @@ async def order_callback(callback):
         rows = [[{"text": "Вернуться к заказу", "callback_data": f"order:refresh:{target}:0"}]] if target else [
             [{"text": "Заказы", "callback_data": "orders:all:0"}]]
         await safe_edit_message(callback.message, "⚠️ " + notice, draft_id=0,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+            order_id=target, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
     except Exception as error:
         from app.services.stock_allocation import StockAllocationError
         notice = ("Недостаточно остатков или ошибка распределения."
@@ -893,7 +899,7 @@ async def order_callback(callback):
         rows = [[{"text": "Вернуться к заказу", "callback_data": f"order:refresh:{target}:0"}]] if target else [
             [{"text": "Заказы", "callback_data": "orders:all:0"}]]
         await safe_edit_message(callback.message, "⚠️ " + notice, draft_id=0,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+            order_id=target, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 @dp.message(Command("payment", "tracking"))
 async def operational_note(message):
