@@ -204,6 +204,9 @@ async def run_worker(role="manager", *, drop_pending_updates=False):
             if role == "manager":
                 from app.workers.notifications import main as notifications
                 tasks.append(asyncio.create_task(notifications()))
+                if os.getenv('OMS_HATUNA_AUTO_PROCESS_ENABLED', 'false').lower() == 'true':
+                    from app.workers.hatuna_auto import main as automatic_x_worker
+                    tasks.append(asyncio.create_task(automatic_x_worker()))
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
