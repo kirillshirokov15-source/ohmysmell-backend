@@ -33,11 +33,11 @@ class HatunaDocumentRunner:
                 raise HatunaPreflightError("Реальное оприходование Хатуны пока не активировано")
             # The explicit pricing model is provisional accounting, not a
             # factual supplier cost. Require an independent operator switch.
+            if self.live_preflight is None:
+                raise HatunaPreflightError("Нет повторной сверки заказа и остатков МойСклад")
             if (os.getenv("OMS_OWN_X_LIVE_ENABLED", "false").lower() != "true"
                     or os.getenv("OMS_X_COST_POLICY", "") != "provisional_minus_1000"):
                 raise HatunaPreflightError("Не разрешена предварительная оценка для склада X")
-            if self.live_preflight is None:
-                raise HatunaPreflightError("Нет повторной сверки заказа и остатков МойСклад")
         request = dict(
             order_id=order_id, x_plan_id=x_plan_id,
             organization_id=organization_id, x_store_id=x_store_id,
