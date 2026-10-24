@@ -99,6 +99,37 @@ async def durable_client_poll(dp, bot):
             offset = update.update_id + 1
 
 
+async def lease_is_healthy(connection, *, timeout=5):
+    """One failed probe ends this poller. Never reuse a potentially lost DB session."""
+    try:
+        await asyncio.wait_for(connection.scalar(text("SELECT 1")), timeout=timeout)
+        await connection.commit()
+        return True
+    except Exception as error:
+        # SQLAlchemy may leave a failed transaction (PendingRollbackError).
+        # Do not perform another query or silently acquire a new DB session:
+        # the advisory-lock ownership would no longer be proven.
+        log_event(logger, "worker_lease_probe_failed", level=logging.ERROR,
+                  result=type(error).__name__)
+        return False
+
+
+async def release_poller_lock(connection, key, *, ownership_lost):
+    """Skip SQL unlock after connection failure; PostgreSQL releases it on close."""
+    if ownership_lost:
+        return False
+    try:
+        await asyncio.wait_for(
+            connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key}),
+            timeout=5)
+        await connection.commit()
+        return True
+    except Exception as error:
+        log_event(logger, "worker_lease_release_failed", level=logging.ERROR,
+                  result=type(error).__name__)
+        return False
+
+
 def worker_health_app(state, failure):
     async def health(_):
         return web.json_response(state, status=503 if failure.is_set() else 200)
@@ -152,26 +183,11 @@ async def run_worker(role="manager", *, drop_pending_updates=False):
             async def watchdog():
                 while not failure.is_set():
                     await asyncio.sleep(2)
-                    try:
-                        await asyncio.wait_for(connection.scalar(text("SELECT 1")), timeout=5)
-                        await connection.commit()
-                    except Exception:
+                    if not await lease_is_healthy(connection):
                         failure.set()
+                        return
                 log_event(logger, "worker_ownership_lost", role=role, result="stopping")
             await bot.get_me()
-            if (role == "manager"
-                    and os.getenv("OMS_HATUNA_READONLY_VERIFY", "false").lower() == "true"):
-                from app.services.hatuna_accounting import verify_hatuna_counterparty
-                try:
-                    verified = await verify_hatuna_counterparty(
-                        os.getenv("OMS_HATUNA_COUNTERPARTY_ID", ""))
-                except Exception as error:
-                    log_event(logger, "hatuna_counterparty_readonly_check",
-                        level=logging.WARNING, result="failed",
-                        reason=type(error).__name__)
-                else:
-                    log_event(logger, "hatuna_counterparty_readonly_check",
-                        result="success", confirmed=verified)
             state.update(status="ready", polling=True)
             log_event(logger, "worker_ready", role=role, external_writes=settings.external_writes_enabled, polling_instances=1)
             # Client dialogue updates stay ordered, and polling offset advances
@@ -188,9 +204,6 @@ async def run_worker(role="manager", *, drop_pending_updates=False):
             if role == "manager":
                 from app.workers.notifications import main as notifications
                 tasks.append(asyncio.create_task(notifications()))
-                if os.getenv("OMS_HATUNA_AUTO_PROCESS_ENABLED", "false").lower() == "true":
-                    from app.workers.hatuna_auto import main as hatuna_auto
-                    tasks.append(asyncio.create_task(hatuna_auto()))
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
@@ -202,7 +215,8 @@ async def run_worker(role="manager", *, drop_pending_updates=False):
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            await connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": lock_key})
+            if not await release_poller_lock(connection, lock_key, ownership_lost=failure.is_set()):
+                failure.set()
     finally:
         state.update(status="stopped", polling=False)
         for task in tasks:
