@@ -187,6 +187,10 @@ def test_source_buttons_reuse_service_and_bind_actor(source_db, catalog, dispatc
     monkeypatch.setenv("MANAGER_TELEGRAM_USER_IDS", "111,222")
     order, service, _ = asyncio.run(seed_sources(source_db))
     monkeypatch.setattr(source_navigation, "OrderSourceService", lambda: service)
+    # Supply navigation now auto-selects the sole valid warehouse; isolate
+    # this UI test from live MySklad stores API.
+    monkeypatch.setattr(source_navigation, "source_warehouses",
+                        lambda product, ids, source: [{"id": "wh1", "name": "Основной"}])
     monkeypatch.setattr(source_navigation, "async_session", source_db)
     monkeypatch.setattr("app.repositories.order_repository.get_order", AsyncMock(return_value=order))
     monkeypatch.setattr(telegram_bot, "get_order", AsyncMock(return_value=order))
@@ -203,8 +207,7 @@ def test_source_buttons_reuse_service_and_bind_actor(source_db, catalog, dispatc
     assert all(any(label == b.text for call in calls if getattr(call, "reply_markup", None)
         for row in call.reply_markup.inline_keyboard for b in row) for label in ("Свой склад", "Склад Х", "Внешний поставщик"))
     calls = send(choose(calls, "Свой склад"))
-    calls = send(choose(calls, "wh1"))
-    calls = send(choose(calls, "Подтвердить"))
+    calls = send(choose(calls, "Подтвердить свой склад"))
     view = asyncio.run(service.read(order.id, 111, -100123456))
     assert view["items"][0]["ready"] == 8
     assert view["revision"] == 1
