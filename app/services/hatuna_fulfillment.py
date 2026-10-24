@@ -56,6 +56,26 @@ class HatunaFulfillment:
                 raise HatunaPreflightError("Сначала сборщик должен подтвердить сборку заказа")
             if order.delivery_method == "unselected":
                 raise HatunaPreflightError("Сначала выберите способ доставки")
+            # All reserve and shipment documents need a verified buyer agent.
+            # Do not create an X entry if the order cannot be reserved.
+            _uuid(order.counterparty_id, "Контрагент покупателя")
+            _uuid(settings.moysklad_organization_id, "Организация МойСклад")
+            if settings.environment == "production" and self.adapter is None:
+                # Confirm that MySklad will accept the customer's actual
+                # counterparty before we create any inventory entry.
+                import asyncio
+                from app.integrations.moysklad.client import MoySkladClient
+                try:
+                    buyer = await asyncio.to_thread(
+                        MoySkladClient().get_counterparty, order.counterparty_id)
+                except Exception as error:
+                    raise HatunaPreflightError(
+                        "Не удалось проверить покупателя в МойСклад; приход X остановлен"
+                    ) from error
+                if (buyer.get("id") != order.counterparty_id
+                        or buyer.get("archived") is True):
+                    raise HatunaPreflightError(
+                        "Покупатель МойСклад отсутствует или архивирован; приход X остановлен")
             if "test oms" in (order.customer_name or "").casefold() and settings.environment == "production":
                 raise HatunaPreflightError("Реальные документы по тестовому заказу запрещены")
             plans = await source_plans(session, order_id)
@@ -112,18 +132,29 @@ class HatunaFulfillment:
                     raise HatunaPreflightError("План не соответствует физическому складу")
                 if is_x:
                     provisional_cost(item.price)
+                    if store.get("stock") is None or store.get("reserve") is None:
+                        raise HatunaPreflightError(
+                            "Нет подтверждённых данных об остатке и резерве X; автоматический приход заблокирован")
                     # After a successful *previous* receipt, the inventory
                     # naturally exists; repeat verification uses the journal.
                     receipt_key = hatuna_operation_keys(order.id, plan.id)["receipt"]
                     prefix = "simulation:" if self.adapter is not None and type(self.adapter) is FakeDocumentAdapter else ""
                     async with self.sessions() as session:
                         op = await session.get(ExternalOperation, prefix + receipt_key)
+                    if a.receipt_simulated and settings.environment == "production":
+                        raise HatunaPreflightError("Симулированное оприходование X нельзя использовать в production")
+                    if a.receipt_reference and (
+                        not op or op.status != "succeeded" or
+                        not op.result or op.result.get("id") != a.receipt_reference
+                    ):
+                        raise HatunaPreflightError(
+                            "Найден ранее оформленный приход X вне текущего журнала. Нужна ручная сверка.")
                     if (not op or op.status != "succeeded") and (
                         (store.get("stock") or 0) > 0 or (store.get("reserve") or 0) > 0
                     ):
                         raise HatunaPreflightError(
                             "На складе Х уже есть учтённый остаток. "
-                            "Нельзя повторно создавать закупку и приёмку без сверки.")
+                            "Повторное оприходование без сверки запрещено.")
                 if settings.warehouse_ids and plan.warehouse_id not in settings.warehouse_ids:
                     raise HatunaPreflightError("Склад не входит в разрешённые склады МойСклад")
         if for_x is not None and all(p.id != for_x for p in x_plans):
@@ -167,6 +198,8 @@ class HatunaFulfillment:
         if settings.environment == "production" and fake:
             raise HatunaPreflightError("В production симуляция запрещена")
         order, plans, x_plans, items, actor, chat = await self.preflight(order_id)
+        if not x_plans:
+            raise HatunaPreflightError("У заказа нет складских планов X")
         # No Hatuna counterparty is required: the internal `enter` has no agent.
         for plan in x_plans:
             aggregated = defaultdict(int)
@@ -199,14 +232,23 @@ class HatunaFulfillment:
                 continue
             if operation is None or operation.status != "succeeded":
                 await warehouse.act(order_id, actor, chat, current_order.revision, "reserve", plan.id)
+
+        # Physical assembly is NOT proof of handoff to a carrier or customer.
+        # Keep the customer shipment as a separate, explicit manager action.
+        # Only a separately enabled legacy batch may auto-create demands.
+        auto_ship = os.getenv("OMS_HATUNA_AUTO_SHIP_ENABLED", "false").lower() == "true"
+        if auto_ship:
+            for plan in plans:
+                async with self.sessions() as session:
+                    refreshed = await session.get(Shipment, plan.id)
+                    current_order = await session.get(Order, order_id)
+                if refreshed.status != "exported":
+                    await warehouse.act(order_id, actor, chat, current_order.revision, "ship", plan.id)
             async with self.sessions() as session:
                 current_order = await session.get(Order, order_id)
-            await warehouse.act(order_id, actor, chat, current_order.revision, "ship", plan.id)
-        async with self.sessions() as session:
-            current_order = await session.get(Order, order_id)
-        from app.services.order_operations import OrderAction, OrderOperations
-        await OrderOperations().act(order_id, actor,
-            OrderAction(action="shipped", expected_revision=current_order.revision,
-                        idempotency_key=f"hatuna:order:{order_id}:complete"))
-        return {"order_id":order_id, "shipped":True, "warehouses":len(plans),
-                "hatuna_receipts":len(x_plans), "simulated":fake}
+            from app.services.order_operations import OrderAction, OrderOperations
+            await OrderOperations().act(order_id, actor,
+                OrderAction(action="shipped", expected_revision=current_order.revision,
+                            idempotency_key=f"hatuna:order:{order_id}:complete"))
+        return {"order_id":order_id, "shipped":auto_ship, "reserved":True,
+                "warehouses":len(plans), "hatuna_receipts":len(x_plans), "simulated":fake}
