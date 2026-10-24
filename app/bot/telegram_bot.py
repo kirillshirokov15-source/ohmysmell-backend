@@ -740,14 +740,26 @@ async def find_order(message):
         if not draft:
             await message.answer("Заявка не найдена.")
             return
-        await message.answer(build_draft_card(draft), reply_markup=InlineKeyboardMarkup.model_validate(build_draft_keyboard(draft)))
+        card = build_draft_card(draft)
+        markup = InlineKeyboardMarkup.model_validate(build_draft_keyboard(draft))
+        from app.services.telegram_cards import enabled, publish
+        if enabled():
+            await publish(message.bot, message.chat.id, f"draft:{draft.id}", card, markup)
+        else:
+            await message.answer(card, reply_markup=markup)
     else:
         order = await get_order(identifier)
         if not order:
             await message.answer("Заказ не найден.")
             return
         plans = await shipments_for(order.id)
-        await message.answer(await supply_order_card(order, plans), reply_markup=InlineKeyboardMarkup.model_validate(order_keyboard(order, plans)))
+        card = await supply_order_card(order, plans)
+        markup = InlineKeyboardMarkup.model_validate(order_keyboard(order, plans))
+        from app.services.telegram_cards import enabled, publish
+        if enabled():
+            await publish(message.bot, message.chat.id, f"order:{order.id}", card, markup)
+        else:
+            await message.answer(card, reply_markup=markup)
 
 
 @dp.callback_query(F.data.startswith("order:"))
