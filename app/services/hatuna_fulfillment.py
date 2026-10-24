@@ -116,6 +116,9 @@ class HatunaFulfillment:
                     raise HatunaPreflightError("План не соответствует физическому складу")
                 if is_x:
                     provisional_cost(item.price)
+                    if store.get("stock") is None or store.get("reserve") is None:
+                        raise HatunaPreflightError(
+                            "Нет подтверждённых данных об остатке и резерве X; автоматический приход заблокирован")
                     # After a successful *previous* receipt, the inventory
                     # naturally exists; repeat verification uses the journal.
                     receipt_key = hatuna_operation_keys(order.id, plan.id)["receipt"]
