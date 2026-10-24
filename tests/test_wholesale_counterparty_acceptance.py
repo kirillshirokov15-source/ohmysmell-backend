@@ -237,7 +237,7 @@ def test_manager_business_name_search_and_counterparty_reconciliation(database,m
         assert "Поиск менеджера" in candidates.counterparty_candidates[0]["reason"]
         fresh=await service.counterparty_reconciliation(draft.id)
         assert "Контрагент CRM: пока не выбран" in fresh
-        assert "cpsearch" in fresh
+        assert "Ввести контрагента вручную" in fresh
         selected=await service.link_counterparty(
             draft.id,"cp-verify","ООО Золотая Роза",actor=111)
         assert selected.counterparty_id=="cp-verify"
