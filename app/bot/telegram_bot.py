@@ -48,6 +48,7 @@ def _is_stale_callback_error(error: TelegramBadRequest) -> bool:
 
 
 async def safe_callback_answer(callback: CallbackQuery, *args, **kwargs) -> bool:
+    started = perf_counter()
     try:
         await callback.answer(*args, **kwargs)
         return True
@@ -64,6 +65,9 @@ async def safe_callback_answer(callback: CallbackQuery, *args, **kwargs) -> bool
             ),
         )
         return False
+    finally:
+        from app.services.telegram_metrics import observe
+        observe("callback_ack", started)
 
 
 async def safe_edit_message(
