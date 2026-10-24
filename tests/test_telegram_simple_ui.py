@@ -194,7 +194,10 @@ def test_source_buttons_reuse_service_and_bind_actor(source_db, catalog, dispatc
     monkeypatch.setattr(source_navigation, "async_session", source_db)
     monkeypatch.setattr("app.repositories.order_repository.get_order", AsyncMock(return_value=order))
     monkeypatch.setattr(telegram_bot, "get_order", AsyncMock(return_value=order))
-    monkeypatch.setattr(ProductService, "get_catalog_async", service.products.get_catalog_async)
+    async def catalog(*args, **kwargs):
+        return [{"id": order.items[0].product_id, "name": "Тестовый товар",
+                 "stocks": [{"id": "wh1", "name": "Основной"}]}]
+    monkeypatch.setattr(ProductService, "get_catalog_async", catalog)
     def send(data, actor=111):
         return dispatch(None, group=True, chat_id=-100123456, actor=actor, callback=data)
     def choose(calls, prefix):
