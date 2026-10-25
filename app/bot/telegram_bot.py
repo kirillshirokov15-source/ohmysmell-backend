@@ -560,7 +560,7 @@ async def draft_callback_handler(callback: CallbackQuery):
             outcome = "success"
             return
         elif action == "finalize":
-            order = await service.finalize(draft_id)
+            order = await service.finalize(draft_id, manager_telegram_id=callback.from_user.id)
             log_event(
                 logger,
                 "telegram_manager_action",
