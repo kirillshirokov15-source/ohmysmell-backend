@@ -42,9 +42,16 @@ class MoySkladDocumentAdapter:
         result = (await asyncio.to_thread(client.update_document, intent['entity'], intent['update_id'], intent['document'])
                   if intent.get('update_id') else
                   await asyncio.to_thread(client.create_document, intent['entity'], intent['document']))
-        # A malformed response is uncertain even if its HTTP status was 200.
+        # MoySklad's POST response may contain positions.meta without rows.
+        # Verify a freshly retrieved complete document before treating the
+        # provider write as uncertain. This is GET-only after the initial POST.
         if not verified_document(intent, result):
-            raise ValueError('Created document requires reconciliation')
+            if not isinstance(result, dict) or not result.get("id"):
+                raise ValueError("Created document has no reliable identifier")
+            result = await asyncio.to_thread(
+                self._read_full, client, intent["entity"], result)
+            if not verified_document(intent, result):
+                raise ValueError("Created document requires reconciliation")
         return result
 
     @staticmethod
