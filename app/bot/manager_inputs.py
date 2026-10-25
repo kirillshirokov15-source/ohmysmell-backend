@@ -151,8 +151,16 @@ async def route(message, check_access):
                     draft = await service.repository.correct_quantity(
                         data["draft_id"], data["item_id"], int(message.text), message.from_user.id)
                     draft = await service.review(data["draft_id"], draft)
-                await message.answer(build_draft_card(draft), parse_mode=None,
-                    reply_markup=InlineKeyboardMarkup.model_validate(build_draft_keyboard(draft)))
+                if action == "cpmanual":
+                    from app.services.draft_telegram_service import (
+                        counterparty_review_card, counterparty_review_keyboard)
+                    await message.answer(counterparty_review_card(draft, manual_search=True),
+                        parse_mode=None,
+                        reply_markup=InlineKeyboardMarkup.model_validate(
+                            counterparty_review_keyboard(draft)))
+                else:
+                    await message.answer(build_draft_card(draft), parse_mode=None,
+                        reply_markup=InlineKeyboardMarkup.model_validate(build_draft_keyboard(draft)))
         elif action in {"buyer_search", "buyer_new_name"}:
             from app.bot.source_navigation import button
             entered = " ".join(message.text.strip().split())
