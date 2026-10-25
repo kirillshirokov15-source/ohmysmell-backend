@@ -32,7 +32,12 @@ def product_search_keyboard(draft_id, position, results):
         if p["article"]:
             label += " · " + p["article"][:20]
         buttons.append([{"text": label[:64], "callback_data": data}])
-    return InlineKeyboardMarkup(inline_keyboard=buttons + [[{"text": "← К заявке", "callback_data": f"desk:refresh:{draft_id}"}]]) if buttons else None
+    buttons.append([{
+        "text": "＋ Товара нет в МойСклад · создать карточку для X",
+        "callback_data": f"desk:xnewpreview:{draft_id}:{position}:{results['revision']}"
+    }])
+    return InlineKeyboardMarkup(inline_keyboard=buttons + [
+        [{"text": "← К заявке", "callback_data": f"desk:refresh:{draft_id}"}]])
 
 
 def register(dp, check_access, safe_callback_answer):
@@ -54,8 +59,9 @@ def register(dp, check_access, safe_callback_answer):
                     "Попробуйте другое название / артикул: /sitematch " + str(draft_id)
                     + " " + str(position) + " СЛОВО", parse_mode=None)
                 return
-            await message.answer("Выберите соответствующий товар из МойСклад. "
-                "Остаток не влияет на сопоставление. Проверьте полное название и артикул:",
+            await message.answer("Выберите точный товар МойСклад. Если товар X ещё не заведён, "
+                "внизу есть безопасное создание новой карточки без остатков. "
+                "Проверьте полное название и артикул:",
                 reply_markup=keyboard, parse_mode=None)
         except (DeskError, ValueError) as error:
             await message.answer(str(error) if isinstance(error, DeskError)
@@ -175,8 +181,9 @@ def register(dp, check_access, safe_callback_answer):
                 keyboard = product_search_keyboard(draft_id, position, results)
                 if keyboard:
                     await callback.message.edit_text(
-                        f"Заявка №{draft_id}, позиция {position}. Выберите правильный товар из МойСклад. "
-                        "Это не резервирование и не закупка.",
+                        f"Заявка №{draft_id}, позиция {position}. Выберите точный товар из МойСклад "
+                        "или создайте НОВУЮ карточку для склада X. "
+                        "Ни один вариант не создаёт резерв и закупку.",
                         reply_markup=keyboard, parse_mode=None)
                 else:
                     await callback.message.edit_text(
@@ -186,6 +193,40 @@ def register(dp, check_access, safe_callback_answer):
                             {"text": "← К заявке", "callback_data": f"desk:refresh:{draft_id}"}]]),
                         parse_mode=None)
                 return
+            elif action == "xnewpreview":
+                if len(parts) != 5:
+                    raise DeskError("Обновите список товаров для создания X.")
+                from app.services.tilda_x_product_service import TildaXProductService
+                position, revision = int(parts[3]), int(parts[4])
+                preview = await TildaXProductService().preview(
+                    draft_id, position, callback.from_user.id, callback.message.chat.id)
+                if preview["revision"] != revision:
+                    raise DeskError("Заявка изменилась. Повторите проверку товара.")
+                from app.services.telegram_display import telegram_rubles
+                await callback.message.edit_text(
+                    f"Создать НОВУЮ карточку товара для склада X в МойСклад?\\n"
+                    f"Название Tilda: {preview['name']}\\n"
+                    f"Артикул Tilda: {preview['sku']}\\n"
+                    f"Количество по заказу: {preview['qty']} шт.\\n"
+                    f"Цена продажи Tilda: {telegram_rubles(preview['price_minor'])}\\n\\n"
+                    "Сейчас создаётся только номенклатура БЕЗ остатков, резервов и отгрузок. "
+                    "Реальное оприходование X будет только после физической сборки. "
+                    "Проверьте, что это не аналогичная, а точная товарная позиция.",
+                    parse_mode=None,
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [{"text":"✅ Создать карточку X без остатков",
+                          "callback_data":f"desk:xnewconfirm:{draft_id}:{position}:{revision}"}],
+                        [{"text":"Отмена · к заявке",
+                          "callback_data":f"desk:refresh:{draft_id}"}]]))
+                return
+            elif action == "xnewconfirm":
+                if len(parts) != 5:
+                    raise DeskError("Неправильное подтверждение X.")
+                from app.services.tilda_x_product_service import TildaXProductService
+                await TildaXProductService().create_and_bind(
+                    draft_id, int(parts[3]), callback.from_user.id,
+                    callback.message.chat.id, int(parts[4]))
+                # Return the entire draft preserving all other product links.
             elif action == "bind":
                 if len(parts) != 6:
                     raise DeskError("Некорректные данные выбора товара.")
