@@ -54,11 +54,11 @@ def apply_action(order, request, manager_id, now):
             raise OperationError("Сначала завершите проверку заказа.")
         if FULFILLMENT.get(order.fulfillment_status) != action:
             raise OperationError("Недопустимый переход сборки. Обновите карточку.")
+        if action == "shipped" and getattr(order, "source", "website") == "website" and order.delivery_method == "unselected":
+            raise OperationError("Сначала выберите способ доставки.")
         order.fulfillment_status = action
         setattr(order, {"assembling": "assembling_at", "assembled": "assembled_at", "shipped": "shipped_at"}[action], now)
-        if action == "shipped" and order.source == "website":
-            if order.delivery_method == "unselected":
-                raise OperationError("Сначала выберите способ доставки.")
+        if action == "shipped" and getattr(order, "source", "website") == "website":
             order.delivery_status = "dispatched"
         # Gmail has no delivery step: shipment is its terminal warehouse event.
     elif action == "paid":
