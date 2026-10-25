@@ -377,7 +377,7 @@ def register(dp, check_access, safe_callback_answer):
                                           state["buyer_id"],state["revision"])
                 await replace_screen(callback.message, "✅ " + result, [
                     [{"text":"К складским документам",
-                      "callback_data":f"order:sources:{state['order_id']}:0"}],
+                      "callback_data":f"order:sources:{state['order_id']}:{state['revision'] + 1}"}],
                     [{"text":"← Заказ",
                       "callback_data":f"order:refresh:{state['order_id']}:0"}]])
                 return
@@ -408,7 +408,7 @@ def register(dp, check_access, safe_callback_answer):
                         "Повторять без сверки журнала нельзя.") from error
                 await replace_screen(callback.message, "✅ " + result, [
                     [{"text":"К складским документам",
-                      "callback_data":f"order:sources:{state['order_id']}:0"}],
+                      "callback_data":f"order:sources:{state['order_id']}:{state['revision'] + 1}"}],
                     [{"text":"← Заказ",
                       "callback_data":f"order:refresh:{state['order_id']}:0"}]])
                 return
@@ -790,6 +790,8 @@ def register(dp, check_access, safe_callback_answer):
         except (DeskError, ValueError) as error:
             text = str(error) if isinstance(error, DeskError) else "Проверьте выбранные данные."
             await replace_screen(callback.message, "⚠️ " + text, [
-                button("← Другой источник", dict(state, step="type")),
+                button("Повторить поиск покупателя", dict(state, step="buyer_candidates"))
+                if str(state.get("step", "")).startswith("buyer_")
+                else button("← Другой источник", dict(state, step="type")),
                 [{"text": "Назад к заказу",
                   "callback_data": f"order:refresh:{state['order_id']}:0"}]])
