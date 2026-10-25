@@ -314,7 +314,8 @@ def counterparty_review_keyboard(draft):
     verification remain unchanged. The compact draft keyboard intentionally
     hides those controls and must never be used for this screen.
     """
-    if getattr(draft, "source", None) != "email":
+    if (getattr(draft, "source", None) != "email"
+            or getattr(draft, "counterparty_id", None)):
         return {"inline_keyboard": [[
             {"text": "← К заявке", "callback_data": f"draft:refresh:{draft.id}"}
         ]]}
