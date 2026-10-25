@@ -29,6 +29,6 @@ jobs:
             tests/test_own_stock_reservation_hotfix.py \
             tests/test_manager_order_full_card.py \
             tests/test_source_navigation_ui.py \
-            tests/test_order_sources.py \
+            tests/test_order_sources.py::test_one_purchase_supplies_multiple_orders \
             tests/test_manager_order8_postpick_card.py \
             tests/test_order_desk_hardening.py
