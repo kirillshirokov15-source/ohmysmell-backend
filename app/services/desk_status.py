@@ -75,6 +75,13 @@ def public_summary(desk, draft, order=None, *, include_items=True):
     lines = [f"Заявка №{desk.draft_id}, заказ №{order.id}: {label}."]
     if getattr(order, "total", None) is not None:
         lines.append(f"Сумма: {telegram_rubles(order.total)}")
+    if order.source == "website":
+        from app.services.manager_workspace import DELIVERY_LABELS
+        method = getattr(order, "delivery_method", "unselected")
+        if method != "unselected":
+            lines.append("Доставка: " + DELIVERY_LABELS[method])
+        if getattr(order, "delivery_reference", None):
+            lines.append("Номер доставки: " + order.delivery_reference)
     if include_items:
         lines.extend(tilda_product_lines(draft))
     return "\n".join(lines)
