@@ -444,13 +444,13 @@ class DraftOrderRepository:
             await session.commit()
             return draft
 
-    async def finalize(self, draft_id: int, *, session=None) -> Order | None:
+    async def finalize(self, draft_id: int, *, session=None, manager_telegram_id=None) -> Order | None:
         if session is not None:
-            return await self._finalize(session, draft_id, commit=False)
+            return await self._finalize(session, draft_id, commit=False, manager_telegram_id=manager_telegram_id)
         async with async_session() as owned_session:
-            return await self._finalize(owned_session, draft_id, commit=True)
+            return await self._finalize(owned_session, draft_id, commit=True, manager_telegram_id=manager_telegram_id)
 
-    async def _finalize(self, session, draft_id: int, *, commit: bool) -> Order | None:
+    async def _finalize(self, session, draft_id: int, *, commit: bool, manager_telegram_id=None) -> Order | None:
         result = await session.execute(
             self._query().where(DraftOrder.id == draft_id).with_for_update()
         )
@@ -478,6 +478,17 @@ class DraftOrderRepository:
                        or i.item_total != i.price * i.qty for i in draft.items)
                 or draft.total != sum(i.item_total for i in draft.items)):
             raise InvalidOrderTransitionError("Черновик требует повторной проверки")
+        # Only explicit confirmation by a Telegram manager opts NEW Gmail
+        # orders into the same source/picking workflow as Tilda. Legacy
+        # wholesale orders retain their historical accounting path.
+        unified_email = draft.source == "email" and manager_telegram_id is not None
+        email_manager = None
+        if unified_email:
+            from app.models.manager import Manager
+            email_manager = await session.scalar(select(Manager).where(
+                Manager.telegram_id == manager_telegram_id, Manager.is_active.is_(True)))
+            if not email_manager:
+                raise InvalidOrderTransitionError("Только активный Telegram-менеджер может подтвердить оптовый заказ.")
         order = Order(
             customer_id=draft.customer_id,
             customer_type=draft.customer_type,
@@ -490,7 +501,7 @@ class DraftOrderRepository:
             comment=(draft.contact_details or {}).get("comment") or f"{draft.source}: {draft.subject or 'без темы'}",
             status=OrderStatus.NEW,
             total=draft.total,
-            manual_fulfillment=bool((draft.contact_details or {}).get("tilda")),
+            manual_fulfillment=bool((draft.contact_details or {}).get("tilda")) or unified_email,
         )
         order.items.extend(
             OrderItem(
@@ -509,12 +520,35 @@ class DraftOrderRepository:
         if order.manual_fulfillment:
             from app.models.order_desk import OrderDesk
             from app.services.order_desk import status_notification
-            desk = await session.get(OrderDesk, draft.id, with_for_update=True)
-            if not desk or not (draft.contact_details or {}).get("tilda_review_approved"):
-                raise InvalidOrderTransitionError("Сначала подтвердите заявку через карточку сайта")
-            desk.order_id = order.id
-            await session.flush()
-            await status_notification(session, order, desk.actor_telegram_id)
+            if unified_email:
+                # One single ownership/audit record for the already reviewed
+                # wholesale draft. There is NO customer Telegram link and no
+                # automatic provider/customer message or inventory write.
+                desk = await session.get(OrderDesk, draft.id, with_for_update=True)
+                if desk is None:
+                    import hashlib
+                    desk = OrderDesk(
+                        draft_id=draft.id,
+                        external_id=f"gmail:confirmed:{draft.id}",
+                        payload_hash=hashlib.sha256(
+                            f"gmail:confirmed:{draft.id}:{draft.inbound_message_id}".encode()).hexdigest(),
+                        order_id=order.id, manager_id=email_manager.id,
+                        actor_telegram_id=manager_telegram_id, stage="working")
+                    session.add(desk)
+                elif desk.order_id not in (None, order.id):
+                    raise InvalidOrderTransitionError("Gmail-заявка уже связана с другим заказом.")
+                else:
+                    desk.order_id = order.id
+                    desk.manager_id = email_manager.id
+                    desk.actor_telegram_id = manager_telegram_id
+                await session.flush()
+            else:
+                desk = await session.get(OrderDesk, draft.id, with_for_update=True)
+                if not desk or not (draft.contact_details or {}).get("tilda_review_approved"):
+                    raise InvalidOrderTransitionError("Сначала подтвердите заявку через карточку сайта")
+                desk.order_id = order.id
+                await session.flush()
+                await status_notification(session, order, desk.actor_telegram_id)
         else:
             from app.services.supply_service import capture_order_supply
             await capture_order_supply(session, order)
