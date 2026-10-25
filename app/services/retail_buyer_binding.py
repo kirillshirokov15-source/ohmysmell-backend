@@ -80,7 +80,7 @@ async def reusable_retail_customer(session, existing_customer_id, current, provi
         Order.customer_id == provisional_id, Order.id != current["order_id"]).limit(1))
     other_draft = await session.scalar(select(DraftOrder.id).where(
         DraftOrder.customer_id == provisional_id,
-        DraftOrder.finalized_order_id != current["order_id"]).limit(1))
+        DraftOrder.id != current["draft_id"]).limit(1))
     other_identity = await session.scalar(select(CustomerIdentity.id).where(
         CustomerIdentity.customer_id == provisional_id).limit(1))
     if other_order is not None or other_draft is not None or other_identity is not None:
@@ -181,7 +181,8 @@ class RetailBuyerService:
             if existing is not None:
                 canonical = await reusable_retail_customer(
                     session, existing,
-                    {**original, "customer_id": previous_customer_id}, record["id"], evidence)
+                    {**original, "customer_id": previous_customer_id,
+                     "draft_id": desk.draft_id}, record["id"], evidence)
             draft = await session.get(DraftOrder, desk.draft_id, with_for_update=True)
             if not draft or draft.finalized_order_id != order.id:
                 raise DeskError("Не совпадает исходная заявка Tilda.")
