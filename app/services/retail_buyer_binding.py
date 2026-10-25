@@ -9,8 +9,9 @@ from sqlalchemy import select
 from app.config.settings import settings
 from app.database.session import async_session
 from app.models.order import Order
-from app.models.customer import Customer
+from app.models.customer import Customer, CustomerIdentity
 from app.models.draft_order import DraftOrder
+from app.models.inbound_message import InboundMessage
 from app.models.order_desk import OrderDesk, DeskEvent
 from app.models.operations import OrderEvent
 from app.services.order_desk import DeskError, authorized_manager, require_owner
@@ -34,6 +35,58 @@ def verified_identity(provider, *, email=None, phone=None, name=None):
     if len(full.split()) >= 2 and len(full) >= 6 and full == normalize_text(provider.get("name")):
         return "full_name"
     return None
+
+
+async def reusable_retail_customer(session, existing_customer_id, current, provider_id, evidence):
+    """Find the existing CRM customer only with strong independent contact proof.
+
+    Never merge users on a matching name alone. The old owner must have a
+    previous *confirmed* retail order for the exact MoySklad counterparty,
+    sharing a phone or email with the new website order. No customer records
+    are deleted, no order history is rewritten.
+    """
+    if evidence not in {"email", "phone"}:
+        raise DeskError(
+            "Этот контрагент уже принадлежит другой карточке CRM. "
+            "Для объединения недостаточно совпадения имени; нужны одинаковые "
+            "email или телефон предыдущего заказа.")
+    old = await session.get(Customer, existing_customer_id, with_for_update=True)
+    if not old or old.customer_type not in {"retail", "unknown"}:
+        raise DeskError("Существующая карточка CRM другого типа – требуется ручная сверка.")
+    own_email = emails(current.get("email"))
+    own_phone = normalize_phone(current.get("phone"))
+    previous = (await session.scalars(select(Order).where(
+        Order.customer_id == existing_customer_id,
+        Order.counterparty_id == provider_id,
+        Order.source == "website",
+        Order.fulfillment_status != "cancelled",
+        Order.status != "rejected",
+    ).order_by(Order.id.desc()).limit(30))).all()
+    matches = any(
+        bool(own_email and own_email.intersection(emails(old_order.customer_email)))
+        or bool(own_phone and len(own_phone) >= 10
+                and own_phone == normalize_phone(old_order.phone))
+        for old_order in previous
+    )
+    if not matches:
+        raise DeskError(
+            "Контрагент привязан к другому клиенту CRM, но телефон/email "
+            "его прошлых заказов не совпадают. Автоматическое объединение запрещено.")
+    # Only an isolated customer automatically created for the current website
+    # intake can be reparented. Reusing an established profile could expose
+    # someone else's orders through connected CRM/customer channels.
+    provisional_id = current["customer_id"]
+    other_order = await session.scalar(select(Order.id).where(
+        Order.customer_id == provisional_id, Order.id != current["order_id"]).limit(1))
+    other_draft = await session.scalar(select(DraftOrder.id).where(
+        DraftOrder.customer_id == provisional_id,
+        DraftOrder.id != current["draft_id"]).limit(1))
+    other_identity = await session.scalar(select(CustomerIdentity.id).where(
+        CustomerIdentity.customer_id == provisional_id).limit(1))
+    if other_order is not None or other_draft is not None or other_identity is not None:
+        raise DeskError("У новой карточки CRM есть другая история или идентификаторы. "
+                        "Автоматическое объединение запрещено.")
+    return old
 
 
 class RetailBuyerService:
@@ -97,6 +150,7 @@ class RetailBuyerService:
         async with self.sessions() as session, session.begin():
             manager = await authorized_manager(session, actor, chat_id)
             await transaction_lock(session, f"retail-buyer:{original['order_id']}")
+            await transaction_lock(session, f"retail-buyer-counterparty:{record['id']}")
             order = await session.scalar(
                 select(Order).where(Order.id == original["order_id"]).with_for_update())
             desk = await session.scalar(select(OrderDesk).where(
@@ -114,23 +168,41 @@ class RetailBuyerService:
                 raise DeskError("Заказ изменился – обновите карточку.")
             if not order.customer_id:
                 raise DeskError("У заказа отсутствует CRM-клиент.")
-            existing = await session.scalar(select(Customer.id).where(
-                Customer.moysklad_counterparty_id == record["id"],
-                Customer.id != order.customer_id))
-            if existing is not None:
-                raise DeskError("Этот контрагент уже принадлежит другому клиенту CRM. "
-                                "Нужно отдельно сверить и объединить клиентские карточки.")
-            customer = await session.get(Customer, order.customer_id, with_for_update=True)
+            previous_customer_id = order.customer_id
+            customer = await session.get(Customer, previous_customer_id, with_for_update=True)
             if not customer:
                 raise DeskError("CRM-клиент не найден.")
             if customer.moysklad_counterparty_id not in (None, record["id"]):
                 raise DeskError("CRM-клиент уже связан с другим контрагентом.")
+            existing = await session.scalar(select(Customer.id).where(
+                Customer.moysklad_counterparty_id == record["id"],
+                Customer.id != previous_customer_id))
+            canonical = None
+            if existing is not None:
+                canonical = await reusable_retail_customer(
+                    session, existing,
+                    {**original, "customer_id": previous_customer_id,
+                     "draft_id": desk.draft_id}, record["id"], evidence)
             draft = await session.get(DraftOrder, desk.draft_id, with_for_update=True)
             if not draft or draft.finalized_order_id != order.id:
                 raise DeskError("Не совпадает исходная заявка Tilda.")
             if draft.counterparty_id not in (None, record["id"]):
                 raise DeskError("В заявке уже выбран другой контрагент.")
-            customer.moysklad_counterparty_id = record["id"]
+            if draft.customer_id != previous_customer_id:
+                raise DeskError("Клиент заявки уже изменился. Обновите карточку.")
+            if canonical:
+                inbound = await session.get(InboundMessage, draft.inbound_message_id, with_for_update=True)
+                if not inbound or inbound.source != "website" or inbound.customer_id != previous_customer_id:
+                    raise DeskError("Исходное обращение Tilda не соответствует клиенту.")
+                if (await session.scalar(select(InboundMessage.id).where(
+                    InboundMessage.customer_id == previous_customer_id,
+                    InboundMessage.id != inbound.id).limit(1))) is not None:
+                    raise DeskError("У клиента CRM есть другие обращения. Нужна ручная сверка.")
+                # Update only the current order, its draft and inbound; retain
+                # the canonical customer's entire history and identities.
+                order.customer_id = draft.customer_id = inbound.customer_id = canonical.id
+            else:
+                customer.moysklad_counterparty_id = record["id"]
             draft.counterparty_id, draft.counterparty_name = record["id"], record.get("name")
             order.counterparty_id, order.counterparty_name = record["id"], record.get("name")
             order.revision += 1
@@ -140,11 +212,17 @@ class RetailBuyerService:
                 request_hash=hashlib.sha256(key.encode()).hexdigest(),
                 before={"counterparty_id": None},
                 after={"counterparty_id": record["id"], "revision": order.revision,
-                       "evidence": evidence}))
+                       "evidence": evidence, "customer_id": order.customer_id,
+                       "reused_customer": bool(canonical)}))
             session.add(DeskEvent(draft_id=desk.draft_id, actor_telegram_id=actor,
-                action="buyer_bound", details={"order_id":order.id, "evidence":evidence}))
+                action="buyer_bound", details={"order_id":order.id, "evidence":evidence,
+                    "reused_customer":bool(canonical),
+                    "previous_customer_id":previous_customer_id,
+                    "current_customer_id":order.customer_id}))
             # No DeskMessage and no status_notification: internal bookkeeping only.
-        return "Покупатель сопоставлен с МойСклад. Можно создавать резерв."
+        return ("Покупатель сопоставлен с МойСклад; повторная карточка CRM не создавалась. "
+                "Можно создавать резерв." if existing is not None
+                else "Покупатель сопоставлен с МойСклад. Можно создавать резерв.")
 
     async def preview_new(self, order_id, actor, chat_id, full_name):
         from app.services.counterparty_creation_service import CounterpartyCreationService
