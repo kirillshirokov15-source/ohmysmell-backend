@@ -618,7 +618,7 @@ class DraftOrderService:
             raise DraftOrderError("Draft не найден")
         return draft
 
-    async def finalize(self, draft_id: int):
+    async def finalize(self, draft_id: int, manager_telegram_id=None):
         existing = await self._get_required(draft_id)
         if existing.finalized_order_id:
             order = await self.repository.finalize(draft_id)
@@ -628,14 +628,14 @@ class DraftOrderService:
         draft = await self.review(draft_id, existing)
         await self.validate_linked_counterparty(draft)
         if getattr(draft, "finalized_order_id", None):
-            return await self.repository.finalize(draft_id)
+            return await self.repository.finalize(draft_id, manager_telegram_id=manager_telegram_id)
         problems = self._finalize_problems(draft)
         if problems:
             raise DraftOrderError(
                 "Draft cannot be finalized: " + "; ".join(problems)
             )
         try:
-            order = await self.repository.finalize(draft_id)
+            order = await self.repository.finalize(draft_id, manager_telegram_id=manager_telegram_id)
         except InvalidOrderTransitionError as error:
             raise DraftOrderError(str(error)) from error
         if order is None:
