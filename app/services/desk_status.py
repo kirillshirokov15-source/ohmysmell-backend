@@ -10,6 +10,8 @@ def stage_label(desk, draft, order=None):
     if order is not None:
         if order.fulfillment_status == "cancelled" or order.status == "rejected":
             return "Отменён"
+        if order.source == "website" and order.delivery_status == "delivered":
+            return "Доставлен"
         if order.fulfillment_status != "new":
             return FULFILLMENT_LABELS[order.fulfillment_status]
         return "Новый"
