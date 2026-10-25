@@ -864,6 +864,29 @@ async def order_callback(callback):
             elif action == "delivered":
                 extra["delivery_status"] = "delivered"
                 action = "delivery"
+            # 'Отгружен' is a deliberate manager confirmation. Create the
+            # actual MoySklad demand first; never mark CRM shipped on a
+            # missing, uncertain or only-local reservation.
+            if action == "shipped":
+                from app.services.hatuna_post_pick import post_pick_enabled_for_order
+                if post_pick_enabled_for_order(order_id):
+                    dispatch_plans = await shipments_for(order_id)
+                    dispatch_rows = [a for p in dispatch_plans for a in p.allocations
+                                     if a.supply_status != "cancelled"]
+                    if dispatch_rows and all(
+                            a.managed_source and a.source_type == "own"
+                            for a in dispatch_rows):
+                        from app.services.own_stock_reservation import dispatch_assembled_own_order
+                        from app.services.order_desk import DeskError
+                        from app.services.external_operation_service import ExternalOperationConflict
+                        try:
+                            await dispatch_assembled_own_order(
+                                order_id, callback.from_user.id, callback.message.chat.id)
+                        except (DeskError, ExternalOperationConflict) as error:
+                            raise OperationError(str(error)) from error
+                        # Warehouse documents update the order revision.
+                        order = await get_order(order_id)
+                        revision = order.revision
             request = OrderAction(action=action, expected_revision=revision,
                 idempotency_key=f"tg:{callback.from_user.id}:{callback.data}", **extra)
             order = await OrderOperations().act(order_id, callback.from_user.id, request)
