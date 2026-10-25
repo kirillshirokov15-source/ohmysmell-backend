@@ -835,6 +835,10 @@ async def order_callback(callback):
             from app.bot.source_navigation import show_sources
             await show_sources(callback.message, callback.from_user.id, order_id, edit=True)
             return
+        if action == "buyer":
+            from app.bot.source_navigation import show_buyer
+            await show_buyer(callback.message, callback.from_user.id, order_id, edit=True)
+            return
         if action == "items":
             from app.services.telegram_display import telegram_rubles
             lines = [f"Заказ №{order_id} · товары:"]
