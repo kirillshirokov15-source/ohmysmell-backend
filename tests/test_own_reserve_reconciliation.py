@@ -97,7 +97,10 @@ def test_no_duplicate_provider_write_and_no_mutations_when_unverified(prepared_o
         record["agent"]["meta"]["href"]="https://api.moysklad.ru/api/remap/1.2/entity/counterparty/not-buyer"
     service=OwnReservationReconciler(sessions=sessions,adapter=adapter)
     async def run():
-        with pytest.raises(OwnReservationReconciliationError, match="однозначно"):
+        expected = {"missing":"документов не найдено",
+                    "multiple":"Неоднозначно",
+                    "mismatch":"покупатель отличается"}[mode]
+        with pytest.raises(OwnReservationReconciliationError, match=expected):
             await service.reconcile(oid,pid,111,CHAT)
         assert adapter.calls==0
         async with sessions() as s:
