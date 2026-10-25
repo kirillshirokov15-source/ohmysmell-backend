@@ -54,6 +54,8 @@ class HatunaFulfillment:
             if (order.status == "rejected" or order.needs_review
                     or order.fulfillment_status != "assembled"):
                 raise HatunaPreflightError("Сначала сборщик должен подтвердить сборку заказа")
+            if order.source == "website" and order.delivery_method == "unselected":
+                raise HatunaPreflightError("Сначала выберите способ доставки")
             # All reserve and shipment documents need a verified buyer agent.
             # Do not create an X entry if the order cannot be reserved.
             _uuid(order.counterparty_id, "Контрагент покупателя")
