@@ -127,7 +127,7 @@ async def desk_card(draft_id, *, view="details"):
                 rows.append([{"text": "🔎 Найти товар в МойСклад",
                               "callback_data": f"desk:find:{draft_id}"}])
             if problems:
-                rows.append([{"text": "Перепроверить данные заказа",
+                rows.append([{"text": "Исправить сопоставление товаров и цен",
                               "callback_data": f"desk:recheck:{draft_id}"}])
             else:
                 rows.append([{"text": "✅ Подтвердить заказ",
@@ -136,9 +136,8 @@ async def desk_card(draft_id, *, view="details"):
         if desk.order_id:
             rows.append([{"text": "Открыть заказ",
                           "callback_data": f"order:refresh:{desk.order_id}:0"}])
-            if order and order.payment_status == "unpaid" and order.fulfillment_status == "new" and order.status != "rejected":
-                rows.append([{"text": "Уведомить: ожидает оплаты",
-                              "callback_data": f"desk:payment:{draft_id}"}])
+            # Customer receives routine status updates from the order workflow.
+            # Avoid a duplicate one-click 'awaiting payment' message here.
         if desk.customer_telegram_id:
             rows.append([{"text": "Ответить клиенту", "callback_data": f"desk:reply:{draft_id}"}])
         elif active or desk.order_id:
