@@ -59,7 +59,9 @@ def prepare(monkeypatch, factory, catalog):
     monkeypatch.setattr(settings,"environment","production")
     monkeypatch.setattr(settings,"external_writes_enabled",True)
     monkeypatch.setenv("OMS_OWN_X_PRODUCT_CREATE_ENABLED","true")
-    operations = Obj(execute=AsyncMock(side_effect=lambda key,payload,send:send(payload)))
+    async def accept(key,payload,send):
+        return await send(payload)
+    operations = Obj(execute=AsyncMock(side_effect=accept))
     matcher = AsyncMock(side_effect=lambda: client.get_products())
     monkeypatch.setattr("app.services.product_matching_service.ProductMatchingService.products_async",matcher)
     return TildaXProductService(sessions=factory,client=client,operations=operations),client,operations
