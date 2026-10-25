@@ -92,8 +92,8 @@ class OwnReservationReconciler:
             order = await session.scalar(select(Order).where(Order.id == order_id)
                 .options(selectinload(Order.items)))
             desk = await session.scalar(select(OrderDesk).where(OrderDesk.order_id == order_id))
-            if not order or not desk or not order.manual_fulfillment or order.source != "website":
-                raise OwnReservationReconciliationError("Заказ Tilda не найден.")
+            if not order or not desk or not order.manual_fulfillment or order.source not in {"website", "email"}:
+                raise OwnReservationReconciliationError("Подтверждённый заказ Tilda/Gmail не найден.")
             require_owner(desk, actor)
             if order.fulfillment_status != "assembled" or order.needs_review or order.status == "rejected":
                 raise OwnReservationReconciliationError(
