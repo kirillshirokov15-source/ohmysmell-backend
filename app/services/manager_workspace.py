@@ -50,7 +50,14 @@ def order_details_card(order, shipments=()):
         f"Телефон: {order.phone or 'не указан'}", f"Telegram: {order.telegram or 'не указан'}",
         f"Источник: {SOURCE_LABELS.get(order.source, order.source)}",
         f"Сборка: {FULFILLMENT_LABELS[order.fulfillment_status]}", f"Оплата: {PAYMENT_LABELS[order.payment_status]}"]
-    if order.fulfillment_status == "shipped" and not order.needs_review:
+    if order.source == "website":
+        lines.append(f"Доставка: {DELIVERY_LABELS[order.delivery_method]} · {DELIVERY_STATUS[order.delivery_status]}")
+        if order.delivery_reference:
+            lines.append(f"Номер доставки: {order.delivery_reference}")
+        if (order.fulfillment_status == "shipped"
+                and order.delivery_status == "delivered" and not order.needs_review):
+            lines.append("Заказ завершён: отгружен и доставлен.")
+    elif order.fulfillment_status == "shipped" and not order.needs_review:
         lines.append("Складской цикл завершён: отгружен.")
     if not getattr(order, "manual_fulfillment", False):
         lines.append(f"Контрагент: {order.counterparty_name or order.counterparty_id or 'не выбран'}")
@@ -122,12 +129,20 @@ def available_order_keyboard(order, shipments=()):
             elif order.fulfillment_status == "assembling":
                 add("Заказ собран", "assembled")
             elif (order.fulfillment_status == "assembled"
+                  and (order.source != "website" or order.delivery_method != "unselected")
                   and getattr(order, "ui_supply_ready", True)):
                 add("Отгружен", "shipped")
             # Internal review is an administrator-only state, not a customer-facing
             # or routine order-management button.
         if order.fulfillment_status != "shipped" and getattr(order, "ui_cancellable", True):
             add("Отменить заказ", "cancel_confirm")
+        if order.source == "website":
+            if order.fulfillment_status != "shipped":
+                for method in ("pickup", "manual", "cdek", "yandex"):
+                    if method != order.delivery_method:
+                        add(DELIVERY_LABELS[method], "delivery_" + method)
+            elif order.delivery_status == "dispatched":
+                add("Доставлен", "delivered")
     add("Обновить", "refresh")
     add("Все товары", "items")
     if getattr(order, "desk_draft_id", None):
@@ -174,11 +189,16 @@ def order_keyboard(order, shipments=(), *, expanded=False):
     if (getattr(order, "manual_fulfillment", False)
             and order.fulfillment_status == "assembled"
             and post_pick_enabled_for_order(order.id)):
-        priorities = ("buyer", "sources", "shipped")
+        priorities = ("buyer", "sources", "shipped", "delivered")
     else:
-        priorities = ("buyer", "resolve", "assembling", "assembled", "shipped", "allocate", "sources", "procurement")
+        priorities = ("buyer", "resolve", "assembling", "assembled", "shipped", "allocate", "sources", "procurement", "delivered")
     primary = next((b for action in priorities for row in rows for b in row
                     if b["callback_data"].split(":")[1] == action), None)
+    if (active and not order.needs_review and order.source == "website"
+            and order.fulfillment_status == "assembled"
+            and order.delivery_method == "unselected"):
+        primary = {"text": "Выбрать доставку",
+                   "callback_data": f"order:actions:{order.id}:{order.revision}"}
     result = [paid_row] if paid_row else []
     if primary:
         result.append([primary])
@@ -280,7 +300,8 @@ def order_card(order, shipments=(), *, site_titles=None):
         else:
             next_step = "сверить созданные документы МойСклад и выполнить дальнейшую отгрузку."
     elif post_pick and order.fulfillment_status == "shipped":
-        next_step = "складские документы оформлены; заказ отгружен."
+        next_step = ("сверить документы отгрузки и доставку." if order.source == "website"
+                     else "складские документы оформлены; заказ отгружен.")
     elif pending_x:
         next_step = "склад Х → подтвердить физическое получение → оприходовать в МойСклад → резерв → сборка → отгрузка."
     elif ready_quantity < total_quantity:
