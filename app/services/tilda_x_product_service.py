@@ -15,7 +15,7 @@ from app.config.settings import settings
 from app.database.session import async_session
 from app.models.draft_order import DraftOrder
 from app.models.order_desk import OrderDesk
-from app.models.sales import InboundMessage
+from app.models.inbound_message import InboundMessage
 from app.services.order_desk import (
     DeskService, DeskError, authorized_manager, require_owner, source_rows,
 )
