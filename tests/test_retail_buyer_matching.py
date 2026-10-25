@@ -87,6 +87,6 @@ def test_stale_order_cannot_change_buyer(monkeypatch):
 def test_new_counterparty_requires_explicit_production_permission(monkeypatch):
     from app.config.settings import settings
     monkeypatch.setattr(settings, "environment","staging")
-    service = RetailBuyerService()
+    service = RetailBuyerService(matcher=Obj())
     with pytest.raises(Exception, match="Counterparty creation is disabled"):
         asyncio.run(service.create_and_bind(9,111,-100123456,"Иван Петров",4))
