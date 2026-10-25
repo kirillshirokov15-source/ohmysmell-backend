@@ -129,7 +129,7 @@ def available_order_keyboard(order, shipments=()):
             elif order.fulfillment_status == "assembling":
                 add("Заказ собран", "assembled")
             elif (order.fulfillment_status == "assembled"
-                  and (order.source != "website" or order.delivery_method != "unselected")
+                  and (getattr(order, "source", "website") != "website" or order.delivery_method != "unselected")
                   and getattr(order, "ui_supply_ready", True)):
                 add("Отгружен", "shipped")
             # Internal review is an administrator-only state, not a customer-facing
