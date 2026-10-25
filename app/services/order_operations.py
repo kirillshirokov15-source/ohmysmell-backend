@@ -56,8 +56,11 @@ def apply_action(order, request, manager_id, now):
             raise OperationError("Недопустимый переход сборки. Обновите карточку.")
         order.fulfillment_status = action
         setattr(order, {"assembling": "assembling_at", "assembled": "assembled_at", "shipped": "shipped_at"}[action], now)
-        # Shipment is the terminal warehouse step. Delivery is outside CRM.
-        # It does not change the delivery fields stored on historical orders.
+        if action == "shipped" and order.source == "website":
+            if order.delivery_method == "unselected":
+                raise OperationError("Сначала выберите способ доставки.")
+            order.delivery_status = "dispatched"
+        # Gmail has no delivery step: shipment is its terminal warehouse event.
     elif action == "paid":
         if order.payment_status != "unpaid":
             raise OperationError("Оплата уже отмечена. Обновите карточку.")
@@ -74,8 +77,27 @@ def apply_action(order, request, manager_id, now):
         # Payment is only a manually set label in Telegram, not an approval
         # or a reason to block a separate warehouse cancellation.
         order.fulfillment_status = "cancelled"
+        if order.source == "website":
+            order.delivery_status = "cancelled"
     elif action == "delivery":
-        raise OperationError("Доставка не ведётся в CRM. Используйте только этапы сборки и отгрузки.")
+        if order.source != "website":
+            raise OperationError("Доставка доступна только для заказов Tilda.")
+        if request.delivery_method:
+            if order.fulfillment_status == "shipped":
+                raise OperationError("Способ доставки после отгрузки не меняется.")
+            order.delivery_method = request.delivery_method
+        if request.delivery_status:
+            transitions = {"pending":{"ready"}, "ready":set(), "dispatched":{"delivered"},
+                           "delivered":set(), "cancelled":set()}
+            if request.delivery_status not in transitions[order.delivery_status]:
+                raise OperationError("Недопустимый переход доставки. Отгрузка отмечается отдельно.")
+            if order.delivery_method == "unselected":
+                raise OperationError("Выберите способ доставки.")
+            order.delivery_status = request.delivery_status
+        if request.delivery_reference is not None:
+            order.delivery_reference = request.delivery_reference
+        if not any((request.delivery_method, request.delivery_status, request.delivery_reference)):
+            raise OperationError("Укажите способ, статус или номер доставки.")
     order.revision += 1
     if action != "paid":
         order.status_changed_at, order.status_changed_by_manager_id = now, manager_id
