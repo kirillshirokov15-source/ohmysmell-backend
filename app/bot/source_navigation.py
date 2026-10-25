@@ -284,7 +284,14 @@ def register(dp, check_access, safe_callback_answer):
                                 "после физической сборки используется post-pick.")
             if step == "own_reserve":
                 from app.services.own_stock_reservation import reserve_assembled_own_order
-                await reserve_assembled_own_order(state["order_id"], state["actor"], state["chat"])
+                from app.services.external_operation_service import ExternalOperationConflict
+                try:
+                    await reserve_assembled_own_order(
+                        state["order_id"], state["actor"], state["chat"])
+                except ExternalOperationConflict as error:
+                    raise DeskError(
+                        "Неопределённый ответ МойСклад. Проверьте журнал и документ, "
+                        "повторное создание резерва заблокировано.") from error
                 from app.bot.telegram_bot import safe_edit_message
                 from app.bot.procurement import supply_order_card
                 from app.services.manager_workspace import order_keyboard, shipments_for
