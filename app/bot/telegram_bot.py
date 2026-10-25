@@ -867,8 +867,44 @@ async def order_callback(callback):
             request = OrderAction(action=action, expected_revision=revision,
                 idempotency_key=f"tg:{callback.from_user.id}:{callback.data}", **extra)
             order = await OrderOperations().act(order_id, callback.from_user.id, request)
-        plans = read_plans if read_plans is not None else await shipments_for(order_id)
+            if action == "assembled":
+                # After physical picking, reserve OWN stock in real MoySklad.
+                # X/mixed orders are processed by the separate idempotent
+                # post-pick X worker. Never send customer messages for retries.
+                from app.services.hatuna_post_pick import post_pick_enabled_for_order
+                if post_pick_enabled_for_order(order_id):
+                    assembled_plans = await shipments_for(order_id)
+                    active_allocations = [
+                        a for p in assembled_plans for a in p.allocations
+                        if a.supply_status != "cancelled"
+                    ]
+                    if active_allocations and all(
+                            a.managed_source and a.source_type == "own"
+                            for a in active_allocations):
+                        try:
+                            from app.services.own_stock_reservation import reserve_assembled_own_order
+                            await reserve_assembled_own_order(
+                                order_id, callback.from_user.id, callback.message.chat.id)
+                        except Exception as error:
+                            # Assembly has committed; never suggest a blind
+                            # retry of an uncertain external provider call.
+                            from app.services.order_desk import DeskError
+                            from app.services.external_operation_service import ExternalOperationConflict
+                            if isinstance(error, DeskError):
+                                reservation_warning = str(error)
+                            elif isinstance(error, ExternalOperationConflict):
+                                reservation_warning = ("Результат операции МойСклад требует сверки. "
+                                                       "Не повторяйте резерв до проверки журнала.")
+                            else:
+                                reservation_warning = ("Операция МойСклад не подтверждена. "
+                                                       "Сначала проверьте журнал документов.")
+                            log_event(logger, "own_reservation_pending",
+                                      order_id=order_id, result=type(error).__name__)
+                        order = await get_order(order_id)
+        plans = await shipments_for(order_id)
         text = await supply_order_card(order, plans, details=action == "details")
+        if locals().get("reservation_warning"):
+            text += "\n⚠️ Сборка подтверждена, но резерв не создан/не подтверждён: " + reservation_warning
         keyboard = InlineKeyboardMarkup.model_validate(order_keyboard(order, plans, expanded=action in {"details", "actions"}))
         try:
             if enabled():
