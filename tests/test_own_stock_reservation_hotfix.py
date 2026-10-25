@@ -37,6 +37,10 @@ def fixture(monkeypatch, *, status="assembled", buyer="buyer", source="own", led
     class Session:
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
+        async def scalar(self, statement):
+            # A successful external reserve in this fixture already has an
+            # associated durable local OrderEvent.
+            return 1
         async def get(self, model, key):
             if model is Order: return order
             if model is ExternalOperation:
@@ -75,7 +79,7 @@ def test_unsafe_reserve_is_rejected_without_writes(monkeypatch,status,buyer,sour
 
 def test_uncertain_document_does_not_retry(monkeypatch):
     writer=fixture(monkeypatch,ledger=O(status="uncertain"))
-    with pytest.raises(DeskError,match="повтор запрещён"):
+    with pytest.raises(DeskError,match="создание нового документа запрещено"):
         asyncio.run(own.reserve_assembled_own_order(9,111,-100123456))
     writer.act.assert_not_awaited()
 
