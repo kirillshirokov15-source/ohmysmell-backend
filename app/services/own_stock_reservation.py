@@ -10,6 +10,7 @@ from app.config.settings import settings
 from app.database.session import async_session
 from app.models.order import Order
 from app.models.fulfillment import ExternalOperation
+from app.models.operations import OrderEvent
 from app.services.order_source_service import source_plans
 from app.services.order_desk import DeskError
 from app.services.warehouse_documents import WarehouseDocumentService, plan_key
@@ -50,7 +51,15 @@ async def reserve_assembled_own_order(order_id: int, actor: int, chat_id: int) -
             if record is None:
                 pending.append(plan.id)
             elif record.status != "succeeded":
-                raise DeskError("Результат резерва неизвестен: нужна сверка документа, повтор запрещён.")
+                raise DeskError("Результат резерва неизвестен. Откройте «Сверить резерв МойСклад»; "
+                                "создание нового документа запрещено.")
+            else:
+                audited = await session.scalar(select(OrderEvent.id).where(
+                    OrderEvent.order_id == order_id,
+                    OrderEvent.idempotency_key == plan_key(plan, "reserve", False)))
+                if audited is None:
+                    raise DeskError("Документ записан в журнал, но не связан с заказом. "
+                                    "Откройте «Сверить резерв МойСклад».")
             release = await session.get(ExternalOperation, plan_key(plan, "release", False))
             if release:
                 raise DeskError("Резерв уже снимался: необходима сверка документов.")
@@ -104,6 +113,11 @@ async def dispatch_assembled_own_order(order_id: int, actor: int, chat_id: int) 
             release = await session.get(ExternalOperation, plan_key(plan, "release", False))
             if not reserve or reserve.status != "succeeded" or release:
                 raise DeskError("Внешний резерв МойСклад отсутствует или требует сверки.")
+            audited = await session.scalar(select(OrderEvent.id).where(
+                OrderEvent.order_id == order_id,
+                OrderEvent.idempotency_key == plan_key(plan, "reserve", False)))
+            if audited is None:
+                raise DeskError("Резерв ещё не связан с заказом. Сначала нажмите «Сверить резерв МойСклад».")
             ship = await session.get(ExternalOperation, plan_key(plan, "ship", False))
             if ship is not None and ship.status != "succeeded":
                 raise DeskError("Неопределённый результат отгрузки: повтор запрещён до сверки.")
