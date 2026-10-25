@@ -136,7 +136,7 @@ def available_order_keyboard(order, shipments=()):
             # or routine order-management button.
         if order.fulfillment_status != "shipped" and getattr(order, "ui_cancellable", True):
             add("Отменить заказ", "cancel_confirm")
-        if order.source == "website":
+        if getattr(order, "source", "website") == "website":
             if order.fulfillment_status != "shipped":
                 for method in ("pickup", "manual", "cdek", "yandex"):
                     if method != order.delivery_method:
