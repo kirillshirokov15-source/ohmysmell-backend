@@ -124,7 +124,8 @@ def available_order_keyboard(order, shipments=()):
             elif (order.fulfillment_status == "assembled" and order.delivery_method != "unselected"
                   and getattr(order, "ui_supply_ready", True)):
                 add("Отгружен", "shipped")
-            add("Проблема / требуется проверка", "review")
+            # Internal review is an administrator-only state, not a customer-facing
+            # or routine order-management button.
         if order.payment_status == "unpaid":
             add("Оплачен", "paid")
             if order.fulfillment_status != "shipped" and getattr(order, "ui_cancellable", True):
@@ -160,7 +161,15 @@ def order_keyboard(order, shipments=(), *, expanded=False):
             rows.insert(0, [source])
     if expanded:
         return {"inline_keyboard": rows}
-    priorities = ("resolve", "assembling", "assembled", "shipped", "allocate", "sources", "procurement", "delivered", "paid")
+    # At the assembled Tilda boundary, verifying warehouse documents comes
+    # before offering dispatch: an allocation is not a MoySklad reserve.
+    from app.services.hatuna_post_pick import post_pick_enabled_for_order
+    if (getattr(order, "manual_fulfillment", False)
+            and order.fulfillment_status == "assembled"
+            and post_pick_enabled_for_order(order.id)):
+        priorities = ("sources", "shipped", "paid", "delivered")
+    else:
+        priorities = ("resolve", "assembling", "assembled", "shipped", "allocate", "sources", "procurement", "delivered", "paid")
     primary = next((b for action in priorities for row in rows for b in row
                     if b["callback_data"].split(":")[1] == action), None)
     if active and not order.needs_review and order.fulfillment_status == "assembled" and order.delivery_method == "unselected":

@@ -208,6 +208,12 @@ async def show_sources(message, actor, order_id, *, edit=False):
             continue
         ready = all(allocation_ready(a, manual=order.manual_fulfillment)
                     for a in active_allocations)
+        if (post_pick and ready and plan.status == "planned"
+                and not plan_docs[plan.id]["reserved"]
+                and order.fulfillment_status == "assembled" and not order.needs_review
+                and all(a.source_type == "own" for a in active_allocations)):
+            rows.append(button("Создать резерв МойСклад · свой склад",
+                dict(state, step="own_reserve", plan_id=plan.id)))
         if (not post_pick and ready and plan.status == "planned" and not plan_docs[plan.id]["reserved"]
                 and order.fulfillment_status == "new" and not order.needs_review):
             rows.append(button("Проверить резерв МойСклад",
@@ -220,7 +226,8 @@ async def show_sources(message, actor, order_id, *, edit=False):
     next_actions = post_pick_followup_buttons(order, plans, state)
     if next_actions:
         lines.append("Сборка подтверждена. Следующий этап – проверка операций и остатков.")
-        lines.append("Для тестового заказа реальные приход, резерв и отгрузка отключены.")
+        if "test oms" in (order.customer_name or "").casefold():
+            lines.append("Тестовый заказ: реальные документы МойСклад запрещены.")
         rows.extend(next_actions)
     rows.append([{"text": "Назад к заказу", "callback_data": f"order:refresh:{order_id}:{view['revision']}"}])
     if edit:
@@ -275,6 +282,27 @@ def register(dp, check_access, safe_callback_answer):
             }:
                 raise DeskError("Старая операция склада Х отключена: "
                                 "после физической сборки используется post-pick.")
+            if step == "own_reserve":
+                from app.services.own_stock_reservation import reserve_assembled_own_order
+                from app.services.external_operation_service import ExternalOperationConflict
+                try:
+                    await reserve_assembled_own_order(
+                        state["order_id"], state["actor"], state["chat"])
+                except ExternalOperationConflict as error:
+                    raise DeskError(
+                        "Неопределённый ответ МойСклад. Проверьте журнал и документ, "
+                        "повторное создание резерва заблокировано.") from error
+                from app.bot.telegram_bot import safe_edit_message
+                from app.bot.procurement import supply_order_card
+                from app.services.manager_workspace import order_keyboard, shipments_for
+                from app.repositories.order_repository import get_order
+                updated = await get_order(state["order_id"])
+                current_plans = await shipments_for(state["order_id"])
+                await safe_edit_message(callback.message,
+                    await supply_order_card(updated, current_plans), draft_id=0,
+                    order_id=state["order_id"],
+                    reply_markup=InlineKeyboardMarkup.model_validate(order_keyboard(updated, current_plans)))
+                return
             if step == "post_pick_check":
                 from app.services.hatuna_readonly_check import check_hatuna_order
                 text = await check_hatuna_order(
@@ -361,7 +389,7 @@ def register(dp, check_access, safe_callback_answer):
                     if state["source_type"] == "own":
                         text = (f"Заказ №{state['order_id']} · свой склад\n"
                             f"{selected['warehouse_label']} · {state['qty']} шт.\n"
-                            "Подтвердить распределение? Реальные документы МойСклад этим не создаются.")
+                            "После подтверждения сборки резерв МойСклад создаст система.")
                         rows.append(button("✅ Подтвердить свой склад",
                                            dict(selected, step="apply", action="assign")))
                     else:
@@ -609,7 +637,19 @@ def register(dp, check_access, safe_callback_answer):
                     args["x_unit_cost_minor"] = state["x_unit_cost_minor"]
                 await service.act(state["order_id"], state["actor"], state["chat"], SourceAction(
                     action=action, expected_revision=state["revision"], idempotency_key=callback.data, **args))
-                await show_sources(callback.message, state["actor"], state["order_id"], edit=True)
+                if action == "assign" and state.get("source_type") == "own":
+                    from app.bot.telegram_bot import safe_edit_message
+                    from app.bot.procurement import supply_order_card
+                    from app.services.manager_workspace import order_keyboard, shipments_for
+                    from app.repositories.order_repository import get_order
+                    updated = await get_order(state["order_id"])
+                    current_plans = await shipments_for(state["order_id"])
+                    await safe_edit_message(callback.message,
+                        await supply_order_card(updated, current_plans), draft_id=0,
+                        order_id=state["order_id"],
+                        reply_markup=InlineKeyboardMarkup.model_validate(order_keyboard(updated, current_plans)))
+                else:
+                    await show_sources(callback.message, state["actor"], state["order_id"], edit=True)
                 return
             if not rows:
                 text = empty_reason or "На этом шаге нет доступных вариантов. Проверьте настройки источника."
