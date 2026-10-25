@@ -27,9 +27,13 @@ def test_real_sqlite_tilda_retail_buyer_binding_is_atomic_and_silent(database, m
             before = await session.scalar(select(func.count()).select_from(DeskMessage))
             orig = dict(order_id=order.id, revision=order.revision)
         service = RetailBuyerService(matcher=object(), sessions=database)
+        actual = await service._read(order.id, 111, CHAT)
+        assert actual["order_id"] == orig["order_id"]
+        assert actual["revision"] == orig["revision"]
+        assert actual["counterparty_id"] is None
         record = {"id":"cba5647e-89ec-40fa-951d-98056f8b5ff9",
                   "name":"Иван Петров", "archived":False}
-        assert "сопоставлен" in (await service._persist(orig,111,CHAT,record,"manager_created"))
+        assert "сопоставлен" in (await service._persist(actual,111,CHAT,record,"manager_created"))
         async with database() as session:
             linked = await session.get(Order,order.id)
             draft = await session.get(DraftOrder,did)
