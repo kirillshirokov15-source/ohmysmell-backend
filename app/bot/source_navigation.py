@@ -141,10 +141,21 @@ async def show_sources(message, actor, order_id, *, edit=False):
     order = await get_order(order_id)
     editable = order.fulfillment_status == "new" and order.status != "rejected" and not order.needs_review
     from app.services.order_source_service import source_plans, simulation_allowed
-    from app.services.warehouse_documents import plan_document_read_models
+    from app.services.warehouse_documents import plan_document_read_models, plan_key
+    from app.models.fulfillment import ExternalOperation
+    from app.models.operations import OrderEvent
     async with async_session() as session:
         plans = await source_plans(session, order_id)
         plan_docs = await plan_document_read_models(session, plans)
+        reconcile_needed = {}
+        for plan in plans:
+            reserve_key = plan_key(plan, "reserve", False)
+            operation = await session.get(ExternalOperation, reserve_key)
+            event = await session.scalar(select(OrderEvent.id).where(
+                OrderEvent.order_id == order_id,
+                OrderEvent.idempotency_key == reserve_key))
+            reconcile_needed[plan.id] = (bool(operation) and (
+                operation.status != "succeeded" or event is None))
         frozen = any(row['frozen'] for row in plan_docs.values())
     state = dict(actor=actor, chat=message.chat.id, order_id=order_id, revision=view["revision"])
     if order.manual_fulfillment and not order.counterparty_id:
@@ -219,11 +230,15 @@ async def show_sources(message, actor, order_id, *, edit=False):
         ready = all(allocation_ready(a, manual=order.manual_fulfillment)
                     for a in active_allocations)
         if (post_pick and ready and plan.status == "planned"
-                and not plan_docs[plan.id]["reserved"]
                 and order.fulfillment_status == "assembled" and not order.needs_review
                 and all(a.source_type == "own" for a in active_allocations)):
-            rows.append(button("Создать резерв МойСклад · свой склад",
-                dict(state, step="own_reserve", plan_id=plan.id)))
+            if reconcile_needed.get(plan.id):
+                lines.append("⚠️ У резерва есть запись в журнале, но результат не подтверждён CRM.")
+                rows.append(button("Сверить резерв МойСклад · без повторной записи",
+                    dict(state, step="own_reserve_reconcile", plan_id=plan.id)))
+            elif not plan_docs[plan.id]["reserved"]:
+                rows.append(button("Создать резерв МойСклад · свой склад",
+                    dict(state, step="own_reserve", plan_id=plan.id)))
         if (not post_pick and ready and plan.status == "planned" and not plan_docs[plan.id]["reserved"]
                 and order.fulfillment_status == "new" and not order.needs_review):
             rows.append(button("Проверить резерв МойСклад",
@@ -332,6 +347,16 @@ def register(dp, check_access, safe_callback_answer):
             }:
                 raise DeskError("Старая операция склада Х отключена: "
                                 "после физической сборки используется post-pick.")
+            if step == "own_reserve_reconcile":
+                from app.services.own_stock_reconciliation import OwnReservationReconciler
+                result = await OwnReservationReconciler().reconcile(
+                    state["order_id"], state["plan_id"], state["actor"], state["chat"])
+                await replace_screen(callback.message,
+                    ("✅ Резерв подтверждён МойСклад без повторного создания.\n"
+                     "Номер документа: " + result["id"]), [
+                    [{"text":"Вернуться к заказу",
+                      "callback_data":f"order:refresh:{state['order_id']}:0"}]])
+                return
             if step == "buyer_candidates":
                 await show_buyer(callback.message, state["actor"],
                                  state["order_id"], edit=True, query=state.get("query"))
@@ -792,6 +817,9 @@ def register(dp, check_access, safe_callback_answer):
             await replace_screen(callback.message, "⚠️ " + text, [
                 button("Повторить поиск покупателя", dict(state, step="buyer_candidates"))
                 if str(state.get("step", "")).startswith("buyer_")
+                else button("Повторить сверку без записи",
+                            dict(state, step="own_reserve_reconcile"))
+                if state.get("step") == "own_reserve_reconcile"
                 else button("← Другой источник", dict(state, step="type")),
                 [{"text": "Назад к заказу",
                   "callback_data": f"order:refresh:{state['order_id']}:0"}]])
