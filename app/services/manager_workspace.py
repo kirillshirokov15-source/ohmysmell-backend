@@ -146,7 +146,7 @@ def available_order_keyboard(order, shipments=()):
     add("Обновить", "refresh")
     add("Все товары", "items")
     if getattr(order, "desk_draft_id", None):
-        if order.source == "website":
+        if getattr(order, "source", "website") == "website":
             buttons.append([{"text": "Заявка сайта / связь с клиентом",
                              "callback_data": f"desk:refresh:{order.desk_draft_id}"}])
     if getattr(order, "supply_has_external", False):
@@ -194,7 +194,7 @@ def order_keyboard(order, shipments=(), *, expanded=False):
         priorities = ("buyer", "resolve", "assembling", "assembled", "shipped", "allocate", "sources", "procurement", "delivered")
     primary = next((b for action in priorities for row in rows for b in row
                     if b["callback_data"].split(":")[1] == action), None)
-    if (active and not order.needs_review and order.source == "website"
+    if (active and not order.needs_review and getattr(order, "source", "website") == "website"
             and order.fulfillment_status == "assembled"
             and order.delivery_method == "unselected"):
         primary = {"text": "Выбрать доставку",
