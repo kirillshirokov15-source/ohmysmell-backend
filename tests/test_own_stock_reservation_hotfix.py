@@ -20,7 +20,8 @@ def snapshot(*, status="assembled", buyer="moysklad-buyer", source="own",
     order = O(id=9, source="website", manual_fulfillment=True, status="new",
               needs_review=False, fulfillment_status=status, counterparty_id=buyer,
               revision=4)
-    allocation = O(managed_source=True, source_type=source,
+    allocation = O(id=321, order_item_id=91, qty=1,
+                   managed_source=True, source_type=source,
                    supply_status="confirmed")
     plan = O(id=123, order_id=9, status="planned", allocations=[allocation])
     return order, plan, ledger
