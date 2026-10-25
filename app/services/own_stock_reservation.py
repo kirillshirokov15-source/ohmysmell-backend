@@ -92,6 +92,8 @@ async def dispatch_assembled_own_order(order_id: int, actor: int, chat_id: int) 
             raise DeskError("Только подтверждённые заказы Tilda и Gmail.")
         if order.needs_review or order.fulfillment_status != "assembled":
             raise DeskError("Отгрузка разрешена только после подтверждения сборки.")
+        if order.source == "website" and order.delivery_method == "unselected":
+            raise DeskError("Сначала выберите способ доставки.")
         plans = await source_plans(session, order_id)
         if not plans:
             raise DeskError("Не выбраны склады заказа.")
