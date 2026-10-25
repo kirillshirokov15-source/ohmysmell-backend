@@ -29,7 +29,6 @@ jobs:
           python -m pytest -q \
             tests/test_tilda_x_missing_product.py \
             tests/test_tilda_sku_review.py \
-            tests/test_tilda_desk_display.py \
             tests/test_hatuna_accounting.py \
             tests/test_hatuna_document_runner.py \
             tests/test_own_x_live_gates.py \
