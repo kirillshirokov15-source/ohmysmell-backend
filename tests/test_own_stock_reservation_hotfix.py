@@ -19,7 +19,7 @@ def snapshot(*, status="assembled", buyer="moysklad-buyer", source="own",
              ledger=None):
     order = O(id=9, source="website", manual_fulfillment=True, status="new",
               needs_review=False, fulfillment_status=status, counterparty_id=buyer,
-              revision=4)
+              revision=4, delivery_method="pickup")
     allocation = O(id=321, order_item_id=91, qty=1,
                    managed_source=True, source_type=source,
                    supply_status="confirmed")
@@ -90,3 +90,17 @@ def test_assembled_tilda_button_prefers_warehouse_and_no_review(monkeypatch):
     assert keyboard[0][0]["callback_data"]=="order:sources:9:7"
     expanded=str(order_keyboard(order, [], expanded=True))
     assert "Проблема / требуется проверка" not in expanded
+
+
+def test_dispatch_creates_demand_only_after_verified_reserve(monkeypatch):
+    writer = fixture(monkeypatch, ledger=O(status="succeeded"))
+    result = asyncio.run(own.dispatch_assembled_own_order(9, 111, -100123456))
+    assert result == {"documents_created":1}
+    writer.act.assert_awaited_once_with(9,111,-100123456,4,"ship",123)
+
+
+def test_dispatch_missing_reserve_does_not_fake_shipment(monkeypatch):
+    writer = fixture(monkeypatch, ledger=None)
+    with pytest.raises(DeskError, match="резерв"):
+        asyncio.run(own.dispatch_assembled_own_order(9,111,-100123456))
+    writer.act.assert_not_awaited()
