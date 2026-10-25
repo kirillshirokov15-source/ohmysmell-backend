@@ -405,7 +405,7 @@ class DeskService:
             if desk.order_id:
                 if stage != "awaiting_payment":
                     raise DeskError("Заказ уже подтверждён. Используйте карточку заказа.")
-                if order.fulfillment_status == "cancelled" or order.delivery_status == "delivered" or order.payment_status == "paid":
+                if order.fulfillment_status == "cancelled" or (order.source == "website" and order.delivery_status == "delivered"):
                     raise DeskError("Этап недоступен для закрытого или оплаченного заказа.")
             else:
                 draft = await session.get(DraftOrder, draft_id)

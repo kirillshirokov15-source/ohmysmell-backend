@@ -76,7 +76,7 @@ async def run_once(service=None, session_factory=None):
             statement = select(Order.id).where(
                 Order.id > last_id,
                 Order.manual_fulfillment.is_(True),
-                Order.source == "website",
+                Order.source.in_(("website", "email")),
                 Order.fulfillment_status == "assembled",
                 Order.needs_review.is_(False),
                 has_x,

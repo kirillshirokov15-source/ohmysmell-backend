@@ -25,8 +25,8 @@ async def reserve_assembled_own_order(order_id: int, actor: int, chat_id: int) -
 
     async with async_session() as session:
         order = await session.get(Order, order_id)
-        if not order or not order.manual_fulfillment or order.source != "website":
-            raise DeskError("Резерв доступен только для заказов Tilda.")
+        if not order or not order.manual_fulfillment or order.source not in {"website", "email"}:
+            raise DeskError("Резерв доступен для подтверждённых заказов Tilda и Gmail.")
         if order.status == "rejected" or order.needs_review or order.fulfillment_status != "assembled":
             raise DeskError("Сначала подтвердите сборку и завершите проверку заказа.")
         if not order.counterparty_id:
@@ -88,11 +88,11 @@ async def dispatch_assembled_own_order(order_id: int, actor: int, chat_id: int) 
 
     async with async_session() as session:
         order = await session.get(Order, order_id)
-        if not order or not order.manual_fulfillment or order.source != "website":
-            raise DeskError("Только подтверждённые заказы Tilda.")
+        if not order or not order.manual_fulfillment or order.source not in {"website", "email"}:
+            raise DeskError("Только подтверждённые заказы Tilda и Gmail.")
         if order.needs_review or order.fulfillment_status != "assembled":
             raise DeskError("Отгрузка разрешена только после подтверждения сборки.")
-        if order.delivery_method == "unselected":
+        if order.source == "website" and order.delivery_method == "unselected":
             raise DeskError("Сначала выберите способ доставки.")
         plans = await source_plans(session, order_id)
         if not plans:

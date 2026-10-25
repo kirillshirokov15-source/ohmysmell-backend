@@ -54,12 +54,13 @@ def apply_action(order, request, manager_id, now):
             raise OperationError("Сначала завершите проверку заказа.")
         if FULFILLMENT.get(order.fulfillment_status) != action:
             raise OperationError("Недопустимый переход сборки. Обновите карточку.")
+        if action == "shipped" and getattr(order, "source", "website") == "website" and order.delivery_method == "unselected":
+            raise OperationError("Сначала выберите способ доставки.")
         order.fulfillment_status = action
         setattr(order, {"assembling": "assembling_at", "assembled": "assembled_at", "shipped": "shipped_at"}[action], now)
-        if action == "shipped":
-            if order.delivery_method == "unselected":
-                raise OperationError("Сначала выберите способ доставки.")
+        if action == "shipped" and getattr(order, "source", "website") == "website":
             order.delivery_status = "dispatched"
+        # Gmail has no delivery step: shipment is its terminal warehouse event.
     elif action == "paid":
         if order.payment_status != "unpaid":
             raise OperationError("Оплата уже отмечена. Обновите карточку.")
@@ -71,16 +72,23 @@ def apply_action(order, request, manager_id, now):
             raise OperationError("Проверка уже в указанном состоянии.")
         order.needs_review = target
     elif action == "cancel":
-        if order.fulfillment_status == "shipped" or order.payment_status == "paid":
-            raise OperationError("Оплаченный или отгруженный заказ требует проверки, а не отмены.")
-        order.fulfillment_status, order.delivery_status = "cancelled", "cancelled"
+        if order.fulfillment_status == "shipped":
+            raise OperationError("Отгруженный заказ требует проверки перед отменой.")
+        # Payment is only a manually set label in Telegram, not an approval
+        # or a reason to block a separate warehouse cancellation.
+        order.fulfillment_status = "cancelled"
+        if order.source == "website":
+            order.delivery_status = "cancelled"
     elif action == "delivery":
+        if order.source != "website":
+            raise OperationError("Доставка доступна только для заказов Tilda.")
         if request.delivery_method:
             if order.fulfillment_status == "shipped":
                 raise OperationError("Способ доставки после отгрузки не меняется.")
             order.delivery_method = request.delivery_method
         if request.delivery_status:
-            transitions = {"pending": {"ready"}, "ready": set(), "dispatched": {"delivered"}, "delivered": set(), "cancelled": set()}
+            transitions = {"pending":{"ready"}, "ready":set(), "dispatched":{"delivered"},
+                           "delivered":set(), "cancelled":set()}
             if request.delivery_status not in transitions[order.delivery_status]:
                 raise OperationError("Недопустимый переход доставки. Отгрузка отмечается отдельно.")
             if order.delivery_method == "unselected":
@@ -91,7 +99,8 @@ def apply_action(order, request, manager_id, now):
         if not any((request.delivery_method, request.delivery_status, request.delivery_reference)):
             raise OperationError("Укажите способ, статус или номер доставки.")
     order.revision += 1
-    order.status_changed_at, order.status_changed_by_manager_id = now, manager_id
+    if action != "paid":
+        order.status_changed_at, order.status_changed_by_manager_id = now, manager_id
 
 
 class OrderOperations:
@@ -203,7 +212,7 @@ class OrderOperations:
                     procurement.revision += 1
             session.add(OrderEvent(order_id=order.id, manager_id=manager.id, action=request.action,
                 idempotency_key=request.idempotency_key, request_hash=digest, before=before, after=snapshot(order)))
-            if order.manual_fulfillment and request.action not in {"review", "resolve"}:
+            if order.manual_fulfillment and request.action not in {"review", "resolve", "paid"}:
                 # Internal review/resolve flags never generate customer updates.
                 from app.services.order_desk import status_notification
                 await status_notification(session, order, telegram_id)

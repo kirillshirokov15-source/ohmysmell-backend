@@ -48,13 +48,13 @@ class HatunaFulfillment:
                                          .options(selectinload(Order.items)))
             desk = await session.scalar(select(OrderDesk).where(OrderDesk.order_id == order_id))
             if not order or not desk or not desk.actor_telegram_id:
-                raise HatunaPreflightError("Заказ сайта или его ответственный отсутствует")
-            if not order.manual_fulfillment or order.source != "website":
-                raise HatunaPreflightError("Только клиентские заказы Tilda")
+                raise HatunaPreflightError("Заказ или его ответственный отсутствует")
+            if not order.manual_fulfillment or order.source not in {"website", "email"}:
+                raise HatunaPreflightError("Только подтверждённые заказы Tilda и Gmail")
             if (order.status == "rejected" or order.needs_review
                     or order.fulfillment_status != "assembled"):
                 raise HatunaPreflightError("Сначала сборщик должен подтвердить сборку заказа")
-            if order.delivery_method == "unselected":
+            if order.source == "website" and order.delivery_method == "unselected":
                 raise HatunaPreflightError("Сначала выберите способ доставки")
             # All reserve and shipment documents need a verified buyer agent.
             # Do not create an X entry if the order cannot be reserved.
@@ -89,7 +89,7 @@ class HatunaFulfillment:
                     if a.supply_status == "cancelled":
                         continue
                     if not a.managed_source or a.source_type not in {"own", "partner_x"}:
-                        raise HatunaPreflightError("Для Tilda разрешены только свой склад и склад Х")
+                        raise HatunaPreflightError("Разрешены только свой склад и склад Х")
                     quantities[a.order_item_id] += a.qty
                     if a.source_type == "partner_x":
                         x_allocations.append(a)

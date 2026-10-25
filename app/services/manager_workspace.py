@@ -49,15 +49,18 @@ def order_details_card(order, shipments=()):
         f"Email: {getattr(order, 'customer_email', None) or 'не указан'}",
         f"Телефон: {order.phone or 'не указан'}", f"Telegram: {order.telegram or 'не указан'}",
         f"Источник: {SOURCE_LABELS.get(order.source, order.source)}",
-        f"Сборка: {FULFILLMENT_LABELS[order.fulfillment_status]}", f"Оплата: {PAYMENT_LABELS[order.payment_status]}",
-        f"Доставка: {DELIVERY_LABELS[order.delivery_method]} · {DELIVERY_STATUS[order.delivery_status]}"]
-    if (order.fulfillment_status == 'shipped' and order.payment_status == 'paid'
-            and order.delivery_status == 'delivered' and not order.needs_review):
-        lines.append('Заказ завершён: отгружен, доставлен и оплачен.')
+        f"Сборка: {FULFILLMENT_LABELS[order.fulfillment_status]}", f"Оплата: {PAYMENT_LABELS[order.payment_status]}"]
+    if order.source == "website":
+        lines.append(f"Доставка: {DELIVERY_LABELS[order.delivery_method]} · {DELIVERY_STATUS[order.delivery_status]}")
+        if order.delivery_reference:
+            lines.append(f"Номер доставки: {order.delivery_reference}")
+        if (order.fulfillment_status == "shipped"
+                and order.delivery_status == "delivered" and not order.needs_review):
+            lines.append("Заказ завершён: отгружен и доставлен.")
+    elif order.fulfillment_status == "shipped" and not order.needs_review:
+        lines.append("Складской цикл завершён: отгружен.")
     if not getattr(order, "manual_fulfillment", False):
         lines.append(f"Контрагент: {order.counterparty_name or order.counterparty_id or 'не выбран'}")
-    if order.delivery_reference:
-        lines.append(f"Номер доставки: {order.delivery_reference}")
     if getattr(order, "assigned_manager_telegram_id", None):
         lines.append(f"Ответственный: Telegram ID {order.assigned_manager_telegram_id}")
     if order.needs_review:
@@ -125,24 +128,27 @@ def available_order_keyboard(order, shipments=()):
                     add("Начать сборку" if can_start else "Распределить по складам", "assembling" if can_start else "allocate")
             elif order.fulfillment_status == "assembling":
                 add("Заказ собран", "assembled")
-            elif (order.fulfillment_status == "assembled" and order.delivery_method != "unselected"
+            elif (order.fulfillment_status == "assembled"
+                  and (getattr(order, "source", "website") != "website" or order.delivery_method != "unselected")
                   and getattr(order, "ui_supply_ready", True)):
                 add("Отгружен", "shipped")
             # Internal review is an administrator-only state, not a customer-facing
             # or routine order-management button.
-        if order.payment_status == "unpaid":
-            if order.fulfillment_status != "shipped" and getattr(order, "ui_cancellable", True):
-                add("Отменить заказ", "cancel_confirm")
-        if order.fulfillment_status != "shipped":
-            for method in ("pickup", "manual", "cdek", "yandex"):
-                if method != order.delivery_method:
-                    add(DELIVERY_LABELS[method], "delivery_" + method)
-        elif order.delivery_status == "dispatched":
-            add("Доставлен", "delivered")
+        if order.fulfillment_status != "shipped" and getattr(order, "ui_cancellable", True):
+            add("Отменить заказ", "cancel_confirm")
+        if getattr(order, "source", "website") == "website":
+            if order.fulfillment_status != "shipped":
+                for method in ("pickup", "manual", "cdek", "yandex"):
+                    if method != order.delivery_method:
+                        add(DELIVERY_LABELS[method], "delivery_" + method)
+            elif order.delivery_status == "dispatched":
+                add("Доставлен", "delivered")
     add("Обновить", "refresh")
     add("Все товары", "items")
     if getattr(order, "desk_draft_id", None):
-        buttons.append([{"text": "Заявка сайта / связь с клиентом", "callback_data": f"desk:refresh:{order.desk_draft_id}"}])
+        if getattr(order, "source", "website") == "website":
+            buttons.append([{"text": "Заявка сайта / связь с клиентом",
+                             "callback_data": f"desk:refresh:{order.desk_draft_id}"}])
     if getattr(order, "supply_has_external", False):
         add("Закупки по заказу", "procurement")
     return {"inline_keyboard": buttons}
@@ -188,8 +194,11 @@ def order_keyboard(order, shipments=(), *, expanded=False):
         priorities = ("buyer", "resolve", "assembling", "assembled", "shipped", "allocate", "sources", "procurement", "delivered")
     primary = next((b for action in priorities for row in rows for b in row
                     if b["callback_data"].split(":")[1] == action), None)
-    if active and not order.needs_review and order.fulfillment_status == "assembled" and order.delivery_method == "unselected":
-        primary = {"text": "Выбрать доставку", "callback_data": f"order:actions:{order.id}:{order.revision}"}
+    if (active and not order.needs_review and getattr(order, "source", "website") == "website"
+            and order.fulfillment_status == "assembled"
+            and order.delivery_method == "unselected"):
+        primary = {"text": "Выбрать доставку",
+                   "callback_data": f"order:actions:{order.id}:{order.revision}"}
     result = [paid_row] if paid_row else []
     if primary:
         result.append([primary])
@@ -291,7 +300,8 @@ def order_card(order, shipments=(), *, site_titles=None):
         else:
             next_step = "сверить созданные документы МойСклад и выполнить дальнейшую отгрузку."
     elif post_pick and order.fulfillment_status == "shipped":
-        next_step = "сверить документы отгрузки, оплату и доставку."
+        next_step = ("сверить документы отгрузки и доставку." if order.source == "website"
+                     else "складские документы оформлены; заказ отгружен.")
     elif pending_x:
         next_step = "склад Х → подтвердить физическое получение → оприходовать в МойСклад → резерв → сборка → отгрузка."
     elif ready_quantity < total_quantity:
