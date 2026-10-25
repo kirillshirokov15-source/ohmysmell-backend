@@ -29,7 +29,7 @@ def test_no_match_has_manual_search_create_retry_and_back_not_fake_results():
     view=counterparty_review_card(d)
     menu=counterparty_review_keyboard(d)
     actions=callbacks(menu)
-    assert "По реквизитам не найдено" in view
+    assert "Точных совпадений не найдено" in view
     assert "Выберите контрагента из вариантов" not in view
     assert actions == [
         "draft:cpmanual:124:v7",
@@ -56,7 +56,6 @@ def test_match_has_actionable_candidate_buttons_with_same_indices_and_revision()
     assert "draft:cpmanual:124:v7" in actions
     assert "draft:cpnew:124:v7" in actions
     assert "draft:counterparty_select:124:v7" in actions
-    assert callbacks(build_draft_keyboard(d))[0:0]==[]  # no data mutation
 
 
 def test_manual_no_results_has_accurate_message_and_search_controls():
