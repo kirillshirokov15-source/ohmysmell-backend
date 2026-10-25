@@ -204,11 +204,11 @@ def register(dp, check_access, safe_callback_answer):
                     raise DeskError("Заявка изменилась. Повторите проверку товара.")
                 from app.services.telegram_display import telegram_rubles
                 await callback.message.edit_text(
-                    f"Создать НОВУЮ карточку товара для склада X в МойСклад?\\n"
-                    f"Название Tilda: {preview['name']}\\n"
-                    f"Артикул Tilda: {preview['sku']}\\n"
-                    f"Количество по заказу: {preview['qty']} шт.\\n"
-                    f"Цена продажи Tilda: {telegram_rubles(preview['price_minor'])}\\n\\n"
+                    f"Создать НОВУЮ карточку товара для склада X в МойСклад?\n"
+                    f"Название Tilda: {preview['name']}\n"
+                    f"Артикул Tilda: {preview['sku']}\n"
+                    f"Количество по заказу: {preview['qty']} шт.\n"
+                    f"Цена продажи Tilda: {telegram_rubles(preview['price_minor'])}\n\n"
                     "Сейчас создаётся только номенклатура БЕЗ остатков, резервов и отгрузок. "
                     "Реальное оприходование X будет только после физической сборки. "
                     "Проверьте, что это не аналогичная, а точная товарная позиция.",
