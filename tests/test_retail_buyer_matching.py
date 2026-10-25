@@ -32,11 +32,13 @@ def test_missing_buyer_is_prominent_for_assembled_order(monkeypatch):
     monkeypatch.setattr("app.services.hatuna_post_pick.post_pick_enabled_for_order", lambda _:True)
     order = Obj(id=9, revision=4, fulfillment_status="assembled", status="new",
                 manual_fulfillment=True, needs_review=False, counterparty_id=None,
-                payment_status="paid", delivery_method="pickup",
+                payment_status="unpaid", delivery_method="pickup",
                 delivery_status="pending", desk_draft_id=136)
     keyboard = order_keyboard(order, [], expanded=False)["inline_keyboard"]
-    assert keyboard[0][0]["text"] == "Сопоставить покупателя МойСклад"
-    assert keyboard[0][0]["callback_data"] == "order:buyer:9:4"
+    assert keyboard[0][0]["text"] == "Оплачен"
+    assert keyboard[0][0]["callback_data"] == "order:paid:9:4"
+    assert keyboard[1][0]["text"] == "Сопоставить покупателя МойСклад"
+    assert keyboard[1][0]["callback_data"] == "order:buyer:9:4"
 
 
 def test_already_mapped_buyer_hides_mapping_button(monkeypatch):

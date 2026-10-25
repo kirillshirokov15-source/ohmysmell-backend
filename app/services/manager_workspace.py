@@ -102,6 +102,10 @@ def available_order_keyboard(order, shipments=()):
     def add(label, action):
         buttons.append([{"text": label, "callback_data": f"order:{action}:{order.id}:{order.revision}"}])
     if order.fulfillment_status != "cancelled" and order.status != "rejected":
+        # Payment is an independent manual CRM confirmation, not the final
+        # step of fulfillment. Keep it available before/during assembly.
+        if order.payment_status == "unpaid":
+            add("Оплачен", "paid")
         if order.needs_review:
             if not getattr(order, "supply_financial_review", False):
                 add("Проверка завершена", "resolve")
@@ -127,7 +131,6 @@ def available_order_keyboard(order, shipments=()):
             # Internal review is an administrator-only state, not a customer-facing
             # or routine order-management button.
         if order.payment_status == "unpaid":
-            add("Оплачен", "paid")
             if order.fulfillment_status != "shipped" and getattr(order, "ui_cancellable", True):
                 add("Отменить заказ", "cancel_confirm")
         if order.fulfillment_status != "shipped":
@@ -163,6 +166,15 @@ def order_keyboard(order, shipments=(), *, expanded=False):
             and not getattr(order, "counterparty_id", None)):
         rows.insert(0, [{"text":"Сопоставить покупателя МойСклад",
                           "callback_data":f"order:buyer:{order.id}:{order.revision}"}])
+    # A Tilda order can need buyer mapping and stock documents at the same
+    # time. Keep the manual "Оплачен" action separately visible above them,
+    # without suppressing the next fulfillment action.
+    paid_row = next((row for row in rows
+                     if any(button["callback_data"].split(":")[1] == "paid"
+                            for button in row)), None)
+    if paid_row:
+        rows.remove(paid_row)
+        rows.insert(0, paid_row)
     if expanded:
         return {"inline_keyboard": rows}
     # At the assembled Tilda boundary, verifying warehouse documents comes
@@ -171,14 +183,16 @@ def order_keyboard(order, shipments=(), *, expanded=False):
     if (getattr(order, "manual_fulfillment", False)
             and order.fulfillment_status == "assembled"
             and post_pick_enabled_for_order(order.id)):
-        priorities = ("buyer", "sources", "shipped", "paid", "delivered")
+        priorities = ("buyer", "sources", "shipped", "delivered")
     else:
-        priorities = ("buyer", "resolve", "assembling", "assembled", "shipped", "allocate", "sources", "procurement", "delivered", "paid")
+        priorities = ("buyer", "resolve", "assembling", "assembled", "shipped", "allocate", "sources", "procurement", "delivered")
     primary = next((b for action in priorities for row in rows for b in row
                     if b["callback_data"].split(":")[1] == action), None)
     if active and not order.needs_review and order.fulfillment_status == "assembled" and order.delivery_method == "unselected":
         primary = {"text": "Выбрать доставку", "callback_data": f"order:actions:{order.id}:{order.revision}"}
-    result = [[primary]] if primary else []
+    result = [paid_row] if paid_row else []
+    if primary:
+        result.append([primary])
     result.append([{"text": "⋯ Действия", "callback_data": f"order:actions:{order.id}:{order.revision}"}])
     return {"inline_keyboard": result}
 
