@@ -147,8 +147,18 @@ async def show_sources(message, actor, order_id, *, edit=False):
         plan_docs = await plan_document_read_models(session, plans)
         frozen = any(row['frozen'] for row in plan_docs.values())
     state = dict(actor=actor, chat=message.chat.id, order_id=order_id, revision=view["revision"])
+    if order.manual_fulfillment and not order.counterparty_id:
+        rows_buyer = button("Сопоставить покупателя МойСклад",
+                            dict(state, step="buyer_candidates"))
+    else:
+        rows_buyer = None
     post_pick = post_pick_enabled(order_id)
     rows, lines = [], [f"Обеспечение заказа №{order_id}"]
+    if rows_buyer:
+        lines.append("⚠️ Покупатель МойСклад не сопоставлен – резерв и отгрузка невозможны.")
+        rows.append(rows_buyer)
+    elif order.counterparty_id:
+        lines.append("Покупатель МойСклад: сопоставлен.")
     for item in view["items"]:
         metric = (f"назначено {item['assigned']}" if post_pick
                   else f"готово для отгрузки {item['ready']}")
@@ -237,6 +247,46 @@ async def show_sources(message, actor, order_id, *, edit=False):
                              reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
+async def show_buyer(message, actor, order_id, *, edit=False, query=None):
+    from app.services.retail_buyer_binding import RetailBuyerService, verified_identity
+    from app.repositories.order_repository import get_order
+    from app.services.order_source_service import OrderSourceService
+    service = RetailBuyerService()
+    data, candidates = await service.candidates(order_id, actor, message.chat.id, query=query)
+    # Source access check also enforces order-manager ownership.
+    await OrderSourceService().read(order_id, actor, message.chat.id)
+    state = dict(actor=actor, chat=message.chat.id, order_id=order_id,
+                 revision=data["revision"])
+    lines = [f"Покупатель МойСклад · заказ №{order_id}",
+             "Выберите подтверждённого покупателя или создайте новую карточку.",
+             "Складские документы пока не создаются."]
+    rows = []
+    if not candidates:
+        lines.append("Совпадений не найдено. Проверьте поиск или создание нового покупателя.")
+    else:
+        for entry in candidates:
+            evidence = verified_identity(entry, email=data["email"],
+                        phone=data["phone"], name=data["name"])
+            label = (entry.get("name") or "Без названия")[:75]
+            if evidence:
+                rows.append(button(f"✅ {label} · {evidence}",
+                                   dict(state, step="buyer_bind_preview",
+                                        buyer_id=entry["id"])))
+            else:
+                lines.append(f"• {label} – нет подтверждённого совпадения контактов")
+    rows.append(button("Найти вручную – имя, email или телефон",
+                       dict(state, step="buyer_search_prompt")))
+    rows.append(button("Создать нового покупателя МойСклад",
+                       dict(state, step="buyer_create_prompt")))
+    rows.append([{"text":"← К заказу",
+                  "callback_data":f"order:refresh:{order_id}:0"}])
+    if edit:
+        await replace_screen(message, "\n".join(lines), rows)
+    else:
+        await message.answer("\n".join(lines), parse_mode=None,
+                             reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
 def register(dp, check_access, safe_callback_answer):
     @dp.callback_query(F.data.startswith("sourceui:"))
     async def navigate(callback):
@@ -282,7 +332,87 @@ def register(dp, check_access, safe_callback_answer):
             }:
                 raise DeskError("Старая операция склада Х отключена: "
                                 "после физической сборки используется post-pick.")
-            if step == "own_reserve":
+            if step == "buyer_candidates":
+                await show_buyer(callback.message, state["actor"],
+                                 state["order_id"], edit=True, query=state.get("query"))
+                return
+            elif step == "buyer_search_prompt":
+                from app.bot.manager_inputs import prompt_input
+                await replace_screen(callback.message,
+                    "Введите имя, email или телефон покупателя ответом на сообщение.",
+                    [button("← К заказу", dict(state, step="source_home"))])
+                await prompt_input(message, "buyer_search",
+                    dict(state, origin_message_id=callback.message.message_id),
+                    "Введите имя, email или телефон покупателя МойСклад:")
+                return
+            elif step == "buyer_create_prompt":
+                from app.bot.manager_inputs import prompt_input
+                await replace_screen(callback.message,
+                    "Введите полные имя и фамилию для НОВОГО контрагента МойСклад.",
+                    [button("← К заказу", dict(state, step="source_home"))])
+                await prompt_input(message, "buyer_new_name",
+                    dict(state, origin_message_id=callback.message.message_id),
+                    "Укажите ФИО нового покупателя (имя и фамилия):")
+                return
+            elif step == "buyer_bind_preview":
+                from app.services.retail_buyer_binding import RetailBuyerService, verified_identity
+                buyer = RetailBuyerService()
+                data = await buyer._read(state["order_id"], state["actor"], state["chat"])
+                candidate = await buyer.matcher.async_gateway.get_counterparty(state["buyer_id"])
+                proof = verified_identity(candidate, email=data["email"],
+                                           phone=data["phone"], name=data["name"])
+                if not proof or candidate.get("id") != state["buyer_id"]:
+                    raise DeskError("Контрагент не подтвердил идентичность покупателя.")
+                text = ("Привязать существующего контрагента МойСклад?\n"
+                        + (candidate.get("name") or "Без имени")[:180]
+                        + "\nОснование: " + proof
+                        + "\nНовый контрагент не создаётся. Клиент не уведомляется.")
+                rows.append(button("✅ Подтвердить сопоставление",
+                    dict(state, step="buyer_bind_confirm")))
+                rows.append(button("← Поиск", dict(state, step="buyer_candidates")))
+            elif step == "buyer_bind_confirm":
+                from app.services.retail_buyer_binding import RetailBuyerService
+                buyer = RetailBuyerService()
+                result = await buyer.bind(state["order_id"],state["actor"],state["chat"],
+                                          state["buyer_id"],state["revision"])
+                await replace_screen(callback.message, "✅ " + result, [
+                    [{"text":"К складским документам",
+                      "callback_data":f"order:sources:{state['order_id']}:0"}],
+                    [{"text":"← Заказ",
+                      "callback_data":f"order:refresh:{state['order_id']}:0"}]])
+                return
+            elif step == "buyer_create_preview":
+                from app.services.retail_buyer_binding import RetailBuyerService
+                buyer = RetailBuyerService()
+                data, full_name = await buyer.preview_new(state["order_id"],
+                    state["actor"],state["chat"],state["buyer_name"])
+                if data["revision"] != state["revision"]:
+                    raise DeskError("Карточка устарела.")
+                text = (f"Создать НОВОГО покупателя МойСклад?\n"
+                        f"ФИО: {full_name}\n"
+                        "Проверка возможных дублей завершена.\n"
+                        "Это реальная запись в МойСклад, без уведомления клиента.")
+                rows.append(button("✅ Создать и привязать нового покупателя",
+                    dict(state, step="buyer_create_confirm")))
+                rows.append(button("← К поиску", dict(state, step="buyer_candidates")))
+            elif step == "buyer_create_confirm":
+                from app.services.retail_buyer_binding import RetailBuyerService
+                from app.services.external_operation_service import ExternalOperationConflict
+                from app.integrations.write_guard import ExternalWritesDisabled
+                try:
+                    result = await RetailBuyerService().create_and_bind(
+                        state["order_id"],state["actor"],state["chat"],
+                        state["buyer_name"],state["revision"])
+                except (ExternalOperationConflict, ExternalWritesDisabled) as error:
+                    raise DeskError("Создание не подтверждено или отключено. "
+                        "Повторять без сверки журнала нельзя.") from error
+                await replace_screen(callback.message, "✅ " + result, [
+                    [{"text":"К складским документам",
+                      "callback_data":f"order:sources:{state['order_id']}:0"}],
+                    [{"text":"← Заказ",
+                      "callback_data":f"order:refresh:{state['order_id']}:0"}]])
+                return
+            elif step == "own_reserve":
                 from app.services.own_stock_reservation import reserve_assembled_own_order
                 from app.services.external_operation_service import ExternalOperationConflict
                 try:
