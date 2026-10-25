@@ -58,6 +58,31 @@ class MoySkladClient:
     def get_products(self):
         return self._rows("entity/product")
 
+    def get_product(self, identifier):
+        return self._get(f"entity/product/{self._id(identifier)}")
+
+    def create_x_catalog_product(self, payload):
+        """Create a product card only: no stock, documents, or sale-price writes."""
+        from app.integrations.write_guard import require_external_writes
+        import json
+        require_external_writes()
+        if os.getenv("OMS_OWN_X_PRODUCT_CREATE_ENABLED", "false").lower() != "true":
+            raise ValueError("Explicit X product creation is disabled")
+        if not isinstance(payload, dict) or set(payload) != {
+            "name", "article", "externalCode", "description"
+        }:
+            raise ValueError("Unexpected product creation fields")
+        if (not all(isinstance(payload[k], str) for k in payload)
+                or not 1 <= len(payload["name"]) <= 255
+                or not 1 <= len(payload["article"]) <= 255
+                or not re.fullmatch(r"oms-tilda-x-[0-9a-f]{32}", payload["externalCode"])
+                or not payload["description"].startswith("OhMySmell / Tilda / warehouse X:")):
+            raise ValueError("Invalid verified X product fields")
+        response = self.session.post(f"{self.base_url}/entity/product",
+            headers=self.headers, json=payload, timeout=(5, 30))
+        response.raise_for_status()
+        return response.json()
+
     def get_product_images(self, product_id):
         return self._rows(f"entity/product/{self._id(product_id)}/images")
 
