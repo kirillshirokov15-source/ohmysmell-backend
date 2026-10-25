@@ -87,7 +87,7 @@ def test_assembled_tilda_button_prefers_warehouse_and_no_review(monkeypatch):
         delivery_method="pickup",payment_status="paid",
         delivery_status="pending",desk_draft_id=136)
     keyboard=order_keyboard(order, [], expanded=False)["inline_keyboard"]
-    assert keyboard[0][0]["callback_data"]=="order:sources:9:7"
+    assert keyboard[0][0]["callback_data"]=="order:buyer:9:7"
     expanded=str(order_keyboard(order, [], expanded=True))
     assert "Проблема / требуется проверка" not in expanded
 

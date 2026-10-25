@@ -159,6 +159,10 @@ def order_keyboard(order, shipments=(), *, expanded=False):
         elif order.fulfillment_status in {"assembling", "assembled"}:
             source["text"] = "Складские документы"
             rows.insert(0, [source])
+    if (active and getattr(order, "manual_fulfillment", False)
+            and not getattr(order, "counterparty_id", None)):
+        rows.insert(0, [{"text":"Сопоставить покупателя МойСклад",
+                          "callback_data":f"order:buyer:{order.id}:{order.revision}"}])
     if expanded:
         return {"inline_keyboard": rows}
     # At the assembled Tilda boundary, verifying warehouse documents comes
@@ -167,9 +171,9 @@ def order_keyboard(order, shipments=(), *, expanded=False):
     if (getattr(order, "manual_fulfillment", False)
             and order.fulfillment_status == "assembled"
             and post_pick_enabled_for_order(order.id)):
-        priorities = ("sources", "shipped", "paid", "delivered")
+        priorities = ("buyer", "sources", "shipped", "paid", "delivered")
     else:
-        priorities = ("resolve", "assembling", "assembled", "shipped", "allocate", "sources", "procurement", "delivered", "paid")
+        priorities = ("buyer", "resolve", "assembling", "assembled", "shipped", "allocate", "sources", "procurement", "delivered", "paid")
     primary = next((b for action in priorities for row in rows for b in row
                     if b["callback_data"].split(":")[1] == action), None)
     if active and not order.needs_review and order.fulfillment_status == "assembled" and order.delivery_method == "unselected":

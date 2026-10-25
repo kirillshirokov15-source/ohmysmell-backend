@@ -153,6 +153,27 @@ async def route(message, check_access):
                     draft = await service.review(data["draft_id"], draft)
                 await message.answer(build_draft_card(draft), parse_mode=None,
                     reply_markup=InlineKeyboardMarkup.model_validate(build_draft_keyboard(draft)))
+        elif action in {"buyer_search", "buyer_new_name"}:
+            from app.bot.source_navigation import button
+            entered = " ".join(message.text.strip().split())
+            if (not 3 <= len(entered) <= (150 if action == "buyer_search" else 180)
+                    or (action == "buyer_new_name" and len(entered.split()) < 2)):
+                await message.answer("Введите имя и фамилию либо поисковый запрос от 3 символов.")
+                return True
+            from app.services.retail_buyer_binding import RetailBuyerService
+            current = await RetailBuyerService()._read(
+                data["order_id"], message.from_user.id, message.chat.id)
+            if current["revision"] != data["revision"] or current["counterparty_id"]:
+                pending.pop(key, None)
+                await message.answer("Заказ обновился или покупатель уже сопоставлен. Откройте его снова.")
+                return True
+            next_state = dict(data, step="buyer_candidates", query=entered) if action == "buyer_search" else (
+                dict(data, step="buyer_create_preview", buyer_name=entered))
+            row = button("Посмотреть результаты" if action == "buyer_search"
+                         else "Проверить дубли перед созданием", next_state)
+            await complete_source_prompt(message, data, pending[key][1],
+                ("Поиск покупателя для заказа №" if action == "buyer_search"
+                 else "Новый покупатель для заказа №") + str(data["order_id"]), row)
         elif action == "source_quantity":
             if not message.text.isascii() or not message.text.isdecimal() or not 0 < int(message.text) <= data["qty"]:
                 await message.answer(f"Введите количество от 1 до {data['qty']}.")
