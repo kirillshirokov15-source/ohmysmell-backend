@@ -43,6 +43,8 @@ def prepared_own_reservation(database, catalog, monkeypatch):
                 managed_source=True,source_type="own",supply_status="confirmed"))
             s.add(plan)
             await s.flush()
+            await s.refresh(live, ["items"])
+            await s.refresh(plan, ["allocations"])
             key=plan_key(plan,"reserve",False)
             # The actual method generates the same payload from order data.
             intent=reserve_intent(live,plan)
