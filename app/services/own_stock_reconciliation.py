@@ -26,6 +26,29 @@ class OwnReservationReconciliationError(DeskError):
     pass
 
 
+def verification_difference(intent, actual):
+    """Safe field names only: never leak personal or document fields to chat."""
+    expected = intent["document"]
+    if not actual.get("id"):
+        return "неполный ответ МойСклад"
+    for field in ("externalCode", "syncId", "applicable"):
+        if field in expected and expected[field] != actual.get(field):
+            return "различается " + field
+    for field in ("organization", "agent", "store", "customerOrder", "purchaseOrder"):
+        if field in expected and expected[field]["meta"]["href"] != (
+            actual.get(field) or {}).get("meta", {}).get("href"):
+            return {"organization":"организация", "agent":"покупатель",
+                    "store":"склад"}.get(field, field) + " отличается"
+    positions = actual.get("positions", [])
+    if isinstance(positions, dict):
+        positions = positions.get("rows", [])
+    if len(positions) != len(expected["positions"]):
+        return "отличается количество строк товаров"
+    if not verified_document(intent, actual):
+        return "не совпадают товар, количество, цена или резерв"
+    return None
+
+
 def reserve_intent(order, plan):
     """Pure computation matching the original WarehouseDocumentService intent."""
     if not settings.moysklad_organization_id or not order.counterparty_id:
@@ -59,7 +82,7 @@ class OwnReservationReconciler:
             store = ExternalOperationStore()
         self.store = store
 
-    async def reconcile(self, order_id, plan_id, actor, chat_id):
+    async def reconcile(self, order_id, plan_id, actor, chat_id, *, document_number=None):
         if settings.environment != "production" or not settings.external_writes_enabled:
             raise OwnReservationReconciliationError(
                 "Сверка доступна только для рабочего склада в production.")
@@ -102,15 +125,34 @@ class OwnReservationReconciler:
         # Only GET through the provider adapter: never a POST, PUT or replay.
         # A missing, ambiguous or partial provider record leaves the journal
         # untouched and blocks any further reserve attempt.
+        import re
+        from datetime import datetime, timezone
+        if document_number is not None and not re.fullmatch(r"[0-9]{1,18}", document_number):
+            raise OwnReservationReconciliationError("Номер заказа МойСклад должен состоять из цифр.")
+        source = (f"по номеру №{document_number}" if document_number is not None
+                  else "по идентификатору операции")
+        checked_at = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
         try:
-            docs = await self.adapter.find(intent)
+            docs = (await self.adapter.find_by_number(intent, document_number)
+                    if document_number is not None else await self.adapter.find(intent))
         except Exception as error:
             raise OwnReservationReconciliationError(
-                "МойСклад недоступен для чтения. Резерв не менялся; повтор запрещён.") from error
-        if len(docs) != 1 or not verified_document(intent, docs[0]):
+                f"Сверка {source} в {checked_at}: МойСклад недоступен для чтения. "
+                "Повторный резерв запрещён.") from error
+        if len(docs) == 0:
             raise OwnReservationReconciliationError(
-                "Не найден один однозначно подтверждённый резерв МойСклад. "
-                "Автоматическое повторное создание запрещено; нужна ручная сверка.")
+                f"Сверка {source} в {checked_at}: документов не найдено. "
+                "Заказ может существовать под другим идентификатором. "
+                "Не создавайте новый резерв; используйте проверку по номеру.")
+        if len(docs) != 1:
+            raise OwnReservationReconciliationError(
+                f"Сверка {source} в {checked_at}: найдено {len(docs)} документов. "
+                "Неоднозначно: нужен ручной контроль без повторной записи.")
+        diff = verification_difference(intent, docs[0])
+        if diff is not None:
+            raise OwnReservationReconciliationError(
+                f"Сверка {source} в {checked_at}: документ найден, "
+                f"но {diff}. Не создавайте повторный резерв.")
         verified = docs[0]
         if record.status == "succeeded":
             if not record.result or record.result.get("id") != verified["id"]:

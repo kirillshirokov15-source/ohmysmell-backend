@@ -236,6 +236,8 @@ async def show_sources(message, actor, order_id, *, edit=False):
                 lines.append("⚠️ У резерва есть запись в журнале, но результат не подтверждён CRM.")
                 rows.append(button("Сверить резерв МойСклад · без повторной записи",
                     dict(state, step="own_reserve_reconcile", plan_id=plan.id)))
+                rows.append(button("Найти существующий заказ по номеру МойСклад",
+                    dict(state, step="own_reserve_number_prompt", plan_id=plan.id)))
             elif not plan_docs[plan.id]["reserved"]:
                 rows.append(button("Создать резерв МойСклад · свой склад",
                     dict(state, step="own_reserve", plan_id=plan.id)))
@@ -347,13 +349,25 @@ def register(dp, check_access, safe_callback_answer):
             }:
                 raise DeskError("Старая операция склада Х отключена: "
                                 "после физической сборки используется post-pick.")
-            if step == "own_reserve_reconcile":
+            if step == "own_reserve_number_prompt":
+                from app.bot.manager_inputs import prompt_input
+                await replace_screen(callback.message,
+                    "Укажите точный номер УЖЕ СУЩЕСТВУЮЩЕГО заказа покупателя МойСклад "
+                    "(например, 00001). Проверка выполняется только чтением; новый заказ не создаётся.",
+                    [button("← К обеспечению", dict(state, step="source_home"))])
+                await prompt_input(message, "own_reserve_number",
+                    dict(state, origin_message_id=callback.message.message_id),
+                    "Введите номер существующего заказа покупателя МойСклад:")
+                return
+            if step in {"own_reserve_reconcile", "own_reserve_reconcile_by_number"}:
                 from app.services.own_stock_reconciliation import OwnReservationReconciler
+                document_number = state.get("document_number") if step.endswith("_by_number") else None
                 result = await OwnReservationReconciler().reconcile(
-                    state["order_id"], state["plan_id"], state["actor"], state["chat"])
+                    state["order_id"], state["plan_id"], state["actor"], state["chat"],
+                    document_number=document_number)
                 await replace_screen(callback.message,
                     ("✅ Резерв подтверждён МойСклад без повторного создания.\n"
-                     "Номер документа: " + result["id"]), [
+                     "Документ МойСклад: " + result["id"]), [
                     [{"text":"Вернуться к заказу",
                       "callback_data":f"order:refresh:{state['order_id']}:0"}]])
                 return
@@ -814,12 +828,16 @@ def register(dp, check_access, safe_callback_answer):
             await replace_screen(callback.message, text, rows)
         except (DeskError, ValueError) as error:
             text = str(error) if isinstance(error, DeskError) else "Проверьте выбранные данные."
-            await replace_screen(callback.message, "⚠️ " + text, [
-                button("Повторить поиск покупателя", dict(state, step="buyer_candidates"))
-                if str(state.get("step", "")).startswith("buyer_")
-                else button("Повторить сверку без записи",
-                            dict(state, step="own_reserve_reconcile"))
-                if state.get("step") == "own_reserve_reconcile"
-                else button("← Другой источник", dict(state, step="type")),
-                [{"text": "Назад к заказу",
-                  "callback_data": f"order:refresh:{state['order_id']}:0"}]])
+            if str(state.get("step", "")).startswith("own_reserve_reconcile"):
+                rows = [
+                    button("Сверить ещё раз по идентификатору", dict(state, step="own_reserve_reconcile")),
+                    button("Найти по номеру существующего заказа МойСклад",
+                           dict(state, step="own_reserve_number_prompt")),
+                ]
+            elif str(state.get("step", "")).startswith("buyer_"):
+                rows = [button("Повторить поиск покупателя", dict(state, step="buyer_candidates"))]
+            else:
+                rows = [button("← Другой источник", dict(state, step="type"))]
+            rows.append([{"text": "Назад к заказу",
+                          "callback_data": f"order:refresh:{state['order_id']}:0"}])
+            await replace_screen(callback.message, "⚠️ " + text, rows)

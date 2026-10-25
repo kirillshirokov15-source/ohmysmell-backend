@@ -42,14 +42,47 @@ class MoySkladDocumentAdapter:
         result = (await asyncio.to_thread(client.update_document, intent['entity'], intent['update_id'], intent['document'])
                   if intent.get('update_id') else
                   await asyncio.to_thread(client.create_document, intent['entity'], intent['document']))
-        # A malformed response is uncertain even if its HTTP status was 200.
+        # MoySklad's POST response may contain positions.meta without rows.
+        # Verify a freshly retrieved complete document before treating the
+        # provider write as uncertain. This is GET-only after the initial POST.
         if not verified_document(intent, result):
-            raise ValueError('Created document requires reconciliation')
+            if not isinstance(result, dict) or not result.get("id"):
+                raise ValueError("Created document has no reliable identifier")
+            result = await asyncio.to_thread(
+                self._read_full, client, intent["entity"], result)
+            if not verified_document(intent, result):
+                raise ValueError("Created document requires reconciliation")
         return result
+
+    @staticmethod
+    def _read_full(client, entity, row):
+        """List responses often provide positions.meta but omit position rows."""
+        document = client.get_document(entity, row["id"])
+        if document.get("id") != row["id"]:
+            raise ValueError("Provider detail identity differs from search result")
+        positions = client.get_document_positions(entity, row["id"])
+        document["positions"] = {"meta": {"size": len(positions)}, "rows": positions}
+        return document
 
     async def find(self, intent):
         client = self.client or MoySkladClient()
-        return await asyncio.to_thread(client.find_documents, intent['entity'], intent['document']['externalCode'])
+        entity = intent["entity"]
+        rows = await asyncio.to_thread(
+            client.find_documents, entity, intent["document"]["externalCode"])
+        if len(rows) > 5:
+            return rows  # ambiguous; no need to fetch or risk a false match
+        return [await asyncio.to_thread(self._read_full, client, entity, row)
+                for row in rows]
+
+    async def find_by_number(self, intent, number):
+        """Read-only optional investigation; never bypasses strict verification."""
+        client = self.client or MoySkladClient()
+        entity = intent["entity"]
+        rows = await asyncio.to_thread(client.find_documents_by_number, entity, number)
+        if len(rows) > 5:
+            return rows
+        return [await asyncio.to_thread(self._read_full, client, entity, row)
+                for row in rows]
 
 
 class FakeDocumentAdapter:

@@ -174,6 +174,26 @@ async def route(message, check_access):
             await complete_source_prompt(message, data, pending[key][1],
                 ("Поиск покупателя для заказа №" if action == "buyer_search"
                  else "Новый покупатель для заказа №") + str(data["order_id"]), row)
+        elif action == "own_reserve_number":
+            import re
+            entered = message.text.strip()
+            if not re.fullmatch(r"[0-9]{1,18}", entered):
+                await message.answer("Введите только цифровой номер заказа МойСклад, например 00001.")
+                return True
+            from app.services.order_source_service import OrderSourceService
+            view = await OrderSourceService().read(
+                data["order_id"], message.from_user.id, message.chat.id)
+            if view["revision"] != data["revision"]:
+                pending.pop(key, None)
+                await message.answer("Заказ изменился. Откройте актуальную карточку №"
+                                     + str(data["order_id"]))
+                return True
+            from app.bot.source_navigation import button
+            row = button("Проверить заказ МойСклад №" + entered + " · только чтение",
+                dict(data, step="own_reserve_reconcile_by_number",
+                     document_number=entered))
+            await complete_source_prompt(message, data, pending[key][1],
+                "Сверка существующего документа для заказа №" + str(data["order_id"]), row)
         elif action == "source_quantity":
             if not message.text.isascii() or not message.text.isdecimal() or not 0 < int(message.text) <= data["qty"]:
                 await message.answer(f"Введите количество от 1 до {data['qty']}.")
