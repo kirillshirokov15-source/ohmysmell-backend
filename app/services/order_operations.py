@@ -203,7 +203,8 @@ class OrderOperations:
                     procurement.revision += 1
             session.add(OrderEvent(order_id=order.id, manager_id=manager.id, action=request.action,
                 idempotency_key=request.idempotency_key, request_hash=digest, before=before, after=snapshot(order)))
-            if order.manual_fulfillment:
+            if order.manual_fulfillment and request.action not in {"review", "resolve"}:
+                # Internal review/resolve flags never generate customer updates.
                 from app.services.order_desk import status_notification
                 await status_notification(session, order, telegram_id)
             await session.flush()
