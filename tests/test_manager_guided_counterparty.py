@@ -55,9 +55,9 @@ def test_force_reply_only_consumes_reply_for_same_manager_and_prompt(monkeypatch
         repository=SimpleNamespace(expected_revision=None),
         search_counterparties=AsyncMock(return_value=draft))
     monkeypatch.setattr("app.services.draft_order_service.DraftOrderService", lambda: service)
-    monkeypatch.setattr("app.services.draft_telegram_service.build_draft_card",
-                        lambda _: "Заявка 75")
-    monkeypatch.setattr("app.services.draft_telegram_service.build_draft_keyboard",
+    monkeypatch.setattr("app.services.draft_telegram_service.counterparty_review_card",
+                        lambda _, manual_search=False: "Сверка · Заявка 75")
+    monkeypatch.setattr("app.services.draft_telegram_service.counterparty_review_keyboard",
                         lambda _: {"inline_keyboard": []})
     async def answer(text, **kwargs):
         messages.append((text, kwargs))

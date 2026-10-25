@@ -312,8 +312,10 @@ async def manager_counterparty_search(message: Message):
     try:
         _, raw_id, query = (message.text or "").split(maxsplit=2)
         draft = await DraftOrderService().search_counterparties(int(raw_id), query)
-        await message.answer(build_draft_card(draft),
-            reply_markup=InlineKeyboardMarkup.model_validate(build_draft_keyboard(draft)),
+        from app.services.draft_telegram_service import (
+            counterparty_review_card, counterparty_review_keyboard)
+        await message.answer(counterparty_review_card(draft, manual_search=True),
+            reply_markup=InlineKeyboardMarkup.model_validate(counterparty_review_keyboard(draft)),
             parse_mode=None)
     except (ValueError, DraftOrderError, InvalidOrderTransitionError) as error:
         await message.answer("Поиск: /cpsearch НОМЕР_ЗАЯВКИ название, email или ИНН. " +
@@ -545,17 +547,13 @@ async def draft_callback_handler(callback: CallbackQuery):
         elif action == "counterparty_select":
             draft = await service.load_counterparty_candidates(draft_id)
             if callback.message:
-                count = len(draft.counterparty_candidates or [])
-                heading = (f"🔎 Сверка МойСклад · заявка №{draft_id}\n"
-                           + (f"Найдено совпадений по реквизитам: {count}.\n"
-                              if count else "Точных совпадений не найдено.\n")
-                           + "Выберите контрагента из вариантов ниже или нажмите "
-                             "«Ввести контрагента вручную». Создание новой карточки "
-                             "потребует отдельного подтверждения.")
+                from app.services.draft_telegram_service import (
+                    counterparty_review_card, counterparty_review_keyboard)
                 await callback.message.answer(
-                    heading,
+                    counterparty_review_card(draft),
                     parse_mode=None,
-                    reply_markup=InlineKeyboardMarkup.model_validate(build_draft_keyboard(draft)),
+                    reply_markup=InlineKeyboardMarkup.model_validate(
+                        counterparty_review_keyboard(draft)),
                 )
             outcome = "success"
             return

@@ -281,6 +281,58 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
     return {"inline_keyboard": rows}
 
 
+def counterparty_review_card(draft, *, manual_search=False):
+    """Focused Gmail/MoySklad identity screen; no unrelated order actions.
+
+    A suggested record has NOT yet been matched or linked. Final provider
+    identity and CRM uniqueness checks remain in link_counterparty().
+    """
+    candidates = list(getattr(draft, "counterparty_candidates", None) or [])[:5]
+    lines = [f"🔎 Сверка контрагента МойСклад · заявка №{draft.id}"]
+    if getattr(draft, "counterparty_id", None):
+        lines.append("✅ Контрагент уже выбран. Вернитесь к заявке.")
+    elif candidates:
+        lines.append(f"Найдено вариантов: {len(candidates)}. Выберите правильную карточку.")
+        lines.append("Кандидаты ещё не подтверждены: проверьте юридическое лицо, email и ИНН.")
+        for index, candidate in enumerate(candidates, 1):
+            name = " ".join(str(candidate.get("name") or "Без имени").split())[:110]
+            reason = " ".join(str(candidate.get("reason") or "Требует сверки").split())[:120]
+            lines.append(f"{index}. {name} · {reason}")
+    else:
+        lines.append("Точных совпадений не найдено."
+                     if not manual_search else "По ручному запросу контрагенты не найдены.")
+        lines.append("Нажмите «Ввести контрагента вручную» для поиска по названию, email или ИНН."
+                     " Если карточки действительно нет, нажмите «Создать нового контрагента»."
+                     " Создание новой карточки потребует отдельной проверки дублей и подтверждения.")
+    return "\n".join(lines)[:3800]
+
+
+def counterparty_review_keyboard(draft):
+    """Only matched alternatives and actionable manual/create controls.
+
+    Reuse full-keyboard callbacks so revision tags and existing identity
+    verification remain unchanged. The compact draft keyboard intentionally
+    hides those controls and must never be used for this screen.
+    """
+    if (getattr(draft, "source", None) != "email"
+            or getattr(draft, "counterparty_id", None)):
+        return {"inline_keyboard": [[
+            {"text": "← К заявке", "callback_data": f"draft:refresh:{draft.id}"}
+        ]]}
+    full = build_draft_keyboard(draft)["inline_keyboard"]
+    allowed = (":cp:", ":cpmanual:", ":cpnew:")
+    rows = [row for row in full
+            if any(tag in btn.get("callback_data", "") for btn in row for tag in allowed)]
+    if not getattr(draft, "counterparty_id", None):
+        revision = getattr(draft, "revision", None)
+        suffix = f":v{revision}" if isinstance(revision, int) else ""
+        rows.append([{"text": "🔄 Повторить сверку МойСклад",
+                      "callback_data": f"draft:counterparty_select:{draft.id}{suffix}"}])
+    rows.append([{"text": "← К заявке",
+                  "callback_data": f"draft:refresh:{draft.id}"}])
+    return {"inline_keyboard": rows}
+
+
 def compact_draft_keyboard(draft, *, expanded=False):
     full = build_draft_keyboard(draft)
     if expanded:
