@@ -24,7 +24,7 @@ def test_order_card_shows_buyer_contact_original_site_item_and_x_readiness():
     for label in ("Заказ №5", "Клиент: QA Manager", "Телефон: +381640000000",
                   "Канал: Сайт", "Источник товара: Склад Х",
                   "Boadicea The Victorious", "МойСклад: MoySklad Boadicea",
-                  "Статус: Ожидает оплаты", "Итого: 5 500 ₽",
+                  "Статус: Новый", "Итого: 5 500 ₽",
                   "Готово к сборке: 0 из 1 шт.", "оприходовать в МойСклад"):
         assert label in text
     assert "Подробнее" not in str(order_keyboard(order, [shipment]))
