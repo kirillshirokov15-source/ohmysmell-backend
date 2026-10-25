@@ -125,6 +125,25 @@ class MoySkladClient:
         return self._rows('entity/' + entity, {'filter': 'externalCode=' + operation_key,
                           'expand': 'positions'})
 
+    def get_document(self, entity, identifier):
+        """Read a single provider document; never changes provider state."""
+        if entity not in {"customerorder", "demand", "supply", "enter", "purchaseorder"}:
+            raise ValueError("Unsupported document entity")
+        return self._get(f"entity/{entity}/{self._id(identifier)}")
+
+    def get_document_positions(self, entity, identifier):
+        """Load full positions; a list's positions.meta may omit its rows."""
+        if entity not in {"customerorder", "demand", "supply", "enter", "purchaseorder"}:
+            raise ValueError("Unsupported document entity")
+        return self._rows(f"entity/{entity}/{self._id(identifier)}/positions")
+
+    def find_documents_by_number(self, entity, number):
+        """Read-only exact document-number lookup (e.g. 00001)."""
+        if entity != "customerorder" or not re.fullmatch(r"[0-9]{1,18}", number):
+            raise ValueError("Only an exact numerical customer order number is accepted")
+        rows = self._rows(f"entity/{entity}", {"filter": "name=" + number})
+        return [r for r in rows if r.get("name") == number]
+
     def update_document(self, entity, identifier, payload):
         require_external_writes()
         if entity not in {'customerorder', 'demand', 'supply', 'enter', 'purchaseorder'}:
