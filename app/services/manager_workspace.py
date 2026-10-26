@@ -105,9 +105,12 @@ def available_order_keyboard(order, shipments=()):
     def add(label, action):
         buttons.append([{"text": label, "callback_data": f"order:{action}:{order.id}:{order.revision}"}])
     if order.fulfillment_status != "cancelled" and order.status != "rejected":
-        # Payment is an independent manual CRM confirmation, not the final
-        # step of fulfillment. Keep it available before/during assembly.
-        if order.payment_status == "unpaid":
+        # Retail/Tilda: manager can mark payment immediately.
+        # Wholesale/Gmail: it remains a manual status action but is placed
+        # after stock processing, because customers normally pay on pickup
+        # or later. Neither channel gates warehouse actions on payment.
+        email_order = getattr(order, "source", "website") == "email"
+        if order.payment_status == "unpaid" and not email_order:
             add("Оплачен", "paid")
         if order.needs_review:
             if not getattr(order, "supply_financial_review", False):
@@ -151,6 +154,13 @@ def available_order_keyboard(order, shipments=()):
                              "callback_data": f"desk:refresh:{order.desk_draft_id}"}])
     if getattr(order, "supply_has_external", False):
         add("Закупки по заказу", "procurement")
+    # Last action for wholesale Gmail, even in expanded order actions.
+    # Never requires payment before dispatch, and no MoySklad money writes.
+    if (getattr(order, "source", "website") == "email"
+            and order.payment_status == "unpaid"
+            and order.fulfillment_status != "cancelled"
+            and order.status != "rejected"):
+        add("Оплачен", "paid")
     return {"inline_keyboard": buttons}
 
 
@@ -172,13 +182,13 @@ def order_keyboard(order, shipments=(), *, expanded=False):
             and not getattr(order, "counterparty_id", None)):
         rows.insert(0, [{"text":"Сопоставить покупателя МойСклад",
                           "callback_data":f"order:buyer:{order.id}:{order.revision}"}])
-    # A Tilda order can need buyer mapping and stock documents at the same
-    # time. Keep the manual "Оплачен" action separately visible above them,
-    # without suppressing the next fulfillment action.
+    # Tilda payment stays first. Gmail payment belongs at the very end of
+    # expanded actions and appears in the compact card only after shipment.
+    email_order = getattr(order, "source", "website") == "email"
     paid_row = next((row for row in rows
                      if any(button["callback_data"].split(":")[1] == "paid"
                             for button in row)), None)
-    if paid_row:
+    if paid_row and not email_order:
         rows.remove(paid_row)
         rows.insert(0, paid_row)
     if expanded:
@@ -199,10 +209,12 @@ def order_keyboard(order, shipments=(), *, expanded=False):
             and order.delivery_method == "unselected"):
         primary = {"text": "Выбрать доставку",
                    "callback_data": f"order:actions:{order.id}:{order.revision}"}
-    result = [paid_row] if paid_row else []
+    result = [paid_row] if paid_row and not email_order else []
     if primary:
         result.append([primary])
     result.append([{"text": "⋯ Действия", "callback_data": f"order:actions:{order.id}:{order.revision}"}])
+    if (email_order and paid_row and order.fulfillment_status == "shipped"):
+        result.append(paid_row)
     return {"inline_keyboard": result}
 
 
