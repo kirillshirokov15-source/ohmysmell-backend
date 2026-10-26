@@ -33,8 +33,8 @@ def actions(keyboard):
 
 
 @pytest.mark.parametrize("stage,expected_first", [
-    ("new", "sources"),
-    ("assembling", "sources"),
+    ("new", "assembling"),
+    ("assembling", "assembled"),
     ("assembled", "sources"),
     ("shipped", "actions"),
 ])
