@@ -45,6 +45,14 @@ async def notify_managers(order_id: int, order: dict) -> None:
 
     from app.bot.manager_group import notification_chats
     chat_ids = notification_chats(managers)
+    from app.services.telegram_cards import enabled
+    if enabled():
+        from aiogram import Bot
+        from app.services.telegram_cards import publish
+        async with Bot(token=TELEGRAM_BOT_TOKEN) as bot:
+            for chat_id in chat_ids:
+                await publish(bot, chat_id, f"order:{order_id}", message[:4000])
+        return
     def send():
         with verified_session() as http:
             for chat_id in chat_ids:

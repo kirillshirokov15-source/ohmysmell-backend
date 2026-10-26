@@ -12,7 +12,7 @@ def require_complete_picking_plan(order, plans):
     from app.services.order_operations import OperationError
 
     if not order.manual_fulfillment:
-        raise OperationError("Это действие предусмотрено только для заказов Tilda.")
+        raise OperationError("Это действие предусмотрено для подтверждённых заказов Tilda и Gmail.")
     requested = {item.id: item.qty for item in order.items}
     actual = defaultdict(int)
     if not requested or not plans:
@@ -24,7 +24,7 @@ def require_complete_picking_plan(order, plans):
             if allocation.supply_status == "cancelled":
                 continue
             if not allocation.managed_source or allocation.source_type not in {"own", "partner_x"}:
-                raise OperationError("Заказ Tilda может собираться только со своего склада и склада Х.")
+                raise OperationError("Заказ может собираться только со своего склада и склада Х.")
             if allocation.order_item_id not in requested or allocation.qty <= 0:
                 raise OperationError("Источник или количество позиции не совпадают с заказом.")
             actual[allocation.order_item_id] += allocation.qty

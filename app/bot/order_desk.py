@@ -9,11 +9,16 @@ from app.services.desk_display import desk_card
 
 async def desk_access(actor, chat_id):
     from app.database.session import async_session
+    from app.services.telegram_metrics import observe
+    from time import perf_counter
+    started = perf_counter()
     try:
         async with async_session() as session:
             await authorized_manager(session, actor, chat_id)
     except DeskError:
         return False
+    finally:
+        observe("authorization", started)
     return True
 
 
@@ -27,7 +32,12 @@ def product_search_keyboard(draft_id, position, results):
         if p["article"]:
             label += " · " + p["article"][:20]
         buttons.append([{"text": label[:64], "callback_data": data}])
-    return InlineKeyboardMarkup(inline_keyboard=buttons + [[{"text": "← К заявке", "callback_data": f"desk:refresh:{draft_id}"}]]) if buttons else None
+    buttons.append([{
+        "text": "＋ Товара нет в МойСклад · создать карточку для X",
+        "callback_data": f"desk:xnewpreview:{draft_id}:{position}:{results['revision']}"
+    }])
+    return InlineKeyboardMarkup(inline_keyboard=buttons + [
+        [{"text": "← К заявке", "callback_data": f"desk:refresh:{draft_id}"}]])
 
 
 def register(dp, check_access, safe_callback_answer):
@@ -49,8 +59,9 @@ def register(dp, check_access, safe_callback_answer):
                     "Попробуйте другое название / артикул: /sitematch " + str(draft_id)
                     + " " + str(position) + " СЛОВО", parse_mode=None)
                 return
-            await message.answer("Выберите соответствующий товар из МойСклад. "
-                "Остаток не влияет на сопоставление. Проверьте полное название и артикул:",
+            await message.answer("Выберите точный товар МойСклад. Если товар X ещё не заведён, "
+                "внизу есть безопасное создание новой карточки без остатков. "
+                "Проверьте полное название и артикул:",
                 reply_markup=keyboard, parse_mode=None)
         except (DeskError, ValueError) as error:
             await message.answer(str(error) if isinstance(error, DeskError)
@@ -120,7 +131,11 @@ def register(dp, check_access, safe_callback_answer):
                         "Подтверждение менеджера обязательно.", parse_mode=None)
                     return
             text, keyboard = await desk_card(identifier)
-            await message.answer(text, reply_markup=keyboard, parse_mode=None)
+            from app.services.telegram_cards import enabled, publish
+            if enabled():
+                await publish(message.bot, message.chat.id, f"draft:{identifier}", text, keyboard)
+            else:
+                await message.answer(text, reply_markup=keyboard, parse_mode=None)
         except (IndexError, ValueError) as error:
             await message.answer(str(error) if isinstance(error, DeskError) else
                 "Формат: /site ЗАЯВКА; /reply ЗАЯВКА текст; /sitereprice ЗАЯВКА; /outbox_retry ID; /outbox_sent ID TELEGRAM_MESSAGE_ID", parse_mode=None)
@@ -129,12 +144,16 @@ def register(dp, check_access, safe_callback_answer):
     async def desk_callback(callback):
         if not allowed_event(callback, callback=True):
             return
+        # Acknowledge before database I/O; authorization still gates actions.
+        if not await safe_callback_answer(callback):
+            return
         from app.repositories.manager_repository import ManagerRepository
         if not await ManagerRepository().is_active_by_telegram_id(callback.from_user.id):
             return
         if not await desk_access(callback.from_user.id, callback.message.chat.id):
             return
-        if not await safe_callback_answer(callback):
+        from app.services.telegram_cards import enabled, obsolete
+        if enabled() and await obsolete(callback.message.chat.id, callback.message.message_id):
             return
         try:
             parts = callback.data.split(":")
@@ -162,8 +181,9 @@ def register(dp, check_access, safe_callback_answer):
                 keyboard = product_search_keyboard(draft_id, position, results)
                 if keyboard:
                     await callback.message.edit_text(
-                        f"Заявка №{draft_id}, позиция {position}. Выберите правильный товар из МойСклад. "
-                        "Это не резервирование и не закупка.",
+                        f"Заявка №{draft_id}, позиция {position}. Выберите точный товар из МойСклад "
+                        "или создайте НОВУЮ карточку для склада X. "
+                        "Ни один вариант не создаёт резерв и закупку.",
                         reply_markup=keyboard, parse_mode=None)
                 else:
                     await callback.message.edit_text(
@@ -173,6 +193,40 @@ def register(dp, check_access, safe_callback_answer):
                             {"text": "← К заявке", "callback_data": f"desk:refresh:{draft_id}"}]]),
                         parse_mode=None)
                 return
+            elif action == "xnewpreview":
+                if len(parts) != 5:
+                    raise DeskError("Обновите список товаров для создания X.")
+                from app.services.tilda_x_product_service import TildaXProductService
+                position, revision = int(parts[3]), int(parts[4])
+                preview = await TildaXProductService().preview(
+                    draft_id, position, callback.from_user.id, callback.message.chat.id)
+                if preview["revision"] != revision:
+                    raise DeskError("Заявка изменилась. Повторите проверку товара.")
+                from app.services.telegram_display import telegram_rubles
+                await callback.message.edit_text(
+                    f"Создать НОВУЮ карточку товара для склада X в МойСклад?\n"
+                    f"Название Tilda: {preview['name']}\n"
+                    f"Артикул Tilda: {preview['sku']}\n"
+                    f"Количество по заказу: {preview['qty']} шт.\n"
+                    f"Цена продажи Tilda: {telegram_rubles(preview['price_minor'])}\n\n"
+                    "Сейчас создаётся только номенклатура БЕЗ остатков, резервов и отгрузок. "
+                    "Реальное оприходование X будет только после физической сборки. "
+                    "Проверьте, что это не аналогичная, а точная товарная позиция.",
+                    parse_mode=None,
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [{"text":"✅ Создать карточку X без остатков",
+                          "callback_data":f"desk:xnewconfirm:{draft_id}:{position}:{revision}"}],
+                        [{"text":"Отмена · к заявке",
+                          "callback_data":f"desk:refresh:{draft_id}"}]]))
+                return
+            elif action == "xnewconfirm":
+                if len(parts) != 5:
+                    raise DeskError("Неправильное подтверждение X.")
+                from app.services.tilda_x_product_service import TildaXProductService
+                await TildaXProductService().create_and_bind(
+                    draft_id, int(parts[3]), callback.from_user.id,
+                    callback.message.chat.id, int(parts[4]))
+                # Return the entire draft preserving all other product links.
             elif action == "bind":
                 if len(parts) != 6:
                     raise DeskError("Некорректные данные выбора товара.")
@@ -252,12 +306,16 @@ def register(dp, check_access, safe_callback_answer):
             elif action not in {"refresh", "details", "actions"}:
                 return
             text, keyboard = await desk_card(draft_id)
-            from aiogram.exceptions import TelegramBadRequest
-            try:
-                await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=None)
-            except TelegramBadRequest as error:
-                if "message is not modified" not in str(error).lower():
-                    raise
+            if enabled():
+                from app.services.telegram_cards import publish
+                await publish(callback.bot, callback.message.chat.id, f"draft:{draft_id}", text, keyboard)
+            else:
+                from aiogram.exceptions import TelegramBadRequest
+                try:
+                    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=None)
+                except TelegramBadRequest as error:
+                    if "message is not modified" not in str(error).lower():
+                        raise
         except (ValueError, IndexError) as error:
             notice = str(error) if isinstance(error, DeskError) else "Действие недоступно. Обновите карточку."
             draft_id = locals().get("draft_id")

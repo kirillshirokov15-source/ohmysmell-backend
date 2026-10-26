@@ -1,0 +1,38 @@
+name: Owned X release validation
+on:
+  push:
+    branches: [release/own-x-auto-production-20261025]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  owned-x:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      APP_ENV: staging
+      EXTERNAL_WRITES_ENABLED: 'false'
+      OMS_OWN_X_LIVE_ENABLED: 'false'
+      OMS_HATUNA_AUTO_PROCESS_ENABLED: 'false'
+      OMS_HATUNA_AUTO_WRITES_ENABLED: 'false'
+      OMS_HATUNA_AUTO_SHIP_ENABLED: 'false'
+      SUPPLIER_EMAIL_SEND_ENABLED: 'false'
+      TELEGRAM_BOT_TOKEN: '123456:TEST_NO_NETWORK'
+      CLIENT_TELEGRAM_BOT_TOKEN: '123456:TEST_NO_NETWORK'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install -r requirements.txt pytest aiosqlite
+      - run: python -m compileall -q app/services/hatuna_fulfillment.py app/services/hatuna_document_runner.py app/workers/hatuna_auto.py
+      - name: Warehouse X safety and fulfillment
+        run: |
+          python -m pytest -q \
+            tests/test_hatuna_accounting.py \
+            tests/test_hatuna_document_runner.py \
+            tests/test_hatuna_full_flow.py \
+            tests/test_hatuna_order8_post_pick_scope.py \
+            tests/test_x_partner_guided_receipt.py \
+            tests/test_own_x_live_gates.py

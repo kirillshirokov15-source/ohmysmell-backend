@@ -40,14 +40,14 @@ def test_manager_more_menu_contains_dedicated_wholesale_gmail_route():
 def test_email_alert_card_shows_origins_and_original_lines():
     email = _email_draft()
     card = compact_draft_card(email)
-    assert "Новый оптовый заказ из почты" in card
+    assert "Оптовый заказ из почты" in card
     assert "Магазин Косметики" in card
     assert "Marvis Strong Mint 85 ml" in card
     assert "2 шт." in card
     assert "Chanel Allure Homme Sport" in card
     assert "требует проверки" in card
     site = SimpleNamespace(**{**email.__dict__, "source":"website"})
-    assert "Новый оптовый заказ из почты" not in compact_draft_card(site)
+    assert "Оптовый заказ из почты" not in compact_draft_card(site)
 
 
 def test_paginated_email_view_never_queries_website_or_buying(monkeypatch):

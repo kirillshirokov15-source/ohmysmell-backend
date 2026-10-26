@@ -143,7 +143,7 @@ class OrderSourceService:
             .options(selectinload(Order.items)).with_for_update())
         desk = await session.scalar(select(OrderDesk).where(OrderDesk.order_id == order_id))
         if not order or not order.manual_fulfillment or not desk:
-            raise DeskError("Нужен подтверждённый заказ Tilda.")
+            raise DeskError("Нужен подтверждённый заказ Tilda или Gmail.")
         require_owner(desk, actor)
         return order, manager
 
@@ -280,7 +280,7 @@ class OrderSourceService:
         import os
         if (os.getenv("OMS_HATUNA_POST_PICK_ENABLED", "false").lower() == "true"
                 and any(part.source_type == "external" for part in parts)):
-            raise DeskError("Заказы Tilda обеспечиваются только основным складом и складом Х. Buying отдельно.")
+            raise DeskError("Заказы обеспечиваются основным складом и складом Х. Buying отдельно.")
         items = {i.id: i for i in order.items}
         assigned = defaultdict(int)
         for plan in plans:

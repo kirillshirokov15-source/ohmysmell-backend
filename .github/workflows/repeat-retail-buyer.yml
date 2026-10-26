@@ -1,0 +1,33 @@
+name: Repeated retail buyer safely reuses CRM identity
+on:
+  push:
+    branches: [hotfix/tilda-existing-buyer-canonical-link-20261025]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  repeat-retail:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      APP_ENV: staging
+      EXTERNAL_WRITES_ENABLED: 'false'
+      TELEGRAM_BOT_TOKEN: '123456:TEST_NO_NETWORK'
+      CLIENT_TELEGRAM_BOT_TOKEN: '123456:TEST_NO_NETWORK'
+      SUPPLIER_EMAIL_SEND_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install -r requirements.txt pytest aiosqlite
+      - run: python -m compileall -q app/services/retail_buyer_binding.py app/bot/source_navigation.py
+      - name: Existing Tilda buyer and safe CRM identity consolidation
+        run: |
+          python -m pytest -q \
+            tests/test_repeat_retail_customer_binding.py \
+            tests/test_retail_buyer_persistence.py \
+            tests/test_retail_buyer_matching.py \
+            tests/test_own_stock_reservation_hotfix.py \
+            tests/test_tilda_sku_review.py

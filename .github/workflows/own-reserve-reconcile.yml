@@ -1,0 +1,35 @@
+name: Safe MoySklad reserve reconciliation
+on:
+  push:
+    branches: [hotfix/order9-own-reserve-readonly-reconcile-20261025]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      APP_ENV: staging
+      EXTERNAL_WRITES_ENABLED: 'false'
+      TELEGRAM_BOT_TOKEN: '123456:TEST_NO_NETWORK'
+      CLIENT_TELEGRAM_BOT_TOKEN: '123456:TEST_NO_NETWORK'
+      SUPPLIER_EMAIL_SEND_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install -r requirements.txt pytest aiosqlite
+      - run: python -m compileall -q app/services/own_stock_reconciliation.py app/services/own_stock_reservation.py app/bot/source_navigation.py
+      - name: Read-only reconciliation and order safety
+        run: |
+          python -m pytest -q \
+            tests/test_own_reserve_reconciliation.py \
+            tests/test_own_stock_reservation_hotfix.py \
+            tests/test_source_navigation_ui.py \
+            tests/test_retail_buyer_matching.py \
+            tests/test_retail_buyer_persistence.py \
+            tests/test_manager_order_full_card.py \
+            tests/test_manager_order8_postpick_card.py

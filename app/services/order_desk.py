@@ -322,7 +322,7 @@ class DeskService:
             conversation.state = "choose_message" if text in {"💬 Написать менеджеру", "/manager"} else "choose_status"
             conversation.data = {}
             desks = await client_navigation_desks(session, actor)
-            return ("Выберите заказ:\n" + "\n".join([await public_status(session, d) for d in desks])
+            return ("Выберите заказ:\n" + "\n".join([await public_status(session, d, include_items=False) for d in desks])
                 if desks else "Заказов пока нет. Откройте персональную ссылку, полученную после оформления заказа.",
                 desks[0].draft_id if desks else None)
         if text.startswith(("Заказ №", "Заявка №")):
@@ -405,7 +405,7 @@ class DeskService:
             if desk.order_id:
                 if stage != "awaiting_payment":
                     raise DeskError("Заказ уже подтверждён. Используйте карточку заказа.")
-                if order.fulfillment_status == "cancelled" or order.delivery_status == "delivered" or order.payment_status == "paid":
+                if order.fulfillment_status == "cancelled" or (order.source == "website" and order.delivery_status == "delivered"):
                     raise DeskError("Этап недоступен для закрытого или оплаченного заказа.")
             else:
                 draft = await session.get(DraftOrder, draft_id)
@@ -506,11 +506,16 @@ class DeskService:
             return result
 
 
-async def public_status(session, desk):
+async def public_status(session, desk, *, include_items=True):
     from app.services.desk_status import public_summary
-    draft = await session.get(DraftOrder, desk.draft_id)
+    if include_items:
+        from sqlalchemy.orm import selectinload
+        draft = await session.scalar(select(DraftOrder).where(DraftOrder.id == desk.draft_id)
+            .options(selectinload(DraftOrder.items)))
+    else:
+        draft = await session.get(DraftOrder, desk.draft_id)
     order = await session.get(Order, desk.order_id) if desk.order_id else None
-    return public_summary(desk, draft, order)
+    return public_summary(desk, draft, order, include_items=include_items)
 
 
 async def status_notification(session, order, actor):

@@ -58,6 +58,31 @@ class MoySkladClient:
     def get_products(self):
         return self._rows("entity/product")
 
+    def get_product(self, identifier):
+        return self._get(f"entity/product/{self._id(identifier)}")
+
+    def create_x_catalog_product(self, payload):
+        """Create a product card only: no stock, documents, or sale-price writes."""
+        from app.integrations.write_guard import require_external_writes
+        import json
+        require_external_writes()
+        if os.getenv("OMS_OWN_X_PRODUCT_CREATE_ENABLED", "false").lower() != "true":
+            raise ValueError("Explicit X product creation is disabled")
+        if not isinstance(payload, dict) or set(payload) != {
+            "name", "article", "externalCode", "description"
+        }:
+            raise ValueError("Unexpected product creation fields")
+        if (not all(isinstance(payload[k], str) for k in payload)
+                or not 1 <= len(payload["name"]) <= 255
+                or not 1 <= len(payload["article"]) <= 255
+                or not re.fullmatch(r"oms-tilda-x-[0-9a-f]{32}", payload["externalCode"])
+                or not payload["description"].startswith("OhMySmell / Tilda / warehouse X:")):
+            raise ValueError("Invalid verified X product fields")
+        response = self.session.post(f"{self.base_url}/entity/product",
+            headers=self.headers, json=payload, timeout=(5, 30))
+        response.raise_for_status()
+        return response.json()
+
     def get_product_images(self, product_id):
         return self._rows(f"entity/product/{self._id(product_id)}/images")
 
@@ -124,6 +149,25 @@ class MoySkladClient:
             raise ValueError('Invalid operation key')
         return self._rows('entity/' + entity, {'filter': 'externalCode=' + operation_key,
                           'expand': 'positions'})
+
+    def get_document(self, entity, identifier):
+        """Read a single provider document; never changes provider state."""
+        if entity not in {"customerorder", "demand", "supply", "enter", "purchaseorder"}:
+            raise ValueError("Unsupported document entity")
+        return self._get(f"entity/{entity}/{self._id(identifier)}")
+
+    def get_document_positions(self, entity, identifier):
+        """Load full positions; a list's positions.meta may omit its rows."""
+        if entity not in {"customerorder", "demand", "supply", "enter", "purchaseorder"}:
+            raise ValueError("Unsupported document entity")
+        return self._rows(f"entity/{entity}/{self._id(identifier)}/positions")
+
+    def find_documents_by_number(self, entity, number):
+        """Read-only exact document-number lookup (e.g. 00001)."""
+        if entity != "customerorder" or not re.fullmatch(r"[0-9]{1,18}", number):
+            raise ValueError("Only an exact numerical customer order number is accepted")
+        rows = self._rows(f"entity/{entity}", {"filter": "name=" + number})
+        return [r for r in rows if r.get("name") == number]
 
     def update_document(self, entity, identifier, payload):
         require_external_writes()

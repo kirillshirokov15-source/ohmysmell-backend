@@ -500,8 +500,8 @@ class DraftOrderService:
                 raise DraftOrderError("Не удалось получить свежие данные МойСклад") from e
             for item in candidates[:5]:
                 lines.append(f"• {item.get('name')} — {item.get('reason')}")
-            lines.append(f"Поиск вручную: /cpsearch {draft.id} НАЗВАНИЕ_ИЛИ_ИНН")
-            lines.append(f"Создать новый: /newcp {draft.id} ПОЛНОЕ_НАЗВАНИЕ")
+            lines.append("Найдите юридическое лицо через кнопку «Ввести контрагента вручную».")
+            lines.append("Если карточки нет, выберите «Создать нового контрагента» и подтвердите после проверки дублей.")
             return "\n".join(lines)[:3700]
         if not hasattr(self.counterparty_service, "async_gateway"):
             raise DraftOrderError("Проверка через API МойСклад не настроена")
@@ -618,7 +618,7 @@ class DraftOrderService:
             raise DraftOrderError("Draft не найден")
         return draft
 
-    async def finalize(self, draft_id: int):
+    async def finalize(self, draft_id: int, manager_telegram_id=None):
         existing = await self._get_required(draft_id)
         if existing.finalized_order_id:
             order = await self.repository.finalize(draft_id)
@@ -628,14 +628,14 @@ class DraftOrderService:
         draft = await self.review(draft_id, existing)
         await self.validate_linked_counterparty(draft)
         if getattr(draft, "finalized_order_id", None):
-            return await self.repository.finalize(draft_id)
+            return await self.repository.finalize(draft_id, manager_telegram_id=manager_telegram_id)
         problems = self._finalize_problems(draft)
         if problems:
             raise DraftOrderError(
                 "Draft cannot be finalized: " + "; ".join(problems)
             )
         try:
-            order = await self.repository.finalize(draft_id)
+            order = await self.repository.finalize(draft_id, manager_telegram_id=manager_telegram_id)
         except InvalidOrderTransitionError as error:
             raise DraftOrderError(str(error)) from error
         if order is None:
