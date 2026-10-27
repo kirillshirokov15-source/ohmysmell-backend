@@ -43,8 +43,14 @@ async def supply_order_card(order, shipments=(), *, details=False):
         return (await site_titles_for(order)
                 if not details and order.manual_fulfillment else {})
 
-    rows, docs, titles = await asyncio.gather(
-        read_supply(), read_docs(), read_titles())
+    from app.bot.manager_fast_cards import enabled as fast_cards_enabled
+    if fast_cards_enabled():
+        rows, docs, titles = await asyncio.gather(
+            read_supply(), read_docs(), read_titles())
+    else:
+        rows = await read_supply()
+        docs = await read_docs()
+        titles = await read_titles()
     snapshots = [row[0] for row in rows]
     settlements = {row[1].order_item_id: row[1] for row in rows if row[1]}
     requests = {row[2].order_item_id: row[2] for row in rows if row[2]}
