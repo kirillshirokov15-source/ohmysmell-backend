@@ -13,6 +13,7 @@ from aiogram.types import (
 )
 from aiogram.filters import Command, or_f
 from app.bot.manager_menu import menu_options
+from app.bot.manager_fast_cards import enabled as fast_cards_enabled
 from app.services.order_lifecycle import InvalidOrderTransitionError
 from app.models.sales import CustomerType
 from app.repositories.draft_order_repository import DraftOrderRepository
@@ -93,7 +94,7 @@ async def safe_edit_message(
         await publish(message.bot, message.chat.id, entity, text, reply_markup)
         return True
     try:
-        await message.edit_text(text, reply_markup=reply_markup)
+        await message.edit_text(text, parse_mode=None, reply_markup=reply_markup)
     except TelegramBadRequest as error:
         if "message is not modified" not in str(error).casefold():
             raise
@@ -368,7 +369,13 @@ async def draft_callback_handler(callback: CallbackQuery):
             telegram_user_id=telegram_user_id,
             draft_id=draft_id,
         )
-        if not await safe_callback_answer(callback):
+        # A non-blocking Telegram toast acknowledges slow remote operations
+        # without creating another chat message or suggesting the write succeeded.
+        progress = (
+            "⏳ Обрабатываю действие…"
+            if fast_cards_enabled() and action not in {"refresh", "details", "actions", "ambiguous", "counterparty_select"} else None
+        )
+        if not await safe_callback_answer(callback, text=progress):
             outcome = "stale"
             return
         log_event(
@@ -419,13 +426,21 @@ async def draft_callback_handler(callback: CallbackQuery):
             draft = await DraftOrderRepository().get(draft_id)
             if (action == "details" and draft
                     and (draft.contact_details or {}).get("mail_intent") == "inquiry"):
-                # Editing an already expanded card often returns
-                # MESSAGE_NOT_MODIFIED and hides the original email. Send a
-                # distinct readable message on each explicit button press.
                 if callback.message:
                     from app.services.draft_telegram_service import build_inquiry_message
-                    await callback.message.answer(
-                        build_inquiry_message(draft), parse_mode=None)
+                    if fast_cards_enabled():
+                        await safe_edit_message(
+                            callback.message,
+                            build_inquiry_message(draft)[:3900],
+                            draft_id=draft_id,
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                                {"text": "← К заявке", "callback_data": f"draft:refresh:{draft_id}"}
+                            ]]),
+                        )
+                    else:
+                        # Legacy behavior: a distinct message for the full email.
+                        await callback.message.answer(
+                            build_inquiry_message(draft), parse_mode=None)
                 outcome = "success"
                 return
         elif action == "reconsider":
@@ -492,6 +507,15 @@ async def draft_callback_handler(callback: CallbackQuery):
             ) or "Неоднозначных позиций нет"
             text += "\n\nДля поиска выберите кнопку «другой товар» в действиях заявки."
             if callback.message:
+                if fast_cards_enabled():
+                    await safe_edit_message(
+                        callback.message, text, draft_id=draft_id,
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                            {"text": "← К заявке", "callback_data": f"draft:refresh:{draft_id}"}
+                        ]]),
+                    )
+                    outcome = "success"
+                    return
                 await callback.message.answer(text)
         elif action == "pick":
             current = await service._get_required(draft_id)
@@ -549,12 +573,19 @@ async def draft_callback_handler(callback: CallbackQuery):
             if callback.message:
                 from app.services.draft_telegram_service import (
                     counterparty_review_card, counterparty_review_keyboard)
-                await callback.message.answer(
-                    counterparty_review_card(draft),
-                    parse_mode=None,
-                    reply_markup=InlineKeyboardMarkup.model_validate(
-                        counterparty_review_keyboard(draft)),
-                )
+                screen = counterparty_review_card(draft)
+                keyboard = InlineKeyboardMarkup.model_validate(
+                    counterparty_review_keyboard(draft))
+                if fast_cards_enabled():
+                    # Reuse the source card rather than posting a second
+                    # independently actionable counterparty screen.
+                    await safe_edit_message(
+                        callback.message, screen, draft_id=draft_id,
+                        reply_markup=keyboard,
+                    )
+                else:
+                    await callback.message.answer(
+                        screen, parse_mode=None, reply_markup=keyboard)
             outcome = "success"
             return
         elif action == "finalize":
@@ -568,11 +599,29 @@ async def draft_callback_handler(callback: CallbackQuery):
                 order_id=order.id,
             )
             if callback.message:
+                # CRM confirmation has already committed. A failed optional
+                # screen read must not suggest retrying the irreversible action.
+                display_text = f"Черновик №{draft_id} подтверждён как заказ №{order.id}"
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[[{
+                    "text": "Открыть заказ",
+                    "callback_data": f"order:refresh:{order.id}:0",
+                }]])
+                if fast_cards_enabled():
+                    try:
+                        current_order, plans = await asyncio.gather(
+                            get_order(order.id), shipments_for(order.id))
+                        if current_order:
+                            display_text = await manager_order_display(current_order, plans)
+                            keyboard = InlineKeyboardMarkup.model_validate(
+                                order_keyboard(current_order, plans))
+                    except Exception as screen_error:
+                        log_event(logger, "manager_finalized_card_fallback",
+                                  level=logging.WARNING,
+                                  result=type(screen_error).__name__,
+                                  draft_id=draft_id, order_id=order.id)
                 await safe_edit_message(
-                    callback.message,
-                    f"Черновик №{draft_id} подтверждён как заказ №{order.id}",
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[{ "text": "Открыть заказ", "callback_data": f"order:refresh:{order.id}:0"}]]),
-                    draft_id=draft_id,
+                    callback.message, display_text,
+                    reply_markup=keyboard, draft_id=draft_id,
                 )
             outcome = "success"
             return
@@ -804,7 +853,15 @@ async def find_order(message):
 @dp.callback_query(F.data.startswith("order:"))
 async def order_callback(callback):
     started = perf_counter()
-    if not await safe_callback_answer(callback):
+    from app.bot.manager_fast_cards import enabled as fast_cards_enabled
+    requested_action = (callback.data or "").split(":")[1:2]
+    progress = (
+        "⏳ Выполняю, обновляю карточку…"
+        if fast_cards_enabled() and requested_action
+        and requested_action[0] not in {"refresh", "actions", "details", "items", "sources", "buyer", "procurement"}
+        else None
+    )
+    if not await safe_callback_answer(callback, text=progress):
         return
     if not await manager_repository.is_active_by_telegram_id(callback.from_user.id):
         return

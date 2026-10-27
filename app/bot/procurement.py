@@ -1,4 +1,5 @@
 """Manager-only procurement UI. Registered only by the manager entrypoint."""
+import asyncio
 from aiogram import F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup
@@ -16,25 +17,49 @@ STATUS = {"needed": "Нужна закупка", "requested": "Запрос от
 
 async def supply_order_card(order, shipments=(), *, details=False):
     from app.services.manager_workspace import order_card
-    async with async_session() as session:
-        rows = list((await session.execute(select(OrderItemSupply, XSettlement, ProcurementRequest, SupplierOffer, Supplier)
-            .outerjoin(XSettlement, XSettlement.order_item_id == OrderItemSupply.order_item_id)
-            .outerjoin(ProcurementRequest, ProcurementRequest.order_item_id == OrderItemSupply.order_item_id)
-            .outerjoin(SupplierOffer, SupplierOffer.id == ProcurementRequest.offer_id)
-            .outerjoin(Supplier, Supplier.id == SupplierOffer.supplier_id)
-            .where(OrderItemSupply.order_id == order.id))).all())
-        snapshots = [row[0] for row in rows]
-        settlements = {row[1].order_item_id: row[1] for row in rows if row[1]}
-        requests = {row[2].order_item_id: row[2] for row in rows if row[2]}
-        selected = {row[0].order_item_id: (row[3], row[4]) for row in rows if row[3]}
+    # Display-only read models are independent. Concurrent reads remove two
+    # sequential PostgreSQL waits. All stock and order mutations still
+    # revalidate state in their own fresh transactions.
+    from app.services.warehouse_documents import plan_document_read_models
+    from app.services.manager_workspace import site_titles_for
+
+    async def read_supply():
+        async with async_session() as session:
+            return list((await session.execute(select(
+                OrderItemSupply, XSettlement, ProcurementRequest, SupplierOffer, Supplier)
+                .outerjoin(XSettlement, XSettlement.order_item_id == OrderItemSupply.order_item_id)
+                .outerjoin(ProcurementRequest, ProcurementRequest.order_item_id == OrderItemSupply.order_item_id)
+                .outerjoin(SupplierOffer, SupplierOffer.id == ProcurementRequest.offer_id)
+                .outerjoin(Supplier, Supplier.id == SupplierOffer.supplier_id)
+                .where(OrderItemSupply.order_id == order.id))).all())
+
+    async def read_docs():
+        if not shipments:
+            return {}
+        async with async_session() as session:
+            return await plan_document_read_models(session, shipments)
+
+    async def read_titles():
+        return (await site_titles_for(order)
+                if not details and order.manual_fulfillment else {})
+
+    from app.bot.manager_fast_cards import enabled as fast_cards_enabled
+    if fast_cards_enabled():
+        rows, docs, titles = await asyncio.gather(
+            read_supply(), read_docs(), read_titles())
+    else:
+        rows = await read_supply()
+        docs = await read_docs()
+        titles = await read_titles()
+    snapshots = [row[0] for row in rows]
+    settlements = {row[1].order_item_id: row[1] for row in rows if row[1]}
+    requests = {row[2].order_item_id: row[2] for row in rows if row[2]}
+    selected = {row[0].order_item_id: (row[3], row[4]) for row in rows if row[3]}
     order.supply_external_only = bool(snapshots) and all(s.source_type == "external" for s in snapshots)
     order.supply_has_external = bool(requests)
     order.supply_received = bool(requests) and all(r.status == "received" for r in requests.values())
     order.supply_financial_review = any(s.status == "requires_financial_review" for s in settlements.values())
-    from app.services.warehouse_documents import plan_document_read_models
-    async with async_session() as session:
-        docs = await plan_document_read_models(session, shipments)
-        order.ui_cancellable = not any(row['frozen'] for row in docs.values())
+    order.ui_cancellable = not any(row['frozen'] for row in docs.values())
     from app.services.order_source_service import allocation_ready
     quantities = {}
     for plan in shipments:
@@ -64,8 +89,6 @@ async def supply_order_card(order, shipments=(), *, details=False):
                 # Start physical assembly before the X supplier receipt.
                 order.ui_supply_ready = True
     if not details:
-        from app.services.manager_workspace import site_titles_for
-        titles = await site_titles_for(order) if order.manual_fulfillment else {}
         return order_card(order, shipments, site_titles=titles)
     from app.services.manager_workspace import order_details_card
     lines = [order_details_card(order, shipments)]
