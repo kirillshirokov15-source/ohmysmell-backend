@@ -3,6 +3,7 @@ import asyncio
 import logging
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, ReplyParameters
+from app.bot.manager_ui_flags import enabled as modern_ui_enabled
 from app.logging_utils import log_event
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,26 @@ async def show_menu(message):
             # Keep this addressed removal separate from the inline-only message.
             await message.answer("Старая клавиатура скрыта.", **menu_options(message, hide=True))
             state["removed"] = True
+        if modern_ui_enabled():
+            # Always bring navigation to the newest messages in the shared group.
+            # Remove only the prior menu message created by this worker.
+            sent = await message.answer(
+                "🏠 Главное меню · выберите раздел",
+                reply_markup=fallback(message.from_user.id),
+                reply_parameters=ReplyParameters(
+                    message_id=message.message_id,
+                    allow_sending_without_reply=False,
+                ),
+            )
+            previous = state["message_id"]
+            state["message_id"] = sent.message_id
+            if previous is not None and previous != sent.message_id:
+                try:
+                    await message.bot.delete_message(message.chat.id, previous)
+                except TelegramBadRequest as error:
+                    log_event(logger, "manager_menu_prior_delete_rejected",
+                              result=bad_request_reason(error))
+            return sent
         if state["message_id"] is not None:
             try:
                 return await message.bot.edit_message_text(chat_id=message.chat.id,
