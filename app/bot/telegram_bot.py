@@ -631,6 +631,15 @@ def run_bot(*, drop_pending_updates: bool = False):
     asyncio.run(main(drop_pending_updates=drop_pending_updates))
 
 from app.services.manager_workspace import order_card, order_keyboard, shipments_for, FULFILLMENT_LABELS
+
+
+async def manager_order_display(order, plans, *, details=False):
+    """Display-only UX projection; underlying order state remains unchanged."""
+    from app.bot.manager_ui_flags import enabled as modern_ui_enabled
+    from app.services.manager_workspace import closed_order_card, is_closed_order
+    if modern_ui_enabled() and is_closed_order(order) and not details:
+        return closed_order_card(order)
+    return await supply_order_card(order, plans, details=details)
 from app.services.order_operations import OrderOperations, OrderAction, OperationError
 from app.repositories.order_repository import get_order, list_orders
 from aiogram import BaseMiddleware
@@ -783,7 +792,7 @@ async def find_order(message):
             await message.answer("Заказ не найден.")
             return
         plans = await shipments_for(order.id)
-        card = await supply_order_card(order, plans)
+        card = await manager_order_display(order, plans)
         markup = InlineKeyboardMarkup.model_validate(order_keyboard(order, plans))
         from app.services.telegram_cards import enabled, publish
         if enabled():
@@ -819,7 +828,7 @@ async def order_callback(callback):
             # Do not execute old callbacks; replace the old screen with
             # the latest controls, without adding "stale card" chat messages.
             plans = read_plans if read_plans is not None else await shipments_for(order_id)
-            text = "Карточка обновлена: состояние заказа изменилось.\n" + await supply_order_card(order, plans)
+            text = "Карточка обновлена: состояние заказа изменилось.\n" + await manager_order_display(order, plans)
             keyboard = InlineKeyboardMarkup.model_validate(order_keyboard(order, plans))
             await safe_edit_message(callback.message, text, draft_id=0, order_id=order_id, reply_markup=keyboard)
             return
@@ -927,7 +936,7 @@ async def order_callback(callback):
                                       order_id=order_id, result=type(error).__name__)
                         order = await get_order(order_id)
         plans = await shipments_for(order_id)
-        text = await supply_order_card(order, plans, details=action == "details")
+        text = await manager_order_display(order, plans, details=action == "details")
         if locals().get("reservation_warning"):
             text += "\n⚠️ Сборка подтверждена, но резерв не создан/не подтверждён: " + reservation_warning
         keyboard = InlineKeyboardMarkup.model_validate(order_keyboard(order, plans, expanded=action in {"details", "actions"}))
@@ -1051,3 +1060,19 @@ async def menu_callback(callback):
         await show_draft_list(message, "needs_review", 0)
     elif action == "email_orders":
         await show_email_order_list(message, 0)
+
+
+@dp.callback_query(F.data == "workspace:home")
+async def workspace_home(callback: CallbackQuery):
+    """Return visibly to the manager menu without changing an order."""
+    if not await safe_callback_answer(callback):
+        return
+    if not callback.message or not callback.from_user:
+        return
+    message = callback.message.model_copy(
+        update={"from_user": callback.from_user, "text": "/start"}
+    ).as_(callback.bot)
+    if not await check_access(message):
+        return
+    from app.bot.manager_menu import show_menu
+    await show_menu(message)
