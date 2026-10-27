@@ -94,7 +94,7 @@ async def safe_edit_message(
         await publish(message.bot, message.chat.id, entity, text, reply_markup)
         return True
     try:
-        await message.edit_text(text, reply_markup=reply_markup)
+        await message.edit_text(text, parse_mode=None, reply_markup=reply_markup)
     except TelegramBadRequest as error:
         if "message is not modified" not in str(error).casefold():
             raise
@@ -431,7 +431,7 @@ async def draft_callback_handler(callback: CallbackQuery):
                     if fast_cards_enabled():
                         await safe_edit_message(
                             callback.message,
-                            build_inquiry_message(draft),
+                            build_inquiry_message(draft)[:3900],
                             draft_id=draft_id,
                             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                                 {"text": "← К заявке", "callback_data": f"draft:refresh:{draft_id}"}
