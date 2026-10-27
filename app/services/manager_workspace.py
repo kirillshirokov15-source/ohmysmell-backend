@@ -4,6 +4,7 @@ from sqlalchemy.orm import selectinload
 from app.database.session import async_session
 from app.models.fulfillment import Shipment, WarehouseAllocation
 from app.services.telegram_display import telegram_rubles, customer_type_label
+from app.bot.manager_ui_flags import enabled as modern_ui_enabled
 
 FULFILLMENT_LABELS = {"new": "Новый", "assembling": "В сборке", "assembled": "Собран", "shipped": "Отгружен", "cancelled": "Отменён"}
 PAYMENT_LABELS = {"unpaid": "Не оплачен", "paid": "Оплачен"}
@@ -100,6 +101,27 @@ def order_details_card(order, shipments=()):
     return text if len(raw) <= 8000 else raw[:7600].decode("utf-16-le", errors="ignore") + f"\nВсе позиции и склады: /items {order.id}"
 
 
+def is_closed_order(order):
+    """Closed for display only; no mutation of fulfillment or payment states."""
+    if order.fulfillment_status != "shipped":
+        return False
+    if order.source == "email":
+        return order.payment_status == "paid"
+    return order.source == "website" and order.delivery_status == "delivered"
+
+
+def closed_order_card(order):
+    """Short Telegram receipt. Full details remain accessible on request."""
+    return "\n".join([
+        f"✅ Заказ №{order.id} завершён",
+        f"Клиент: {order.customer_name or 'не указан'}",
+        f"Канал: {SOURCE_LABELS.get(order.source, order.source or 'не указан')}",
+        f"Итого: {telegram_rubles(order.total)}",
+        f"Статус: {'Отгружен и оплачен' if order.source == 'email' else 'Доставлен'}",
+        "Информация и товары доступны по кнопке «Подробнее».",
+    ])
+
+
 def available_order_keyboard(order, shipments=()):
     buttons = []
     def add(label, action):
@@ -165,6 +187,15 @@ def available_order_keyboard(order, shipments=()):
 
 
 def order_keyboard(order, shipments=(), *, expanded=False):
+    if modern_ui_enabled() and is_closed_order(order):
+        rows = (
+            [[{"text": "📦 Все товары", "callback_data": f"order:items:{order.id}:{order.revision}"}],
+             [{"text": "← Свернуть", "callback_data": f"order:refresh:{order.id}:0"}]]
+            if expanded else
+            [[{"text": "📄 Подробнее", "callback_data": f"order:details:{order.id}:{order.revision}"}]]
+        )
+        rows.append([{"text": "🏠 Главное меню", "callback_data": "workspace:home"}])
+        return {"inline_keyboard": rows}
     rows = available_order_keyboard(order, shipments)["inline_keyboard"]
     active = order.fulfillment_status not in {"cancelled", "shipped"} and order.status != "rejected"
     source = {"text": "Выбрать источник", "callback_data": f"order:sources:{order.id}:{order.revision}"}
@@ -192,6 +223,8 @@ def order_keyboard(order, shipments=(), *, expanded=False):
         rows.remove(paid_row)
         rows.insert(0, paid_row)
     if expanded:
+        if modern_ui_enabled():
+            rows.append([{"text": "🏠 Главное меню", "callback_data": "workspace:home"}])
         return {"inline_keyboard": rows}
     # At the assembled Tilda boundary, verifying warehouse documents comes
     # before offering dispatch: an allocation is not a MoySklad reserve.
@@ -215,6 +248,8 @@ def order_keyboard(order, shipments=(), *, expanded=False):
     result.append([{"text": "⋯ Действия", "callback_data": f"order:actions:{order.id}:{order.revision}"}])
     if (email_order and paid_row and order.fulfillment_status == "shipped"):
         result.append(paid_row)
+    if modern_ui_enabled():
+        result.append([{"text": "🏠 Главное меню", "callback_data": "workspace:home"}])
     return {"inline_keyboard": result}
 
 
