@@ -11,7 +11,7 @@ import time
 def main():
     count = 0
     for path in Path("app").rglob("*.py"):
-        ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
         count += 1
 
     from app.bot.manager_fast_cards import enabled
