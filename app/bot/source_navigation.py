@@ -127,10 +127,13 @@ def post_pick_followup_buttons(order, plans, state):
         for plan in plans for allocation in plan.allocations
     ):
         return []
+    from app.bot.manager_ui_flags import enabled as modern_ui_enabled
     return [
-        button("Проверить post-pick и остатки · без записи",
+        button("🔎 Проверить учёт склада X · без изменений" if modern_ui_enabled()
+               else "Проверить post-pick и остатки · без записи",
                dict(state, step="post_pick_check")),
-        button("Журнал складских документов · без записи",
+        button("📋 История складских операций · без изменений" if modern_ui_enabled()
+               else "Журнал складских документов · без записи",
                dict(state, step="post_pick_ledger")),
     ]
 
@@ -164,6 +167,8 @@ async def show_sources(message, actor, order_id, *, edit=False):
     else:
         rows_buyer = None
     post_pick = post_pick_enabled(order_id)
+    from app.bot.manager_ui_flags import enabled as modern_ui_enabled
+    modern = modern_ui_enabled()
     rows, lines = [], [f"Обеспечение заказа №{order_id}"]
     if rows_buyer:
         lines.append("⚠️ Покупатель МойСклад не сопоставлен – резерв и отгрузка невозможны.")
@@ -199,7 +204,10 @@ async def show_sources(message, actor, order_id, *, edit=False):
                     lines.append("  Автоматическая обработка отключена; "
                                  "проводки МойСклад сейчас не выполняются.")
                 lines.append("  Хатуна – пометка в документе, без заказа поставщику и уведомлений.")
-                lines.append("  Учётная цена предварительная: цена сайта − 1 000 ₽/шт.")
+                lines.append("  " + (
+                    "⚠️ Себестоимость склада X предварительная: необходимо подтвердить фактическую стоимость."
+                    if modern else "Учётная цена предварительная: цена сайта − 1 000 ₽/шт."
+                ))
             else:
                 lines.append("  Этапы Х: получить товар → оприходовать в МойСклад → резерв → отгрузка.")
                 rows.append(button("Проверить оприходование Х",
@@ -239,8 +247,11 @@ async def show_sources(message, actor, order_id, *, edit=False):
                 rows.append(button("Найти существующий заказ по номеру МойСклад",
                     dict(state, step="own_reserve_number_prompt", plan_id=plan.id)))
             elif not plan_docs[plan.id]["reserved"]:
-                rows.append(button("Создать резерв МойСклад · свой склад",
-                    dict(state, step="own_reserve", plan_id=plan.id)))
+                rows.append(button(
+                    "⚙️ Резерв собственного склада · дополнительно" if modern
+                    else "Создать резерв МойСклад · свой склад",
+                    dict(state, step="own_reserve_explain" if modern else "own_reserve",
+                         plan_id=plan.id)))
         if (not post_pick and ready and plan.status == "planned" and not plan_docs[plan.id]["reserved"]
                 and order.fulfillment_status == "new" and not order.needs_review):
             rows.append(button("Проверить резерв МойСклад",
@@ -252,7 +263,11 @@ async def show_sources(message, actor, order_id, *, edit=False):
                 dict(state, step="plan_doc_preview", plan_id=plan.id, doc_action="ship")))
     next_actions = post_pick_followup_buttons(order, plans, state)
     if next_actions:
-        lines.append("Сборка подтверждена. Следующий этап – проверка операций и остатков.")
+        lines.append("Сборка подтверждена. " + (
+            "Проверьте, оформлен ли товар склада X в МойСклад. "
+            "Две кнопки ниже только показывают сведения, ничего не меняя."
+            if modern else "Следующий этап – проверка операций и остатков."
+        ))
         if "test oms" in (order.customer_name or "").casefold():
             lines.append("Тестовый заказ: реальные документы МойСклад запрещены.")
         rows.extend(next_actions)
@@ -349,7 +364,17 @@ def register(dp, check_access, safe_callback_answer):
             }:
                 raise DeskError("Старая операция склада Х отключена: "
                                 "после физической сборки используется post-pick.")
-            if step == "own_reserve_number_prompt":
+            if step == "own_reserve_explain":
+                text = (
+                    "Резерв собственного склада\n\n"
+                    "Это действие создаёт документ в МойСклад и изменяет учёт. "
+                    "Используйте только после проверки фактического наличия, "
+                    "контрагента и отсутствия ранее созданного резерва."
+                )
+                rows.append(button("⚠️ Создать резерв в МойСклад",
+                                   dict(state, step="own_reserve")))
+                rows.append(button("← Назад", dict(state, step="source_home")))
+            elif step == "own_reserve_number_prompt":
                 from app.bot.manager_inputs import prompt_input
                 await replace_screen(callback.message,
                     "Укажите точный номер УЖЕ СУЩЕСТВУЮЩЕГО заказа покупателя МойСклад "
@@ -476,14 +501,14 @@ def register(dp, check_access, safe_callback_answer):
                 from app.services.hatuna_readonly_check import check_hatuna_order
                 text = await check_hatuna_order(
                     state["order_id"], state["actor"], state["chat"])
-                rows.append(button("Журнал документов · без записи",
+                rows.append(button("История складских операций · без изменений",
                                    dict(state, step="post_pick_ledger")))
                 rows.append(button("← К обеспечению", dict(state, step="source_home")))
             elif step == "post_pick_ledger":
                 from app.services.hatuna_reporting import order_hatuna_report
                 text = await order_hatuna_report(
                     state["order_id"], state["actor"], state["chat"])
-                rows.append(button("Проверить post-pick и остатки",
+                rows.append(button("Проверить учёт склада X · без изменений",
                                    dict(state, step="post_pick_check")))
                 rows.append(button("← К обеспечению", dict(state, step="source_home")))
             elif step == "type":
