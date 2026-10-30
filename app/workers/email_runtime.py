@@ -14,6 +14,26 @@ from app.workers.lifecycle import install_stop_signals
 logger = logging.getLogger("app.workers.email_runtime")
 
 
+def _safe_google_error_reason(error):
+    """Log only documented Google error codes, never payload messages or tokens."""
+    if type(error).__name__ != "HttpError":
+        return None
+    try:
+        import json
+        data = json.loads(error.content)
+        details = data.get("error", {})
+        if not isinstance(details, dict):
+            return None
+        values = [details.get("status"), details.get("reason")]
+        values.extend(entry.get("reason") for entry in details.get("errors", [])
+                      if isinstance(entry, dict))
+        safe = [v for v in values if isinstance(v, str) and 1 <= len(v) <= 60
+                and all(c.isascii() and (c.isalnum() or c in "_.-") for c in v)]
+        return ",".join(dict.fromkeys(safe))[:120] or None
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
 def validate_email():
     settings.validate_runtime("email")
     if settings.environment == "production" and os.getenv("EMAIL_PRODUCTION_ACTIVATED", "false").lower() != "true":
@@ -135,6 +155,7 @@ async def run(worker=None, *, mailbox_role='customer'):
                                 logger, "email_poll_failed", level=logging.ERROR,
                                 result=category, error_type=type(error).__name__,
                                 http_status=getattr(getattr(error, "resp", None), "status", None),
+                                google_reason=_safe_google_error_reason(error),
                             )
                         previous_error = category
                     try:
