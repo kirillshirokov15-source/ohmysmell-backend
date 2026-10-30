@@ -131,7 +131,11 @@ async def run(worker=None, *, mailbox_role='customer'):
                         except Exception:
                             state.update(status='database_unavailable', ready=False)
                         if previous_error != category:
-                            log_event(logger, "email_poll_failed", level=logging.ERROR, result=category)
+                            log_event(
+                                logger, "email_poll_failed", level=logging.ERROR,
+                                result=category, error_type=type(error).__name__,
+                                http_status=getattr(getattr(error, "resp", None), "status", None),
+                            )
                         previous_error = category
                     try:
                         await asyncio.wait_for(stop.wait(), delay)
