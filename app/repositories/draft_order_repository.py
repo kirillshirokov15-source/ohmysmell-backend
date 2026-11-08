@@ -38,7 +38,8 @@ def _automated_delivery_notice_filter():
 
 def _customer_mail_filter(kind: str):
     """Pagination-safe PostgreSQL filter for distinct customer mail streams."""
-    intent = DraftOrder.contact_details["mail_intent"].as_string()
+    # SQL NULL must not hide legacy orders that lack mail_intent metadata.
+    intent = func.coalesce(DraftOrder.contact_details["mail_intent"].as_string(), "")
     technical = or_(intent == "system", _automated_delivery_notice_filter())
     if kind == "questions":
         return and_(intent == "inquiry", not_(technical))
@@ -46,7 +47,7 @@ def _customer_mail_filter(kind: str):
         return technical
     if kind == "orders":
         return and_(
-            or_(intent.is_(None), intent.notin_(["inquiry", "system"])),
+            intent.notin_(["inquiry", "system"]),
             not_(technical),
         )
     raise ValueError("Unknown customer mail kind")
