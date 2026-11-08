@@ -26,6 +26,7 @@ class EmailIngestionWorker:
         self.pipeline = pipeline or DraftOrderService()
         self.cursor_repository = cursor_repository or EmailCursorRepository()
         self.provider_name = provider_name
+        self._committed_ids_loaded = False
 
     async def run_once(self) -> dict[str, int]:
         from app.integrations.email.health import EmailDatabaseUnavailable
@@ -33,6 +34,33 @@ class EmailIngestionWorker:
             cursor = await self.cursor_repository.get(self.provider_name)
         except Exception as error:
             raise EmailDatabaseUnavailable('Email cursor database unavailable') from error
+        # The Gmail query may select hundreds of historical matches.
+        # Recover the in-memory acknowledgment set from durable processed
+        # messages BEFORE full Gmail downloads. Do not seed failed/incomplete
+        # inbound records: they must remain eligible for processing.
+        if (getattr(self.provider, "order_query", None)
+                and hasattr(self.provider, "acknowledge_committed")
+                and not self._committed_ids_loaded):
+            try:
+                from sqlalchemy import select
+                from app.database.session import async_session
+                from app.models.inbound_message import InboundMessage
+                async with async_session() as session:
+                    rows = await session.scalars(select(
+                        InboundMessage.external_message_id
+                    ).where(
+                        InboundMessage.source == "email",
+                        InboundMessage.processing_status == "processed",
+                    ))
+                    committed_ids = list(rows.all())
+                self.provider.acknowledge_committed(committed_ids)
+                self._committed_ids_loaded = True
+                log_event(logger, "email_committed_ids_recovered",
+                          count=len(committed_ids))
+            except Exception as error:
+                raise EmailDatabaseUnavailable(
+                    "Committed email ID recovery failed"
+                ) from error
         batch = await self.provider.fetch_unprocessed(cursor)
         stats = {"received": len(batch.messages), "processed": 0, "failed": 0}
         for message in batch.messages:
