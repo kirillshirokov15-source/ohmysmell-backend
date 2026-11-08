@@ -6,6 +6,7 @@ quantities are still visible for manager review when the customer explicitly
 indicates an order. Questions are not turned into purchase orders.
 """
 import re
+import os
 import unicodedata
 from dataclasses import dataclass
 
@@ -40,6 +41,8 @@ class EmailParser:
     _inline_qty = re.compile(r"^(?P<product>.+?)\s+qty\s*[:=]?\s*(?P<qty>\d+)\s*$", re.I)
     # Short wholesale line: SKU, quantity, then customer-supplied price.
     # The trailing number is money, NEVER part of quantity or SKU.
+    _standalone_sku = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{2,39}$")
+    _standalone_qty = re.compile(r"^(\d{1,4})\s*(?:шт\.?|pcs?\.?)?$", re.I)
     _sku_qty_price = re.compile(
         r"^(?P<product>[a-zа-яё0-9][a-zа-яё0-9._/\-]{1,40})\s+"
         r"(?P<qty>\d{1,4})\s*(?:шт\.?|штук(?:а|и)?|pcs?\.?)\s+"
@@ -168,6 +171,40 @@ class EmailParser:
             line = raw.strip(" \r")
             if self._signature_start.match(line):
                 break
+            if (explicit_order
+                    and os.getenv("OMS_GMAIL_MULTILINE_SKU_ENABLED", "false").lower() in {"1", "true", "on", "yes"}
+                    and self._standalone_sku.fullmatch(line)
+                    and re.search(r"[A-Za-z]", line)
+                    and re.search(r"\d", line)):
+                # Customer email format:
+                # SKU
+                # [blank]
+                # Product name
+                # [blank]
+                # Quantity
+                # Only treat as an item in explicitly signaled orders.
+                following = []
+                for next_index in range(index + 1, min(index + 7, len(lines))):
+                    fragment = lines[next_index].strip()
+                    if fragment:
+                        following.append((next_index, fragment))
+                        if len(following) == 2:
+                            break
+                if len(following) == 2:
+                    name_idx, product = following[0]
+                    qty_idx, raw_qty = following[1]
+                    qty_match = self._standalone_qty.fullmatch(raw_qty)
+                    safe_name = self._safe_product(product, sender_name=sender_name)
+                    if (qty_idx - index <= 6 and qty_match and safe_name
+                            and not self._question_signal.search(product)
+                            and not self._signature_start.match(product)
+                            and 1 <= int(qty_match.group(1)) <= 1000):
+                        quantity = int(qty_match.group(1))
+                        evidence = f"Артикул {line} | {product} | {raw_qty}"
+                        output.append(ExtractedOrderLine(
+                            safe_name, quantity, "confirmed", evidence[:500]))
+                        skip.update((name_idx, qty_idx))
+                        continue
             if not line:
                 in_order_list = False
                 continue
