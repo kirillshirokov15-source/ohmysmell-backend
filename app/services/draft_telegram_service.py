@@ -306,6 +306,12 @@ def compact_draft_card(draft, *, expanded=False):
 
 
 async def notify_managers_about_draft(draft: DraftOrder) -> int:
+    from app.services.email_triage import should_send_order_notification
+    # Applies to immediate sends AND durable notification retries. A question
+    # remains accessible by ID / in the dedicated inbox; a technical report
+    # remains stored in PostgreSQL. Neither creates order-feed noise.
+    if not should_send_order_notification(draft):
+        return 0
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise RuntimeError("Telegram token is not configured")
