@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import select, update
+from sqlalchemy import select, update, and_, or_, not_, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
@@ -16,6 +16,38 @@ from app.services.order_lifecycle import OrderStatus, ensure_order_transition, I
 
 class DuplicateInboundMessageError(Exception):
     pass
+
+
+def _automated_delivery_notice_filter():
+    """Hide historical DSNs without changing or deleting saved records."""
+    sender = func.lower(func.coalesce(DraftOrder.sender_email, ""))
+    subject = func.lower(func.coalesce(DraftOrder.subject, ""))
+    return and_(
+        or_(sender.like("mailer-daemon%@%"), sender.like("postmaster%@%")),
+        or_(
+            subject.like("delivery status notification%"),
+            subject.like("undelivered mail returned to sender%"),
+            subject.like("mail delivery failed%"),
+            subject.like("delivery failure%"),
+            subject.like("delivery incomplete%"),
+            subject.like("returned mail%"),
+            subject == "failure notice",
+        ),
+    )
+
+
+def _customer_mail_filter(kind: str):
+    """Pagination-safe PostgreSQL filter for distinct customer mail streams."""
+    intent = DraftOrder.contact_details["mail_intent"].as_string()
+    technical = or_(intent == "system", _automated_delivery_notice_filter())
+    if kind == "questions":
+        return and_(intent == "inquiry", not_(technical))
+    if kind == "orders":
+        return and_(
+            or_(intent.is_(None), intent.notin_(["inquiry", "system"])),
+            not_(technical),
+        )
+    raise ValueError("Unknown customer mail kind")
 
 
 class DraftOrderRepository:
@@ -189,7 +221,9 @@ class DraftOrderRepository:
             return result.scalar_one_or_none()
 
     async def list(self, limit: int = 50, offset: int = 0, active_only: bool = False,
-                   status: str | None = None, source: str | None = None) -> list[DraftOrder]:
+                   status: str | None = None, source: str | None = None,
+                   email_kind: str | None = None,
+                   exclude_email_misc: bool = False) -> list[DraftOrder]:
         async with async_session() as session:
             query = self._query().order_by(DraftOrder.created_at.desc(), DraftOrder.id.desc())
             if status:
@@ -198,6 +232,14 @@ class DraftOrderRepository:
                 if source not in {"email", "website", "instagram", "manual", "telegram"}:
                     raise ValueError("Unknown order source")
                 query = query.where(DraftOrder.source == source)
+            if email_kind is not None:
+                if source != "email":
+                    raise ValueError("Email kind filter requires source=email")
+                query = query.where(_customer_mail_filter(email_kind))
+            elif exclude_email_misc:
+                query = query.where(or_(
+                    DraftOrder.source != "email", _customer_mail_filter("orders")
+                ))
             if active_only:
                 query = query.where(DraftOrder.status.in_(["draft", "needs_review", "ready"]))
             result = await session.execute(
