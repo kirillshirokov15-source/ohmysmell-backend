@@ -42,6 +42,8 @@ def _customer_mail_filter(kind: str):
     technical = or_(intent == "system", _automated_delivery_notice_filter())
     if kind == "questions":
         return and_(intent == "inquiry", not_(technical))
+    if kind == "technical":
+        return technical
     if kind == "orders":
         return and_(
             or_(intent.is_(None), intent.notin_(["inquiry", "system"])),
