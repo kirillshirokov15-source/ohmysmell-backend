@@ -28,7 +28,7 @@ def bad_request_reason(error):
 
 ROWS = (("📦 Заказы", "🔎 Найти заказ"), ("☰ Ещё",))
 MENU_TEXTS = frozenset(text for row in ROWS for text in row) | frozenset(
-    {"Заказы", "Найти заказ", "Источники", "Отгрузки", "Закупки", "Обновить", "Скрыть меню"})
+    {"Заказы", "Найти заказ", "Источники", "Отгрузки", "Закупки", "Обновить", "Скрыть меню", "💬 Вопросы с почты"})
 
 
 def menu_options(message, *, hide=False):

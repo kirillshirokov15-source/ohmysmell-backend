@@ -266,6 +266,29 @@ async def email_orders_page(message: Message):
     await show_email_order_list(message, offset)
 
 
+@dp.message(Command("emailquestions"))
+@dp.message(F.text == "💬 Вопросы с почты")
+async def email_questions_page(message: Message):
+    if not await check_access(message):
+        return
+    try:
+        offset = max(0, int((message.text or "").split()[1]))
+    except (ValueError, IndexError):
+        offset = 0
+    await show_email_question_list(message, offset)
+
+
+@dp.message(Command("emailtechnical"))
+async def email_technical_page(message: Message):
+    if not await check_access(message):
+        return
+    try:
+        offset = max(0, int((message.text or "").split()[1]))
+    except (ValueError, IndexError):
+        offset = 0
+    await show_technical_mail_list(message, offset)
+
+
 @dp.message(Command("drafts"))
 async def drafts_page(message: Message):
     if not await check_access(message):
@@ -765,29 +788,80 @@ async def workspace_section(message):
 
 
 async def show_email_order_list(message, offset):
-    """Only customer wholesale email orders, never supplier Buying correspondence."""
+    """Wholesale orders only when triage is enabled; legacy view otherwise."""
+    return await _show_customer_mail_list(message, offset, "orders")
+
+
+async def show_email_question_list(message, offset):
+    """Questions remain accessible, but do not spam the order group."""
+    return await _show_customer_mail_list(message, offset, "questions")
+
+
+async def show_technical_mail_list(message, offset):
+    """Read-only archive of delivery reports, accessible by /emailtechnical."""
+    return await _show_customer_mail_list(message, offset, "technical")
+
+
+async def _show_customer_mail_list(message, offset, kind):
     from app.services.telegram_display import telegram_rubles
+    from app.services.email_triage import enabled as email_triage_enabled
+    if kind not in {"orders", "questions", "technical"}:
+        raise ValueError("Unknown email inbox")
+    # Filtering in SQL (before LIMIT/OFFSET) is necessary for correct pages.
+    mail_filter = kind if email_triage_enabled() or kind != "orders" else None
     drafts = await DraftOrderRepository().list(
-        limit=10, offset=offset, source="email", active_only=False)
-    rows = [[{"text": (
-                ("📩 Вопрос" if (getattr(d, "contact_details", None) or {}).get("mail_intent") == "inquiry"
-                 else "⚠️ Возможный заказ" if (getattr(d, "contact_details", None) or {}).get("mail_intent") == "possible_order"
-                 else "📨 Заказ") + f" №{d.id} · {(d.customer_name or 'Клиент')[:22]} · "
-                + (telegram_rubles(d.total) if d.total is not None else "проверка")
-            )[:60],
-              "callback_data": f"draft:refresh:{d.id}"}] for d in drafts]
+        limit=10, offset=offset, source="email", active_only=False,
+        email_kind=mail_filter,
+    )
+    labels = {
+        "orders": "📨 Оптовые заказы из почты",
+        "questions": "💬 Вопросы клиентов из почты",
+        "technical": "🛠 Технические сообщения почты",
+    }
+    pages = {
+        "orders": "email",
+        "questions": "email_questions",
+        "technical": "email_technical",
+    }
+    rows = []
+    for draft in drafts:
+        if kind == "orders":
+            kind_label = ("⚠️ Возможный заказ" if
+                (getattr(draft, "contact_details", None) or {}).get("mail_intent") == "possible_order"
+                else "📨 Заказ")
+            description = telegram_rubles(draft.total) if draft.total is not None else "проверка"
+        elif kind == "questions":
+            kind_label = "💬 Вопрос"
+            description = (draft.subject or "Без темы")[:35]
+        else:
+            kind_label = "🛠 Уведомление"
+            description = (draft.subject or "Без темы")[:35]
+        name = (draft.customer_name or draft.sender_email or "Клиент")[:20]
+        title = (f"{kind_label} №{draft.id} · {name} · {description}")[:64]
+        rows.append([{"text": title, "callback_data": f"draft:refresh:{draft.id}"}])
+    page = pages[kind]
     if offset:
-        rows.append([{"text": "← Ранее", "callback_data": f"draftpage:email:{max(0,offset-10)}"}])
+        rows.append([{"text": "← Ранее", "callback_data":
+                     f"draftpage:{page}:{max(0, offset-10)}"}])
     if len(drafts) == 10:
-        rows.append([{"text": "Далее →", "callback_data": f"draftpage:email:{offset+10}"}])
+        rows.append([{"text": "Далее →", "callback_data":
+                     f"draftpage:{page}:{offset+10}"}])
+    if kind != "orders":
+        rows.append([{"text": "← К заказам из почты",
+                      "callback_data": "draftpage:email:0"}])
     await message.answer(
-        "📨 Оптовые заявки из почты — выберите заказ:" if drafts
-        else "Оптовых заявок из почты пока нет. Проверьте работу Gmail-приёмника.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        f"{labels[kind]} – выберите письмо:" if drafts else
+        f"{labels[kind]} – записей пока нет.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
 
 
 async def show_draft_list(message, status, offset):
-    drafts = await DraftOrderRepository().list(limit=10, offset=offset, status=status)
+    from app.services.email_triage import enabled as email_triage_enabled
+    drafts = await DraftOrderRepository().list(
+        limit=10, offset=offset, status=status,
+        exclude_email_misc=email_triage_enabled(),
+    )
     rows = [[{"text": f"Заявка №{d.id} · {(d.customer_name or 'Клиент')[:40]}",
         "callback_data": f"draft:refresh:{d.id}"}] for d in drafts]
     if offset:
@@ -809,6 +883,10 @@ async def workspace_page(callback):
         await show_order_list(callback.message, category, max(0, int(offset)))
     elif category == "email":
         await show_email_order_list(callback.message, max(0, int(offset)))
+    elif category == "email_questions":
+        await show_email_question_list(callback.message, max(0, int(offset)))
+    elif category == "email_technical":
+        await show_technical_mail_list(callback.message, max(0, int(offset)))
     else:
         await show_draft_list(callback.message, category, max(0, int(offset)))
 
@@ -1117,6 +1195,8 @@ async def menu_callback(callback):
         await show_draft_list(message, "needs_review", 0)
     elif action == "email_orders":
         await show_email_order_list(message, 0)
+    elif action == "email_questions":
+        await show_email_question_list(message, 0)
 
 
 @dp.callback_query(F.data == "workspace:home")

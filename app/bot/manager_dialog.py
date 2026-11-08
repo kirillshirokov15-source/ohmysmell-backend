@@ -27,10 +27,19 @@ def waiting(message):
 
 
 def fallback(actor, *, more=False):
-    rows = ((('📨 Заказы с почты', 'email_orders'), ('Заявки', 'drafts')),
-            (('Закупки', 'procurements'), ('Отгрузки', 'shipped')),
-            (('Справка', 'help'), ('Назад', 'home'))) if more else (
-            (('📦 Заказы', 'orders'), ('🔎 Найти заказ', 'order')), (('☰ Ещё', 'more'),))
+    from app.services.email_triage import enabled as triage_enabled
+    if more and triage_enabled():
+        rows = (
+            (('📨 Заказы с почты', 'email_orders'), ('💬 Вопросы с почты', 'email_questions')),
+            (('Заявки', 'drafts'), ('Закупки', 'procurements')),
+            (('Отгрузки', 'shipped'), ('Справка', 'help')),
+            (('Назад', 'home'),),
+        )
+    else:
+        rows = ((('📨 Заказы с почты', 'email_orders'), ('Заявки', 'drafts')),
+                (('Закупки', 'procurements'), ('Отгрузки', 'shipped')),
+                (('Справка', 'help'), ('Назад', 'home'))) if more else (
+                (('📦 Заказы', 'orders'), ('🔎 Найти заказ', 'order')), (('☰ Ещё', 'more'),))
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=label, callback_data=f"menu:{actor}:{action}") for label, action in row]
         for row in rows])
