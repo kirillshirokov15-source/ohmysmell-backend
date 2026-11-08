@@ -62,7 +62,7 @@ def main():
     for kind in ["orders", "questions", "technical"]:
         stmt = select(DraftOrder.id).where(_customer_mail_filter(kind))
         query = str(stmt.compile(dialect=dialect()))
-        assert "mail_intent" in query
+        assert "contact_details" in query and "WHERE" in query
     os.environ["OMS_EMAIL_TRIAGE_ENABLED"] = "false"
     assert should_send_order_notification(question)
     old_nav = fallback(898019732, more=True)
