@@ -134,6 +134,13 @@ class GmailEmailProvider:
             # lag behind history. Only successful, committed messages are cached;
             # restart safely replays through durable application deduplication.
             message_ids = [value for value in selected if value not in self._query_acknowledged]
+            # Gmail API charges 60 quota units for each full message fetch.
+            # Never download an entire historical query match set at once.
+            # Unfinished IDs remain in the query and are picked up next poll.
+            batch_limit = int(os.getenv("GMAIL_MAX_FULL_MESSAGES_PER_POLL", "20"))
+            if not 1 <= batch_limit <= 50:
+                raise ValueError("GMAIL_MAX_FULL_MESSAGES_PER_POLL must be between 1 and 50")
+            message_ids = message_ids[:batch_limit]
         messages = [
             message
             for message_id in message_ids
@@ -168,6 +175,16 @@ class GmailEmailProvider:
     def acknowledge(self, message_id: str) -> None:
         if self.order_query:
             self._query_acknowledged.add(message_id)
+
+    def acknowledge_committed(self, message_ids) -> None:
+        """Skip full Gmail downloads for messages committed in PostgreSQL.
+
+        This in-memory projection is rebuilt from the database after worker
+        restarts. IDs that have not reached processing_status='processed'
+        remain eligible for replay and safe retry.
+        """
+        if self.order_query:
+            self._query_acknowledged.update(message_ids)
 
     def _build_service(self):
         from googleapiclient.discovery import build
