@@ -803,15 +803,23 @@ async def show_technical_mail_list(message, offset):
 
 
 async def _show_customer_mail_list(message, offset, kind):
+    from datetime import timezone
+    from zoneinfo import ZoneInfo
+    import os
     from app.services.telegram_display import telegram_rubles
     from app.services.email_triage import enabled as email_triage_enabled
     if kind not in {"orders", "questions", "technical"}:
         raise ValueError("Unknown email inbox")
-    # Filtering in SQL (before LIMIT/OFFSET) is necessary for correct pages.
+    # Both category filtering and source-date sorting must happen in SQL
+    # before LIMIT/OFFSET; draft IDs reflect import order, not email chronology.
     mail_filter = kind if email_triage_enabled() or kind != "orders" else None
+    source_order = os.getenv("OMS_EMAIL_SOURCE_DATE_SORT_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
     drafts = await DraftOrderRepository().list(
         limit=10, offset=offset, source="email", active_only=False,
         email_kind=mail_filter,
+        sort_by_received_at=source_order,
     )
     labels = {
         "orders": "📨 Оптовые заказы из почты",
@@ -837,7 +845,18 @@ async def _show_customer_mail_list(message, offset, kind):
             kind_label = "🛠 Уведомление"
             description = (draft.subject or "Без темы")[:35]
         name = (draft.customer_name or draft.sender_email or "Клиент")[:20]
-        title = (f"{kind_label} №{draft.id} · {name} · {description}")[:64]
+        if source_order:
+            received = getattr(getattr(draft, "inbound_message", None), "received_at", None)
+            if received:
+                if received.tzinfo is None:
+                    received = received.replace(tzinfo=timezone.utc)
+                received = received.astimezone(ZoneInfo("Europe/Belgrade"))
+                mail_date = received.strftime("%d.%m")
+            else:
+                mail_date = "??.??"
+            title = (f"{kind_label} {mail_date} №{draft.id} · {name} · {description}")[:64]
+        else:
+            title = (f"{kind_label} №{draft.id} · {name} · {description}")[:64]
         rows.append([{"text": title, "callback_data": f"draft:refresh:{draft.id}"}])
     page = pages[kind]
     if offset:
@@ -846,12 +865,16 @@ async def _show_customer_mail_list(message, offset, kind):
     if len(drafts) == 10:
         rows.append([{"text": "Далее →", "callback_data":
                      f"draftpage:{page}:{offset+10}"}])
-    if kind != "orders":
+    if kind == "orders" and email_triage_enabled():
+        rows.append([{"text": "💬 Свежие вопросы с почты",
+                      "callback_data": "draftpage:email_questions:0"}])
+    elif kind != "orders":
         rows.append([{"text": "← К заказам из почты",
                       "callback_data": "draftpage:email:0"}])
+    ordering_note = "\n📅 Дата исходного письма, новые сверху." if source_order else ""
     await message.answer(
-        f"{labels[kind]} – выберите письмо:" if drafts else
-        f"{labels[kind]} – записей пока нет.",
+        (f"{labels[kind]} – выберите письмо:" + ordering_note) if drafts else
+        (f"{labels[kind]} – записей пока нет." + ordering_note),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
 

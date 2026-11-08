@@ -226,9 +226,19 @@ class DraftOrderRepository:
     async def list(self, limit: int = 50, offset: int = 0, active_only: bool = False,
                    status: str | None = None, source: str | None = None,
                    email_kind: str | None = None,
-                   exclude_email_misc: bool = False) -> list[DraftOrder]:
+                   exclude_email_misc: bool = False,
+                   sort_by_received_at: bool = False) -> list[DraftOrder]:
         async with async_session() as session:
-            query = self._query().order_by(DraftOrder.created_at.desc(), DraftOrder.id.desc())
+            if sort_by_received_at:
+                if source != "email":
+                    raise ValueError("Source date ordering requires source=email")
+                # Historical Gmail replay imported newest first and oldest last.
+                # Sort by the immutable original mail date, not draft creation.
+                # SQL ordering must happen BEFORE LIMIT/OFFSET for stable pages.
+                query = (self._query().join(InboundMessage, InboundMessage.id == DraftOrder.inbound_message_id)
+                         .order_by(InboundMessage.received_at.desc(), DraftOrder.id.desc()))
+            else:
+                query = self._query().order_by(DraftOrder.created_at.desc(), DraftOrder.id.desc())
             if status:
                 query = query.where(DraftOrder.status == status)
             if source:
