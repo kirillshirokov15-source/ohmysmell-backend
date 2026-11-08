@@ -1,5 +1,7 @@
 import os
 import asyncio
+from datetime import timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
@@ -26,6 +28,34 @@ def inquiry_original_body(draft) -> str:
     return raw.replace("\x00", "").strip()
 
 
+def _mail_context_enabled() -> bool:
+    return os.getenv("OMS_EMAIL_CARD_CONTEXT_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _mail_date_lines(draft) -> list[str]:
+    """Explicit source date versus CRM ingestion date (Europe/Belgrade)."""
+    if not _mail_context_enabled() or getattr(draft, "source", None) != "email":
+        return []
+    inbound = getattr(draft, "inbound_message", None)
+    received = getattr(inbound, "received_at", None)
+    created = getattr(draft, "created_at", None)
+    if not received:
+        return ["Дата исходного письма: не указана в CRM"]
+    def local(dt):
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(ZoneInfo("Europe/Belgrade"))
+    received = local(received)
+    lines = [f"Дата письма: {received:%d.%m.%Y %H:%M} (Белград)"]
+    if created:
+        created = local(created)
+        if created.date() != received.date():
+            lines.append(f"Добавлено в CRM: {created:%d.%m.%Y %H:%M} (Белград)")
+    return lines
+
+
 def old_inquiry_order_lines(draft):
     """Show previously misclassified email lines without mutating the saved draft."""
     if ((getattr(draft, "contact_details", None) or {}).get("mail_intent") != "inquiry"
@@ -48,7 +78,7 @@ def build_inquiry_message(draft) -> str:
         body = "Текст письма не найден в CRM. Проверьте исходное письмо в Gmail."
     return (f"📩 Вопрос клиента · обращение №{draft.id}\n"
             f"От: {sender}\n"
-            f"Тема: {subject}\n\n"
+            f"Тема: {subject}\n" + ("\n".join(_mail_date_lines(draft)) + "\n" if _mail_date_lines(draft) else "") + "\n"
             f"{body[:3000]}\n\n"
             "Не заказ. Ответьте клиенту в переписке Gmail.")[:3850]
 
@@ -72,6 +102,7 @@ def build_draft_card(draft: DraftOrder) -> str:
         "Источник: " + {"email": "Email", "website": "Сайт", "telegram": "Telegram",
             "instagram": "Instagram", "manual": "Менеджер"}.get(getattr(draft, "source", "email"), "Не указан"),
         f"Тема: {draft.subject or 'Без темы'}",
+        *_mail_date_lines(draft),
         f"Контрагент: {draft.counterparty_name or draft.counterparty_id or 'Не выбран'}",
         "",
         "Позиции:" if not inquiry else "Письмо клиента (требуется ответ):",
@@ -89,6 +120,14 @@ def build_draft_card(draft: DraftOrder) -> str:
         lines.append("⚠ Это письмо не является оформленным заказом.")
     if tentative:
         lines.append("⚠ Тема похожа на товар. Подтвердите, что это заказ, и уточните количество.")
+    if (_mail_context_enabled() and getattr(draft, "source", None) == "email"
+            and not inquiry and not draft.items):
+        original = inquiry_original_body(draft)
+        lines.extend([
+            "⚠ Товарные позиции автоматически не распознаны.",
+            "Исходное письмо (проверьте товар и количество вручную):",
+            original[:2200] if original else "Текст письма не сохранился. Проверьте Gmail.",
+        ])
     for item in draft.items:
         reference = f" (позиция {item.id})" if getattr(item, "id", None) else ""
         lines.extend(["", f"• {item.raw_product_text}{reference}"])
@@ -376,6 +415,13 @@ def compact_draft_card(draft, *, expanded=False):
         f"Заявка №{draft.id}", f"Статус: {visible_status}"]
     if email:
         lines.append("Клиент: " + (draft.customer_name or draft.sender_email or "Не указан")[:120])
+        lines.extend(_mail_date_lines(draft))
+        if (_mail_context_enabled() and not inquiry and not draft.items):
+            excerpt = " ".join(inquiry_original_body(draft).split())
+            lines.append("⚠ Товары не распознаны автоматически.")
+            lines.append("Из письма: " + (excerpt[:450] if excerpt else "Текст отсутствует, проверьте Gmail"))
+            if str(draft.status) == "rejected":
+                lines.append("Заявка отклонена. Оригинал доступен по кнопке «Подробнее».")
         if inquiry:
             lines.append("Тема: " + (draft.subject or "Без темы")[:170])
             if historic_order_lines:
