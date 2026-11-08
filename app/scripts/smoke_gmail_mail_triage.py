@@ -76,6 +76,8 @@ async def verify():
         customer_service=CustomerService(),
         extraction_service=OrderExtractionService(),
         matching_service=MatchingService(),
+        # No real credentials and no external API instantiation in this smoke.
+        counterparty_service=object(),
         notifier=notify,
     )
     old_notice = email(
