@@ -83,7 +83,30 @@ def build_inquiry_message(draft) -> str:
             "Не заказ. Ответьте клиенту в переписке Gmail.")[:3850]
 
 
+def _technical_draft(draft) -> bool:
+    from app.services.email_triage import enabled as triage_enabled, kind_for_draft
+    return triage_enabled() and kind_for_draft(draft) == "technical"
+
+
+def _technical_card(draft, *, expanded=False) -> str:
+    lines = [
+        "🛠 Техническое уведомление Gmail · не заказ",
+        f"Письмо №{draft.id}",
+        f"От: {(draft.sender_email or 'Не указан')[:160]}",
+        f"Тема: {(draft.subject or 'Без темы')[:250]}",
+        *_mail_date_lines(draft),
+    ]
+    if expanded:
+        lines.extend(["", "Исходное содержимое:",
+                      inquiry_original_body(draft)[:2600] or "Письмо без текста"])
+    else:
+        lines.extend(["", "Письмо сохранено в CRM, действий по заказу не требуется."])
+    return "\n".join(lines)[:3900]
+
+
 def build_draft_card(draft: DraftOrder) -> str:
+    if _technical_draft(draft):
+        return _technical_card(draft, expanded=True)
     mail_intent = (getattr(draft, "contact_details", None) or {}).get("mail_intent")
     inquiry = mail_intent == "inquiry"
     tentative = mail_intent == "possible_order"
@@ -193,6 +216,11 @@ def build_draft_card(draft: DraftOrder) -> str:
 
 
 def build_draft_keyboard(draft: DraftOrder) -> dict:
+    if _technical_draft(draft):
+        return {"inline_keyboard": [[
+            {"text": "📄 Оригинал уведомления",
+             "callback_data": f"draft:details:{draft.id}"}
+        ]]}
     if (getattr(draft, "contact_details", None) or {}).get("tilda"):
         return {"inline_keyboard": [[{"text": "Открыть заявку сайта", "callback_data": f"desk:refresh:{draft.id}"}]]}
     if str(draft.status) in {"new", "rejected"}:
@@ -373,6 +401,8 @@ def counterparty_review_keyboard(draft):
 
 
 def compact_draft_keyboard(draft, *, expanded=False):
+    if _technical_draft(draft):
+        return build_draft_keyboard(draft)
     full = build_draft_keyboard(draft)
     if expanded:
         return full
@@ -396,6 +426,8 @@ def compact_draft_keyboard(draft, *, expanded=False):
 
 
 def compact_draft_card(draft, *, expanded=False):
+    if _technical_draft(draft):
+        return _technical_card(draft, expanded=expanded)
     if expanded:
         return build_draft_card(draft)
     rows = compact_draft_keyboard(draft)["inline_keyboard"]
