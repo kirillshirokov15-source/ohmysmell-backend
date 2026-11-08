@@ -139,6 +139,14 @@ class DraftOrderService:
         else:
             extracted_lines = self.extraction_service.extract(message.body_text)
             mail_intent = "order"
+        if source == "email":
+            from app.services.email_triage import enabled as triage_enabled, is_technical_notice
+            if triage_enabled() and is_technical_notice(
+                message.sender_email, message.subject
+            ):
+                # Preserve the original inbound message for audit/deduplication,
+                # but never interpret an automated delivery report as an order.
+                extracted_lines, mail_intent = [], "system"
         log_event(
             logger,
             "email_parsed",
@@ -159,7 +167,7 @@ class DraftOrderService:
         )
 
         counterparty_candidates = []
-        if not customer.moysklad_counterparty_id:
+        if mail_intent != "system" and not customer.moysklad_counterparty_id:
             try:
                 counterparty_candidates = await self.counterparty_service.candidates_async(
                     message.sender_email,
@@ -173,7 +181,9 @@ class DraftOrderService:
         problems = []
         if mail_intent == "possible_order":
             problems.append("Возможный заказ по теме письма: подтвердите намерение заказать, товар и количество.")
-        if mail_intent == "inquiry":
+        if mail_intent == "system":
+            problems.append("Автоматический отчёт о доставке письма: сохранён в CRM, не является заказом.")
+        elif mail_intent == "inquiry":
             problems.append("Письмо-уточнение: не является заказом; менеджеру нужно ответить клиенту.")
         elif not extracted_lines:
             problems.append("Заказ без распознанных позиций: менеджеру нужно проверить оригинал письма.")
@@ -259,8 +269,16 @@ class DraftOrderService:
         )
 
         try:
-            await self.notifier(draft)
+            from app.services.email_triage import should_send_order_notification
+            if should_send_order_notification(draft):
+                await self.notifier(draft)
+            else:
+                log_event(logger, "customer_email_routed_to_inbox",
+                          draft_id=draft.id,
+                          mail_kind=("technical" if mail_intent == "system" else "question"))
             if hasattr(self.repository, "mark_notified"):
+                # A routed message has no Telegram alert; the durable
+                # notification is resolved and cannot repeatedly send later.
                 await self.repository.mark_notified(draft.id)
         except Exception:
             logger.warning("Draft %s saved, Telegram notification pending retry", draft.id)
