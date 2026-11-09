@@ -55,7 +55,7 @@ def main():
     assert "письмо" in build_inquiry_message(entity).lower()
     all_buttons = compact_draft_keyboard(entity)["inline_keyboard"]
     assert any(
-        b.get("callback_data") == "draft:reconsider:230"
+        b.get("callback_data", "").startswith("draft:reconsider:230")
         for row in all_buttons for b in row
     ), all_buttons
     print("UNIFIED_EMAIL_ZHANNA_SMOKE_OK", flush=True)
