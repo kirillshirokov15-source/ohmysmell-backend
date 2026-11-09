@@ -118,6 +118,18 @@ class EmailParser:
 
     @classmethod
     def _line_qty(cls, line):
+        # Some wholesalers write "DSD balm -2 шт😻 -- Отправлено из мобильной..."
+        # The mobile signature and trailing emoji are not product or quantity.
+        # Do not strip question marks or other punctuation: a question must
+        # remain a question and must never be converted to an order.
+        line = re.split(
+            r"\s+--\s*(?=отправлено из мобильной|sent from)",
+            line, maxsplit=1, flags=re.I,
+        )[0]
+        line = re.sub(
+            r"[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]+\s*$",
+            "", line,
+        ).strip()
         m = cls._sku_qty_price.match(line)
         if m and int(m.group("qty")) > 0:
             product = cls._safe_product(m.group("product"))
