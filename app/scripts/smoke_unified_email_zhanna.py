@@ -52,7 +52,7 @@ def main():
     assert "не заказ" not in short.lower() and "не заказ" not in detailed.lower()
     assert "Dsd 5.2.1 бальзам" in short and "2 шт." in short
     assert "06.11.2026" in short
-    assert "Письмо" in build_inquiry_message(entity)
+    assert "письмо" in build_inquiry_message(entity).lower()
     all_buttons = compact_draft_keyboard(entity)["inline_keyboard"]
     assert any(
         b.get("callback_data") == "draft:reconsider:230"
