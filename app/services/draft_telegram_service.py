@@ -69,14 +69,19 @@ def old_inquiry_order_lines(draft):
     return classified.items if classified.intent == "order" and classified.items else ()
 
 
+def _unified_mail_mode() -> bool:
+    from app.services.email_triage import enabled as triage_enabled
+    return not triage_enabled()
+
+
 def build_inquiry_message(draft) -> str:
-    """Dedicated manager Telegram message, independent of editMessageText."""
+    """Original email for manager review, never assert it is not an order."""
     body = inquiry_original_body(draft)
     subject = (getattr(draft, "subject", None) or "Без темы").strip()[:250]
     sender = (getattr(draft, "sender_email", None) or "Не указан").strip()[:320]
     if not body:
         body = "Текст письма не найден в CRM. Проверьте исходное письмо в Gmail."
-    return (f"📩 Вопрос клиента · обращение №{draft.id}\n"
+    return (f"📩 Входящее письмо · заявка №{draft.id}\n"
             f"От: {sender}\n"
             f"Тема: {subject}\n" + ("\n".join(_mail_date_lines(draft)) + "\n" if _mail_date_lines(draft) else "") + "\n"
             f"{body[:3000]}\n\n"
@@ -110,7 +115,8 @@ def build_draft_card(draft: DraftOrder) -> str:
     mail_intent = (getattr(draft, "contact_details", None) or {}).get("mail_intent")
     inquiry = mail_intent == "inquiry"
     tentative = mail_intent == "possible_order"
-    email_heading = ("📩 Письмо-уточнение · НЕ заказ" if inquiry
+    email_heading = ("📩 Входящее письмо · проверьте товар" if inquiry and _unified_mail_mode()
+                     else "📩 Письмо-уточнение · требуется проверка" if inquiry
                      else "⚠️ Возможный заказ · товар в теме" if tentative
                      else "📨 Новый заказ из почты" if draft.items
                      else "📨 Возможный заказ · нужны товары")
@@ -128,7 +134,9 @@ def build_draft_card(draft: DraftOrder) -> str:
         *_mail_date_lines(draft),
         f"Контрагент: {draft.counterparty_name or draft.counterparty_id or 'Не выбран'}",
         "",
-        "Позиции:" if not inquiry else "Письмо клиента (требуется ответ):",
+        "Позиции:" if not inquiry else
+        ("Исходное письмо (проверьте товар и количество):"
+         if _unified_mail_mode() else "Письмо клиента (требуется ответ):"),
     ]
     if inquiry:
         candidate_lines = old_inquiry_order_lines(draft)
@@ -140,7 +148,11 @@ def build_draft_card(draft: DraftOrder) -> str:
                              + (f"{line.qty} шт." if line.qty > 0 else "количество уточнить"))
         excerpt = " ".join(inquiry_original_body(draft).split())[:650]
         lines.append(excerpt or "(письмо без текста; посмотрите исходное письмо в Gmail)")
-        lines.append("⚠ Это письмо не является оформленным заказом.")
+        lines.append(
+            "⚠ Письмо требует проверки менеджером: это может быть заказ."
+            if _unified_mail_mode()
+            else "⚠ Это письмо пока не подтверждено как заказ."
+        )
     if tentative:
         lines.append("⚠ Тема похожа на товар. Подтвердите, что это заказ, и уточните количество.")
     if (_mail_context_enabled() and getattr(draft, "source", None) == "email"
@@ -227,7 +239,7 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
         return {"inline_keyboard": []}
     if (getattr(draft, "contact_details", None) or {}).get("mail_intent") == "inquiry":
         rows = [
-            [{"text": "📄 Прочитать вопрос", "callback_data": f"draft:details:{draft.id}"}],
+            [{"text": ("📄 Прочитать письмо" if _unified_mail_mode() else "📄 Прочитать вопрос"), "callback_data": f"draft:details:{draft.id}"}],
         ]
         # Also works with previously ingested inquiries: an apparent product
         # in the original subject can be reviewed without a second email.
@@ -441,7 +453,8 @@ def compact_draft_card(draft, *, expanded=False):
     if email and not inquiry and str(draft.status) == "needs_review":
         visible_status = "Заказ получен · требуется проверить товары/контрагента"
     lines = (["⚠️ Сохранённое письмо содержит заказ · требуется разбор"] if historic_order_lines else
-             ["📩 Уточнение по почте · не заказ"] if inquiry else
+             ["📩 Входящее письмо · требуется проверка" if _unified_mail_mode()
+              else "📩 Уточнение по почте · требуется проверка"] if inquiry else
              ["⚠️ Возможный заказ · товар в теме"] if tentative else
              ["📦 Оптовый заказ из почты"] if email else []) + [
         f"Заявка №{draft.id}", f"Статус: {visible_status}"]
@@ -463,7 +476,7 @@ def compact_draft_card(draft, *, expanded=False):
                                  + (f"{item.qty} шт." if item.qty > 0 else "количество уточнить"))
                 lines.append("Сейчас: «Разобрать как заказ» – без повторного чтения Gmail.")
             else:
-                lines.append("Вопрос: " + " ".join(inquiry_original_body(draft).split())[:220])
+                lines.append("Из письма: " + " ".join(inquiry_original_body(draft).split())[:300])
         for item in (draft.items or [])[:3]:
             title = " ".join((item.raw_product_text or "Товар").split())[:90]
             lines.append(f"• {title} — " + (
@@ -481,7 +494,9 @@ def compact_draft_card(draft, *, expanded=False):
             "Оплата: после подтверждения заказа",
             "Наличие: требует согласования", f"Сейчас: {next_step}"]
     elif not historic_order_lines:
-        lines.append("Сейчас: ответить клиенту в исходной переписке Gmail")
+        lines.append("Сейчас: проверить товар и количество в оригинале письма"
+                     if _unified_mail_mode()
+                     else "Сейчас: ответить клиенту в исходной переписке Gmail")
     return "\n".join(lines)[:3900]
 
 
