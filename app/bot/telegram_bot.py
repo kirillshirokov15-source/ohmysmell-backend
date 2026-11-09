@@ -822,7 +822,8 @@ async def _show_customer_mail_list(message, offset, kind):
         sort_by_received_at=source_order,
     )
     labels = {
-        "orders": "📨 Оптовые заказы из почты",
+        "orders": ("📨 Вся входящая почта" if not email_triage_enabled()
+                   else "📨 Оптовые заказы из почты"),
         "questions": "💬 Вопросы клиентов из почты",
         "technical": "🛠 Технические сообщения почты",
     }
@@ -834,9 +835,12 @@ async def _show_customer_mail_list(message, offset, kind):
     rows = []
     for draft in drafts:
         if kind == "orders":
-            kind_label = ("⚠️ Возможный заказ" if
-                (getattr(draft, "contact_details", None) or {}).get("mail_intent") == "possible_order"
-                else "📨 Заказ")
+            kind_label = (
+                "📩 Письмо" if not email_triage_enabled()
+                else "⚠️ Возможный заказ" if
+                    (getattr(draft, "contact_details", None) or {}).get("mail_intent") == "possible_order"
+                else "📨 Заказ"
+            )
             description = telegram_rubles(draft.total) if draft.total is not None else "проверка"
         elif kind == "questions":
             kind_label = "💬 Вопрос"
