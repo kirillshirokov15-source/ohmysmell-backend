@@ -469,6 +469,27 @@ async def draft_callback_handler(callback: CallbackQuery):
         elif action == "reconsider":
             draft = await service.recover_missing_email_items(
                 draft_id, callback.from_user.id)
+        elif action == "recheckprice":
+            # Safe CRM review: recalculates from the configured MoySklad price
+            # type. It never changes catalog prices or finalizes the order.
+            draft = await service.review(draft_id)
+        elif action == "edititems":
+            current = await service._get_required(draft_id)
+            if current.source != "email":
+                raise DraftOrderError("Изменение товаров здесь доступно только для почтовой заявки")
+            service._ensure_reviewable(current)
+            if callback.message:
+                from app.services.draft_telegram_service import (
+                    build_item_edit_card, build_item_edit_keyboard)
+                await safe_edit_message(
+                    callback.message,
+                    build_item_edit_card(current),
+                    draft_id=draft_id,
+                    reply_markup=InlineKeyboardMarkup.model_validate(
+                        build_item_edit_keyboard(current)),
+                )
+            outcome = "success"
+            return
         elif action in {"confirmorder", "classifyinquiry"}:
             intent = "order" if action == "confirmorder" else "inquiry"
             draft = await service.classify_possible_email(

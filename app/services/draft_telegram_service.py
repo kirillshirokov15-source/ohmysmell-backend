@@ -221,10 +221,83 @@ def build_draft_card(draft: DraftOrder) -> str:
     audit = (getattr(draft, "contact_details", None) or {}).get("counterparty_reconciliation")
     if audit:
         lines.append("Сверка контрагента: " + str(audit.get("evidence") or "подтверждено")[:100])
+    if _step_aware_email_cards() and _email_price_missing(draft):
+        articles = ", ".join(
+            str(getattr(item, "article", None) or item.raw_product_text)[:40]
+            for item in draft.items if getattr(item, "price", None) is None
+        )
+        lines.append(
+            f"⚠ Не настроена цена типа «{_wholesale_price_type_name()}» "
+            f"в МойСклад для {articles}. Укажите её в карточке товара, "
+            "затем нажмите «Перепроверить цену»."
+        )
     if problems:
         lines.extend(["", "⚠️ Требует проверки:"])
         lines.extend(f"• {problem}" for problem in problems)
     return "\n".join(lines)[:4000]
+
+
+def _step_aware_email_cards() -> bool:
+    return os.getenv("OMS_MANAGER_STEP_AWARE_CARDS_ENABLED", "false").strip().lower() in {
+        "true", "1", "yes", "on",
+    }
+
+
+def _email_price_missing(draft) -> bool:
+    """Price is the next blocker only when item, quantity and identity are known."""
+    items = getattr(draft, "items", None) or []
+    return bool(
+        getattr(draft, "source", None) == "email"
+        and items
+        and getattr(draft, "counterparty_id", None)
+        and all(
+            str(item.match_status) == "matched"
+            and getattr(item, "product_id", None)
+            and getattr(item, "qty", 0) > 0
+            and getattr(item, "quantity_confidence", "confirmed") == "confirmed"
+            for item in items
+        )
+        and any(getattr(item, "price", None) is None for item in items)
+    )
+
+
+def _wholesale_price_type_name() -> str:
+    from app.config.settings import settings
+    return settings.moysklad_wholesale_price_type or "Опт"
+
+
+def build_item_edit_keyboard(draft) -> dict:
+    """Correction controls are intentionally separate from the primary next step."""
+    revision = getattr(draft, "revision", None)
+    suffix = f":v{revision}" if isinstance(revision, int) else ""
+    rows = []
+    for item in (getattr(draft, "items", None) or [])[:25]:
+        rows.append([{
+            "text": f"✏️ #{item.id}: изменить количество ({item.qty})",
+            "callback_data": f"draft:qtymanual:{draft.id}:{item.id}{suffix}",
+        }])
+        rows.append([{
+            "text": f"🔎 #{item.id}: заменить товар",
+            "callback_data": f"draft:searchhint:{draft.id}:{item.id}{suffix}",
+        }])
+    if getattr(draft, "source", None) == "email":
+        rows.append([{
+            "text": "➕ Добавить товар",
+            "callback_data": f"draft:additem:{draft.id}{suffix}",
+        }])
+    rows.append([{"text": "← Вернуться к заказу",
+                  "callback_data": f"draft:refresh:{draft.id}"}])
+    return {"inline_keyboard": rows}
+
+
+def build_item_edit_card(draft) -> str:
+    lines = [f"✏️ Изменение товаров · заявка №{draft.id}",
+             "Все уже подтверждённые позиции сохраняются, пока вы их не измените."]
+    for item in getattr(draft, "items", [])[:25]:
+        lines.append(f"• #{item.id} · {item.article or item.raw_product_text} · "
+                     + (f"{item.qty} шт." if item.qty > 0 else "количество не указано"))
+    lines.append("Выберите конкретное изменение или вернитесь к заказу.")
+    return "\n".join(lines)[:3900]
 
 
 def build_draft_keyboard(draft: DraftOrder) -> dict:
@@ -278,10 +351,11 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
                     "text": "🔎 Найти товар из письма",
                     "callback_data": f"draft:reconsider:{draft.id}",
                 }])
-        rows.append([{
-            "text": "✍️ Добавить товар вручную",
-            "callback_data": f"draft:additem:{draft.id}",
-        }])
+        if not (_step_aware_email_cards() and draft.items):
+            rows.append([{
+                "text": "✍️ Добавить товар вручную",
+                "callback_data": f"draft:additem:{draft.id}",
+            }])
     if (getattr(draft, "contact_details", None) or {}).get("mail_intent") == "possible_order":
         rows.append([
             {"text": "✅ Это заказ", "callback_data": f"draft:confirmorder:{draft.id}"},
@@ -301,7 +375,8 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
         if getattr(item, "quantity_confidence", "confirmed") != "confirmed":
             rows.append([{"text": f"#{item.id}: {q}", "callback_data": f"draft:qty:{draft.id}:{item.id}:{q}"} for q in range(1,6)])
             rows.append([{"text": f"#{item.id}: ввести вручную", "callback_data": f"draft:qtymanual:{draft.id}:{item.id}"}])
-        elif hasattr(item, "qty"):
+        elif hasattr(item, "qty") and not (_step_aware_email_cards()
+                                             and getattr(draft, "source", None) == "email"):
             rows.append([{"text": f"#{item.id}: изменить количество ({item.qty})", "callback_data": f"draft:qtymanual:{draft.id}:{item.id}"}])
         for candidate_index, candidate in enumerate(item.candidates[:3]):
             selected = item.product_id == candidate.get("id")
@@ -356,6 +431,17 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
             "callback_data": f"draft:ambiguous:{draft.id}",
         }])
 
+    if (_step_aware_email_cards() and getattr(draft, "source", None) == "email"
+            and draft.items):
+        if _email_price_missing(draft):
+            rows.append([{
+                "text": f"💰 Перепроверить цену «{_wholesale_price_type_name()}»",
+                "callback_data": f"draft:recheckprice:{draft.id}",
+            }])
+        rows.append([{
+            "text": "✏️ Изменить товары (при необходимости)",
+            "callback_data": f"draft:edititems:{draft.id}",
+        }])
     final_actions = []
     if str(draft.status) == "ready" and (
             (getattr(draft, "contact_details", None) or {}).get("mail_intent")
@@ -438,6 +524,31 @@ def compact_draft_keyboard(draft, *, expanded=False):
         return full
     buttons = [button for row in full["inline_keyboard"] for button in row]
     primary = next((b for b in buttons if ":finalize:" in b["callback_data"]), None)
+    if (_step_aware_email_cards() and getattr(draft, "source", None) == "email"
+            and draft.items and str(draft.status) not in {"new", "rejected"}
+            and primary is None):
+        missing_qty = any(
+            item.qty <= 0 or getattr(item, "quantity_confidence", "confirmed") != "confirmed"
+            for item in draft.items
+        )
+        unresolved = any(
+            str(item.match_status) != "matched" or not getattr(item, "product_id", None)
+            for item in draft.items
+        )
+        if missing_qty:
+            primary = next((b for b in buttons if ":qtymanual:" in b["callback_data"]), None)
+        elif unresolved:
+            primary = {"text": "🔎 Сопоставить товар",
+                       "callback_data": f"draft:actions:{draft.id}"}
+        elif not getattr(draft, "counterparty_id", None):
+            primary = next((b for b in buttons if ":counterparty_select:" in b["callback_data"]), None)
+        elif _email_price_missing(draft):
+            primary = next((b for b in buttons if ":recheckprice:" in b["callback_data"]), None)
+        else:
+            rev = getattr(draft, "revision", None)
+            suffix = f":v{rev}" if isinstance(rev, int) else ""
+            primary = {"text": "🔄 Перепроверить заказ",
+                       "callback_data": f"draft:recheckprice:{draft.id}{suffix}"}
     if (getattr(draft, "contact_details", None) or {}).get("tilda"):
         primary = buttons[0] if buttons else None
     elif not primary and str(draft.status) not in {"new", "rejected"}:
@@ -521,7 +632,12 @@ def compact_draft_card(draft, *, expanded=False):
             or item.qty <= 0 for item in draft.items))
         lines += [("Количество: требуется подтвердить" if quantity_unknown
                    else f"Товаров: {quantity_total} шт."),
-            "Сумма: " + (telegram_rubles(draft.total) if draft.total is not None else "требует проверки"),
+            "Сумма: " + (
+                telegram_rubles(draft.total) if draft.total is not None else
+                f"нет цены «{_wholesale_price_type_name()}» в МойСклад"
+                if _step_aware_email_cards() and _email_price_missing(draft)
+                else "требует проверки"
+            ),
             "Оплата: после подтверждения заказа",
             "Наличие: требует согласования", f"Сейчас: {next_step}"]
     elif not historic_order_lines:
