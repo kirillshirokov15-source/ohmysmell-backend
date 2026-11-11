@@ -107,7 +107,7 @@ async def route(message, check_access):
             from app.services.order_desk import DeskService
             await DeskService().reply(data["draft_id"], message.from_user.id, message.chat.id, message.message_id, message.text)
             await message.answer("Сообщение передано клиенту.")
-        elif action in {"qtymanual", "searchhint", "cpmanual", "cpnew"}:
+        elif action in {"qtymanual", "searchhint", "cpmanual", "cpnew", "additem"}:
             from app.services.draft_order_service import DraftOrderService, DraftOrderError
             from app.services.draft_telegram_service import build_draft_card, build_draft_keyboard
             service = DraftOrderService()
@@ -119,6 +119,10 @@ async def route(message, check_access):
             if action in {"cpmanual", "cpnew"} and (draft.source != "email" or draft.counterparty_id):
                 pending.pop(key, None)
                 await message.answer("Контрагент уже привязан или заявка больше не доступна.")
+                return True
+            if action == "additem" and draft.source != "email":
+                pending.pop(key, None)
+                await message.answer("Товар можно добавить только в заявку из почты.")
                 return True
             if action == "cpnew":
                 from app.services.counterparty_creation_service import CounterpartyCreationService, CounterpartyCreationError
@@ -144,6 +148,9 @@ async def route(message, check_access):
                     draft = await service.search_counterparties(data["draft_id"], message.text)
                 elif action == "searchhint":
                     draft = await service.search_item(data["draft_id"], data["item_id"], message.text)
+                elif action == "additem":
+                    draft = await service.add_manual_email_item(
+                        data["draft_id"], message.text, message.from_user.id)
                 else:
                     if not message.text.isascii() or not message.text.isdecimal() or not 0 < int(message.text) <= 10000:
                         await message.answer("Введите количество от 1 до 10000.")
