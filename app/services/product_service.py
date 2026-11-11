@@ -1,3 +1,6 @@
+import asyncio
+import os
+
 from app.integrations.moysklad.async_gateway import (
     AsyncMoySkladGateway,
     ProductCatalogTTLCache,
@@ -64,11 +67,26 @@ class ProductService:
         include_supply: bool = True,
         fresh_stock: bool = False,
     ) -> list[dict]:
-        products = await self.async_gateway.get_products()
-        stores = await (self.async_gateway.get_stores(fresh=True) if fresh_stock
-                        else self.async_gateway.get_stores())
-        stock_report = await (self.async_gateway.get_stock_by_store(fresh=True)
-                              if fresh_stock else self.async_gateway.get_stock_by_store())
+        # All three calls are read-only, independent provider resources.
+        # For physical assembly's fresh-stock check they can be fetched
+        # concurrently. Stock stays fresh=True and all existing validation
+        # remains in place; this never caches stock for a warehouse write.
+        fast_assembly_reads = (
+            fresh_stock and os.getenv("OMS_MANAGER_ASSEMBLY_FASTPATH_ENABLED", "false")
+            .strip().lower() in {"1", "true", "yes", "on"}
+        )
+        if fast_assembly_reads:
+            products, stores, stock_report = await asyncio.gather(
+                self.async_gateway.get_products(),
+                self.async_gateway.get_stores(fresh=True),
+                self.async_gateway.get_stock_by_store(fresh=True),
+            )
+        else:
+            products = await self.async_gateway.get_products()
+            stores = await (self.async_gateway.get_stores(fresh=True) if fresh_stock
+                            else self.async_gateway.get_stores())
+            stock_report = await (self.async_gateway.get_stock_by_store(fresh=True)
+                                  if fresh_stock else self.async_gateway.get_stock_by_store())
         catalog = self._build_catalog(
             products,
             stores,
