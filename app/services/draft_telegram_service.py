@@ -447,6 +447,10 @@ def compact_draft_keyboard(draft, *, expanded=False):
                 primary = next((b for b in buttons if ":additem:" in b["callback_data"]), None)
         elif (getattr(draft, "contact_details", None) or {}).get("mail_intent") == "inquiry":
             primary = next((b for b in buttons if ":reconsider:" in b["callback_data"]), None)
+        if (primary is None and getattr(draft, "source", None) == "email"
+                and any(getattr(i, "quantity_confidence", "confirmed") != "confirmed"
+                        or i.qty <= 0 for i in draft.items)):
+            primary = next((b for b in buttons if ":qtymanual:" in b["callback_data"]), None)
         wording = "🧾 Проверить заказ" if (
             getattr(draft, "source", None) == "email"
             and (getattr(draft, "contact_details", None) or {}).get("mail_intent") != "inquiry"
