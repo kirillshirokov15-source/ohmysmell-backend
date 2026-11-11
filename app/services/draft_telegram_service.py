@@ -255,6 +255,7 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
                                       else "🧾 Разобрать как заказ из письма"),
                           "callback_data": f"draft:reconsider:{draft.id}"}])
         rows.extend([
+            [{"text": "✍️ Добавить товар вручную", "callback_data": f"draft:additem:{draft.id}"}],
             [{"text": "Закрыть обращение", "callback_data": f"draft:reject:{draft.id}"}],
             [{"text": "Обновить", "callback_data": f"draft:refresh:{draft.id}"}],
         ])
@@ -264,6 +265,23 @@ def build_draft_keyboard(draft: DraftOrder) -> dict:
                     button["callback_data"] += f":v{draft.revision}"
         return {"inline_keyboard": rows}
     rows = []
+    if getattr(draft, "source", None) == "email":
+        if not draft.items:
+            from app.services.email_parser import EmailParser
+            parsed = EmailParser().parse_message(
+                getattr(draft, "subject", None),
+                inquiry_original_body(draft),
+                sender_name=getattr(draft, "customer_name", None),
+            )
+            if parsed.items and parsed.intent in {"order", "possible_order"}:
+                rows.append([{
+                    "text": "🔎 Найти товар из письма",
+                    "callback_data": f"draft:reconsider:{draft.id}",
+                }])
+        rows.append([{
+            "text": "✍️ Добавить товар вручную",
+            "callback_data": f"draft:additem:{draft.id}",
+        }])
     if (getattr(draft, "contact_details", None) or {}).get("mail_intent") == "possible_order":
         rows.append([
             {"text": "✅ Это заказ", "callback_data": f"draft:confirmorder:{draft.id}"},
@@ -423,7 +441,11 @@ def compact_draft_keyboard(draft, *, expanded=False):
     if (getattr(draft, "contact_details", None) or {}).get("tilda"):
         primary = buttons[0] if buttons else None
     elif not primary and str(draft.status) not in {"new", "rejected"}:
-        if (getattr(draft, "contact_details", None) or {}).get("mail_intent") == "inquiry":
+        if getattr(draft, "source", None) == "email" and not draft.items:
+            primary = next((b for b in buttons if ":reconsider:" in b["callback_data"]), None)
+            if primary is None:
+                primary = next((b for b in buttons if ":additem:" in b["callback_data"]), None)
+        elif (getattr(draft, "contact_details", None) or {}).get("mail_intent") == "inquiry":
             primary = next((b for b in buttons if ":reconsider:" in b["callback_data"]), None)
         wording = "🧾 Проверить заказ" if (
             getattr(draft, "source", None) == "email"
@@ -489,7 +511,12 @@ def compact_draft_card(draft, *, expanded=False):
     if not inquiry:
         if tentative:
             lines.append("Сначала подтвердите: это заказ или вопрос.")
-        lines += [f"Товаров: {sum(max(i.qty, 0) for i in draft.items)} шт.",
+        quantity_total = sum(max(i.qty, 0) for i in draft.items)
+        quantity_unknown = (not draft.items or any(
+            getattr(item, "quantity_confidence", "confirmed") != "confirmed"
+            or item.qty <= 0 for item in draft.items))
+        lines += [("Количество: требуется подтвердить" if quantity_unknown
+                   else f"Товаров: {quantity_total} шт."),
             "Сумма: " + (telegram_rubles(draft.total) if draft.total is not None else "требует проверки"),
             "Оплата: после подтверждения заказа",
             "Наличие: требует согласования", f"Сейчас: {next_step}"]
