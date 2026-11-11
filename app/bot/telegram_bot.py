@@ -467,7 +467,7 @@ async def draft_callback_handler(callback: CallbackQuery):
                 outcome = "success"
                 return
         elif action == "reconsider":
-            draft = await service.reconsider_inquiry_subject(
+            draft = await service.recover_missing_email_items(
                 draft_id, callback.from_user.id)
         elif action in {"confirmorder", "classifyinquiry"}:
             intent = "order" if action == "confirmorder" else "inquiry"
@@ -481,7 +481,7 @@ async def draft_callback_handler(callback: CallbackQuery):
         elif action == "qty":
             draft = await service.repository.correct_quantity(draft_id, int(parts[3]), int(parts[4]), callback.from_user.id)
             draft = await service.review(draft_id, draft)
-        elif action in {"qtymanual", "searchhint", "cpmanual", "cpnew"}:
+        elif action in {"qtymanual", "searchhint", "cpmanual", "cpnew", "additem"}:
             from app.bot.manager_inputs import prompt_input
             from aiogram.types import Message as TelegramMessage
             if not isinstance(callback.message, TelegramMessage):
@@ -495,6 +495,9 @@ async def draft_callback_handler(callback: CallbackQuery):
             if action in {"cpmanual", "cpnew"}:
                 if current.source != "email" or current.counterparty_id:
                     raise DraftOrderError("Поиск контрагента доступен только для оптовой заявки")
+            elif action == "additem":
+                if current.source != "email":
+                    raise DraftOrderError("Добавление товара доступно только для почтовой заявки")
             else:
                 item_id = int(parts[3])
                 if not any(item.id == item_id for item in current.items):
@@ -507,6 +510,7 @@ async def draft_callback_handler(callback: CallbackQuery):
                 "searchhint": "Введите название товара или артикул для поиска в МойСклад.",
                 "cpmanual": "Введите название, email или ИНН контрагента. Поиск не создаёт новую карточку.",
                 "cpnew": "Введите полное юридическое название. Сначала проверим дубли, затем отдельно подтвердите создание.",
+                "additem": "Введите артикул или название товара, например KMU024. Если количество известно, можно написать KMU024 – 2 шт. Без количества предложу уточнить его отдельно.",
             }[action]
             message = callback.message.model_copy(update={"from_user": callback.from_user}).as_(callback.bot)
             await prompt_input(message, action, state, label)

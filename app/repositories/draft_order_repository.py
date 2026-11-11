@@ -56,6 +56,70 @@ def _customer_mail_filter(kind: str):
 class DraftOrderRepository:
     expected_revision = None
 
+    async def add_email_items(self, draft_id, item_data, actor, *, from_original=False):
+        """Recover/append items in the SAME draft, never create a second order.
+
+        Runs under row lock and revision check. A button based on the original
+        email re-parses the saved source before committing, so stale suggestions
+        cannot overwrite a changed draft. No stock or checkout operations.
+        """
+        from app.models.manager import Manager
+        from app.services.email_parser import EmailParser
+        if not 1 <= len(item_data) <= 100:
+            raise InvalidOrderTransitionError("Нужно указать от 1 до 100 товарных позиций")
+        async with async_session() as session, session.begin():
+            authorized = await session.scalar(select(Manager.id).where(
+                Manager.telegram_id == actor, Manager.is_active.is_(True)))
+            if not authorized:
+                raise InvalidOrderTransitionError("Нет доступа менеджера")
+            draft = await self._locked(session, draft_id)
+            if draft is None:
+                raise InvalidOrderTransitionError("Заявка не найдена")
+            self._ensure_editable(draft)
+            if draft.source != "email":
+                raise InvalidOrderTransitionError("Добавление вручную доступно для почтовых заявок")
+            if from_original:
+                if draft.items:
+                    raise InvalidOrderTransitionError("Позиции уже добавлены. Обновите карточку")
+                result = EmailParser().parse_message(
+                    draft.subject,
+                    getattr(draft.inbound_message, "body_text", None) or "",
+                    sender_name=draft.customer_name)
+                if not result.items or result.intent not in {"order", "possible_order"}:
+                    raise InvalidOrderTransitionError(
+                        "Автоматически распознать позиции не удалось. Добавьте артикул вручную"
+                    )
+                if [(i.raw_product_text, i.qty, i.quantity_confidence)
+                    for i in result.items] != [
+                    (i["raw_product_text"], i["qty"], i["quantity_confidence"])
+                    for i in item_data]:
+                    raise InvalidOrderTransitionError("Содержимое письма изменилось, обновите карточку")
+            existing = {str(i.raw_product_text).strip().casefold() for i in draft.items}
+            seen = set()
+            for row in item_data:
+                title = str(row.get("raw_product_text") or "").strip()
+                quantity = row.get("qty")
+                if (not 2 <= len(title) <= 450 or title.casefold() in existing
+                        or title.casefold() in seen
+                        or type(quantity) is not int or not 0 <= quantity <= 100000):
+                    raise InvalidOrderTransitionError(
+                        "Позиция уже существует или артикул/количество некорректны"
+                    )
+                seen.add(title.casefold())
+            self._invalidate(draft)
+            draft.contact_details = {
+                **(draft.contact_details or {}), "mail_intent": "order",
+                "email_items_recovered_by": actor,
+                "email_items_recovery_source": "original" if from_original else "manager",
+            }
+            draft.review_notes = (
+                "Позиции добавлены в исходную почтовую заявку. "
+                "Подтвердите количество, товар МойСклад и стоимость"
+            )
+            for row in item_data:
+                draft.items.append(DraftOrderItem(**row))
+            return draft
+
     async def reconsider_email_subject(self, draft_id, item_data, actor):
         """Turn a previously misclassified inquiry into a tentative item.
 

@@ -557,6 +557,70 @@ class DraftOrderService:
             raise DraftOrderError("Черновик не найден")
         return draft
 
+    async def _new_email_item_data(self, extracted):
+        match = await self.matching_service.match_async(
+            extracted.raw_product_text, extracted.qty
+        )
+        product = match.product
+        return {
+            "raw_product_text": extracted.raw_product_text,
+            "qty": extracted.qty,
+            "quantity_confidence": extracted.quantity_confidence,
+            "quantity_evidence": extracted.quantity_evidence,
+            "match_status": match.status,
+            "product_id": product["id"] if product else None,
+            "product_name": product.get("name") if product else None,
+            "article": product.get("article") if product else None,
+            "price": None, "item_total": None,
+            "candidates": [candidate.__dict__ for candidate in match.candidates],
+        }
+
+    async def recover_missing_email_items(self, draft_id, actor):
+        """Parse the stored source on demand, without guessing a missing qty."""
+        from app.services.email_parser import EmailParser
+        current = await self._get_required(draft_id)
+        if current.source != "email" or current.finalized_order_id or current.items:
+            raise DraftOrderError("Заявка уже содержит товары либо недоступна")
+        parsed = EmailParser().parse_message(
+            current.subject,
+            getattr(current.inbound_message, "body_text", None) or "",
+            sender_name=current.customer_name)
+        if not parsed.items or parsed.intent not in {"order", "possible_order"}:
+            raise DraftOrderError(
+                "Товар по письму не определён. Нажмите «Добавить товар вручную»"
+            )
+        if len(parsed.items) > 100:
+            raise DraftOrderError("Слишком много позиций для автоматического разбора")
+        rows = [await self._new_email_item_data(x) for x in parsed.items]
+        try:
+            await self.repository.add_email_items(
+                draft_id, rows, actor, from_original=True)
+        except InvalidOrderTransitionError as error:
+            raise DraftOrderError(str(error)) from error
+        return await self.review(draft_id)
+
+    async def add_manual_email_item(self, draft_id, raw_text, actor):
+        """Manager-entered SKU/name. Quantity stays unknown until confirmed."""
+        from app.services.email_parser import EmailParser, ExtractedOrderLine
+        clean = " ".join((raw_text or "").split())
+        if (not 2 <= len(clean) <= 250 or "@" in clean or "://" in clean
+                or "?" in clean):
+            raise DraftOrderError("Введите артикул или название товара (без email или ссылки)")
+        parsed = EmailParser._line_qty(clean)
+        if parsed is None:
+            parsed = ExtractedOrderLine(
+                clean, 0, "unknown", "Артикул/название введено менеджером"
+            )
+        if parsed.qty > 10000:
+            raise DraftOrderError("Уточните количество от 1 до 10000")
+        row = await self._new_email_item_data(parsed)
+        try:
+            await self.repository.add_email_items(
+                draft_id, [row], actor, from_original=False)
+        except InvalidOrderTransitionError as error:
+            raise DraftOrderError(str(error)) from error
+        return await self.review(draft_id)
+
     async def reconsider_inquiry_subject(self, draft_id, actor):
         """Read original email; suggest product but never infer purchased quantity."""
         from app.services.email_parser import EmailParser
