@@ -545,8 +545,10 @@ def compact_draft_keyboard(draft, *, expanded=False):
         elif _email_price_missing(draft):
             primary = next((b for b in buttons if ":recheckprice:" in b["callback_data"]), None)
         else:
+            rev = getattr(draft, "revision", None)
+            suffix = f":v{rev}" if isinstance(rev, int) else ""
             primary = {"text": "🔄 Перепроверить заказ",
-                       "callback_data": f"draft:recheckprice:{draft.id}"}
+                       "callback_data": f"draft:recheckprice:{draft.id}{suffix}"}
     if (getattr(draft, "contact_details", None) or {}).get("tilda"):
         primary = buttons[0] if buttons else None
     elif not primary and str(draft.status) not in {"new", "rejected"}:
