@@ -338,6 +338,18 @@ class EmailParser:
             seen = {self._normalize(i.raw_product_text) for i in item_rows}
             item_rows.extend(i for i in subject_rows
                              if self._normalize(i.raw_product_text) not in seen)
+        # A bare SKU in a wholesale message is a product candidate even when
+        # the sender did not state a quantity. Never infer a purchase quantity.
+        # Examples: subject="Заказ", body="KMU024".
+        if not item_rows:
+            code = body.strip()
+            if (3 <= len(code) <= 40 and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", code)
+                    and re.search(r"[A-Za-z]", code) and re.search(r"\d", code)):
+                sku_item = ExtractedOrderLine(
+                    code, 0, "unknown", f"Артикул {code} · количество не указано"
+                )
+                intent = "order" if (order_command or self._order_signal.search(subj)) else "possible_order"
+                return ClassifiedEmail(intent, (sku_item,))
         if not item_rows and not order_command and not self._order_signal.search(subj):
             candidate = self._bare_subject_product(subj, sender_name=sender_name)
             if candidate:
