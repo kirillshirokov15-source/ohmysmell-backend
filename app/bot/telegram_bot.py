@@ -1087,8 +1087,19 @@ async def order_callback(callback):
                         revision = order.revision
             request = OrderAction(action=action, expected_revision=revision,
                 idempotency_key=f"tg:{callback.from_user.id}:{callback.data}", **extra)
+            assembly_fast = (
+                action == "assembled"
+                and os.getenv("OMS_MANAGER_ASSEMBLY_FASTPATH_ENABLED", "false")
+                .strip().lower() in {"1", "true", "yes", "on"}
+            )
+            assembly_stage_started = perf_counter()
+            assembled_prefetched_plans = None
             order = await OrderOperations().act(order_id, callback.from_user.id, request)
             if action == "assembled":
+                log_event(logger, "manager_assembly_phase",
+                          order_id=order_id, phase="status_commit",
+                          duration_ms=_duration_ms(assembly_stage_started))
+                assembly_stage_started = perf_counter()
                 # After physical picking, reserve OWN stock in real MoySklad.
                 # X/mixed orders are processed by the separate idempotent
                 # post-pick X worker. Never send customer messages for retries.
@@ -1121,12 +1132,29 @@ async def order_callback(callback):
                                                        "Сначала проверьте журнал документов.")
                             log_event(logger, "own_reservation_pending",
                                       order_id=order_id, result=type(error).__name__)
-                        order = await get_order(order_id)
-        plans = await shipments_for(order_id)
+                        if assembly_fast:
+                            # Both reads are from committed, fresh PostgreSQL
+                            # snapshots AFTER the warehouse operation. No
+                            # stock checks, ledger checks or writes are skipped.
+                            order, assembled_prefetched_plans = await asyncio.gather(
+                                get_order(order_id), shipments_for(order_id))
+                        else:
+                            order = await get_order(order_id)
+                log_event(logger, "manager_assembly_phase", order_id=order_id,
+                          phase="reservation_and_validation",
+                          duration_ms=_duration_ms(assembly_stage_started))
+        render_started = perf_counter()
+        plans = (assembled_prefetched_plans
+                 if locals().get("assembled_prefetched_plans") is not None
+                 else await shipments_for(order_id))
         text = await manager_order_display(order, plans, details=action == "details")
         if locals().get("reservation_warning"):
             text += "\n⚠️ Сборка подтверждена, но резерв не создан/не подтверждён: " + reservation_warning
         keyboard = InlineKeyboardMarkup.model_validate(order_keyboard(order, plans, expanded=action in {"details", "actions"}))
+        if action == "assembled":
+            log_event(logger, "manager_assembly_phase", order_id=order_id,
+                      phase="render", duration_ms=_duration_ms(render_started))
+        publish_started = perf_counter()
         try:
             if enabled():
                 from app.services.telegram_cards import publish
@@ -1137,6 +1165,9 @@ async def order_callback(callback):
             if enabled():
                 raise
             await callback.message.answer(text, reply_markup=keyboard)
+        if action == "assembled":
+            log_event(logger, "manager_assembly_phase", order_id=order_id,
+                      phase="telegram_publish", duration_ms=_duration_ms(publish_started))
         log_event(logger, "manager_order_callback", order_id=order_id, manager_id=callback.from_user.id,
             action=action, result="success", duration_ms=_duration_ms(started))
     except (ValueError, OperationError) as error:
