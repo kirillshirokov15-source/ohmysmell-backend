@@ -69,7 +69,7 @@ def message_currency(provider, payload, subject, filename):
     return next(iter(declared)) if len(declared) == 1 and declared <= {"RUB", "USD"} else None
 
 
-def scan(configured, overrides):
+def scan(configured, overrides, default_currency="USD"):
     provider = SupplierGmailProvider()
     provider.service = provider._build_service()
     api = provider.service.users().messages()
@@ -137,6 +137,8 @@ def scan(configured, overrides):
                     fallback = overrides.get(sender_key) or configured.get(sender)
                     if not fallback:
                         fallback = message_currency(provider, payload, subject, filename)
+                    if not fallback:
+                        fallback = default_currency
                     sheet = find_price_sheet(raw, filename, subject=subject, verified_currency=fallback)
                 except Exception as error:
                     reason["unreadable_" + type(error).__name__] += 1
@@ -233,13 +235,13 @@ async def publish(entry, index):
         return {"status": "imported", "rows": len(rows), "catalog_sku_matches": matched, "supplier_id": supplier.id}
 
 
-async def main(approved, overrides):
+async def main(approved, overrides, default_currency):
     prepare_secret_files("supplier")
     async with async_session() as session:
         values = (await session.execute(select(Supplier.email, BuyingSupplier.currency).join(
             BuyingSupplier, BuyingSupplier.supplier_id == Supplier.id))).all()
     configured = {email.casefold(): currency for email, currency in values if email}
-    plan = await asyncio.to_thread(scan, configured, overrides)
+    plan = await asyncio.to_thread(scan, configured, overrides, default_currency)
     if not approved:
         return
     try:
@@ -283,5 +285,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--apply-senders", default="")
     parser.add_argument("--currencies", default="{}")
+    parser.add_argument("--default-currency", choices=("USD", "RUB"), default="USD",
+                        help="Fallback when neither the workbook nor its sender specifies the currency")
     args = parser.parse_args()
-    asyncio.run(main(set(filter(None, args.apply_senders.split(","))), json.loads(args.currencies)))
+    asyncio.run(main(set(filter(None, args.apply_senders.split(","))), json.loads(args.currencies), args.default_currency))
