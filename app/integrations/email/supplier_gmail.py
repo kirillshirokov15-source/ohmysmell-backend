@@ -1,7 +1,10 @@
 """Supplier-only Gmail reader. It has no wholesale intake method or customer cursor."""
+import logging
 from app.integrations.email.gmail_provider import GmailEmailProvider, ReadOnlyHttp
 from app.integrations.email.gmail_auth import load_gmail_credentials
 from app.integrations.email.mailboxes import mailbox, verify_identity, expected_email
+
+logger = logging.getLogger(__name__)
 
 
 class SupplierGmailProvider:
@@ -12,6 +15,7 @@ class SupplierGmailProvider:
         self.service = service
         self.user_id = mailbox('supplier').user_id
         self.account = expected_email('supplier')
+        self.price_attachments_skipped = 0
 
     def _build_service(self):
         from googleapiclient.discovery import build
@@ -32,9 +36,15 @@ class SupplierGmailProvider:
 
     def price_attachments(self, page_token=None):
         import base64
+        import binascii
         import re
         from email.utils import parseaddr
         from app.services.buying_excel import MAX_UPLOAD
+        self.price_attachments_skipped = 0
+        def skip(reason):
+            self.price_attachments_skipped += 1
+            # Do not log message contents, filenames or OAuth credentials.
+            logger.warning('Supplier price attachment skipped: %s', reason)
         service = self.service or self._build_service()
         verify_identity('supplier', service.users().getProfile(userId=self.user_id).execute())
         api=service.users().messages()
@@ -67,17 +77,25 @@ class SupplierGmailProvider:
                     if len(attachments)>=50:
                         raise ValueError('Attachment count exceeds page limit')
                     if not 0<body.get('size',0)<=MAX_UPLOAD:
-                        raise ValueError('Price attachment exceeds size limit')
+                        skip('declared_size')
+                        return
                     raw=api.attachments().get(userId=self.user_id,messageId=entry['id'],id=aid).execute()
                     encoded=raw.get('data','')
                     if len(encoded)>MAX_UPLOAD*2:
-                        raise ValueError('Attachment response exceeds size limit')
-                    data=base64.urlsafe_b64decode(encoded+'='*((-len(encoded))%4))
-                    if len(data)>MAX_UPLOAD:
-                        raise ValueError('Attachment exceeds size limit')
+                        skip('encoded_size')
+                        return
+                    try:
+                        data=base64.b64decode(encoded+'='*((-len(encoded))%4), altchars=b'-_', validate=True)
+                    except (binascii.Error, ValueError):
+                        skip('invalid_encoding')
+                        return
+                    if not 0<len(data)<=MAX_UPLOAD:
+                        skip('decoded_size')
+                        return
                     attachments.append(dict(account=self.account,message_id=entry['id'],attachment_id=aid,
                         sender=sender,authenticated=True,filename=filename,data=data))
                 for child in part.get('parts',[]):
                     visit(child,depth+1)
             visit(payload)
         return attachments,page.get('nextPageToken')
+
