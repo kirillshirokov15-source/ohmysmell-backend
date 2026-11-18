@@ -18,7 +18,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app.database.session import async_session
 from app.integrations.email.secret_files import prepare_secret_files
 from app.integrations.email.supplier_gmail import SupplierGmailProvider
-from app.integrations.email.supplier_workbooks import MAX_BYTES, find_price_sheet, safe_text
+from app.integrations.email.supplier_workbooks import MAX_BYTES, TITLE, currencies, find_price_sheet, safe_text
 from app.integrations.moysklad.client import MoySkladClient
 from app.models.buying import BuyingImport, BuyingOffer, BuyingProduct, BuyingSupplier
 from app.models.supply import ProductSupply, Supplier, SupplierOffer
@@ -50,7 +50,26 @@ def column_name(index):
     return name
 
 
-def scan(configured, approved, overrides):
+PRICE_STATEMENT = re.compile(
+    r"(?:\bцен(?:а|ы|ники)\s+(?:(?:указан[аы]|выражен[аы]|приведен[аы]|приведён[аы]|представлен[аы])\s+)?в\s+"
+    r"|\bprices?\s+(?:(?:are|listed)\s+){0,2}in\s+)([^\n.!?]{1,32})", re.I
+)
+
+
+def message_currency(provider, payload, subject, filename):
+    declared = set()
+    for value in (subject, PurePath(filename).stem):
+        if TITLE.search(value):
+            declared |= currencies(value)
+    body = provider._body_text(payload)[:8000]
+    # Stop at commonly quoted message / signature separators.
+    body = re.split(r"(?im)^(?:>|--\s*$|отправлено:|from:|[- ]{2,}original message)", body, maxsplit=1)[0]
+    for match in PRICE_STATEMENT.finditer(body):
+        declared |= currencies(match[1])
+    return next(iter(declared)) if len(declared) == 1 and declared <= {"RUB", "USD"} else None
+
+
+def scan(configured, overrides):
     provider = SupplierGmailProvider()
     provider.service = provider._build_service()
     api = provider.service.users().messages()
@@ -97,10 +116,7 @@ def scan(configured, approved, overrides):
                 ext = PurePath(filename).suffix.casefold()
                 if not attachment_id or ext not in {".xlsx", ".xls", ".csv"}:
                     continue
-                source_key = digest("supplier-price:" + provider.account + ":" + item["id"] + ":" + attachment_id)
-                ref = digest(item["id"] + ":" + attachment_id)[:12]
-                if approved and ref not in approved:
-                    continue
+                ref = digest(item["id"] + ":" + part.get("partId", "") + ":" + filename)[:12]
                 if "/" in filename or "\\" in filename or len(filename) > 255:
                     reason["invalid_filename"] += 1
                     continue
@@ -117,8 +133,11 @@ def scan(configured, approved, overrides):
                         reason["attachment_size"] += 1
                         continue
                     raw = base64.b64decode(encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True)
-                    sheet = find_price_sheet(raw, filename, subject=subject,
-                                             verified_currency=overrides.get(sender_key, configured.get(sender)))
+                    source_key = digest("supplier-price:" + provider.account + ":" + sender + ":" + hashlib.sha256(raw).hexdigest())
+                    fallback = overrides.get(sender_key) or configured.get(sender)
+                    if not fallback:
+                        fallback = message_currency(provider, payload, subject, filename)
+                    sheet = find_price_sheet(raw, filename, subject=subject, verified_currency=fallback)
                 except Exception as error:
                     reason["unreadable_" + type(error).__name__] += 1
                     emit("PRICE_FILE_SKIPPED", {"sender_key": sender_key, "ref": ref, "type": type(error).__name__})
@@ -138,8 +157,6 @@ def scan(configured, approved, overrides):
                     picked[sender_key] = (score, entry)
         cursor = page.get("nextPageToken")
         if not cursor:
-            break
-        if approved and approved <= {entry["ref"] for _, entry in picked.values()}:
             break
     result = [entry for _, entry in picked.values()]
     for entry in result:
@@ -222,7 +239,7 @@ async def main(approved, overrides):
         values = (await session.execute(select(Supplier.email, BuyingSupplier.currency).join(
             BuyingSupplier, BuyingSupplier.supplier_id == Supplier.id))).all()
     configured = {email.casefold(): currency for email, currency in values if email}
-    plan = await asyncio.to_thread(scan, configured, approved, overrides)
+    plan = await asyncio.to_thread(scan, configured, overrides)
     if not approved:
         return
     try:
@@ -240,7 +257,7 @@ async def main(approved, overrides):
     totals = Counter()
     supplier_ids = []
     for entry in plan:
-        if entry["ref"] not in approved or not entry["sheet"].currency:
+        if entry["sender_key"] not in approved or not entry["sheet"].currency:
             continue
         try:
             result = await publish(entry, index)
@@ -264,7 +281,7 @@ async def main(approved, overrides):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--apply", default="")
+    parser.add_argument("--apply-senders", default="")
     parser.add_argument("--currencies", default="{}")
     args = parser.parse_args()
-    asyncio.run(main(set(filter(None, args.apply.split(","))), json.loads(args.currencies)))
+    asyncio.run(main(set(filter(None, args.apply_senders.split(","))), json.loads(args.currencies)))
