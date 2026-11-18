@@ -30,13 +30,14 @@ class PriceSheet:
     currency: str | None
     rows: list
     skipped: int
+    currency_evidence: int
 
 
 def currencies(text):
     text = re.sub(r"\[\$-[-\w]+\]", "", (text or "").casefold())
     text = re.sub(r"-[0-9a-f]{3,8}(?=\])", "", text)
     values = set()
-    if re.search(r"₽|(?<![\w])(?:rub|rur|руб(?:\.|ль|лей|ля)?)(?!\w)", text):
+    if re.search(r"₽|(?<![\w])(?:rub|rur|руб(?:\.|ль|лей|ля)?)(?!\w)|\[\$р\.?(?:\]|-)", text):
         values.add("RUB")
     if re.search(r"(?<![\w])(?:usd|долл(?:\.|ар(?:ов|а)?)?)(?!\w)|(?<![\[a-z])\$|\[\$\$", text):
         values.add("USD")
@@ -135,7 +136,8 @@ def find_price_sheet(data, filename, *, subject="", verified_currency=None):
         if len(rows) > MAX_ROWS:
             continue
         heading = [[normalize(safe_text(v)) for v, _ in row] for row in rows[:22]]
-        title = " ".join(value for row in heading[:8] for value in row if value)
+        title_cells = [value for row in heading[:8] for value in row if value]
+        title = " ".join(title_cells)
         if OTHER.search(title) and not TITLE.search(title):
             continue
         for header_idx, header in enumerate(heading):
@@ -164,8 +166,11 @@ def find_price_sheet(data, filename, *, subject="", verified_currency=None):
                         if price_minor(value, None) is not None:
                             inferred |= currencies(fmt) | currencies(safe_text(value))
                 marks = explicit | inferred
+                evidence = 3 if explicit else 2 if inferred else 0
                 if not marks:
-                    marks = currencies(title)
+                    marks = set().union(*(currencies(cell) for cell in title_cells if TITLE.search(cell)))
+                    if marks:
+                        evidence = 1
                     if not marks and verified_currency:
                         marks = {verified_currency}
                 currency = next(iter(marks)) if len(marks) == 1 and marks <= {"RUB", "USD"} else None
@@ -193,7 +198,7 @@ def find_price_sheet(data, filename, *, subject="", verified_currency=None):
                     del records[key]
                 if len(records) >= 5:
                     candidates.append(PriceSheet(sheet, header_idx + 2, name_col, price_col, sku_col, currency,
-                                                 list(records.values()), duplicated + len(conflicts)))
+                                                 list(records.values()), duplicated + len(conflicts), evidence))
     if not candidates:
         return None
-    return max(candidates, key=lambda p: (p.currency is not None, len(p.rows)))
+    return max(candidates, key=lambda p: (p.currency is not None, p.currency_evidence, len(p.rows)))

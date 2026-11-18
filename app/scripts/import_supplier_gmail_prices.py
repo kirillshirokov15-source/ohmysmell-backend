@@ -64,7 +64,7 @@ def scan(configured, approved, overrides):
         for item in page.get("messages", []):
             try:
                 message = api.get(userId=provider.user_id, id=item["id"], format="full").execute()
-            except Exception as error:
+            except Exception:
                 reason["message_unavailable"] += 1
                 continue
             if set(message.get("labelIds", [])) & {"SENT", "DRAFT", "SPAM", "TRASH"}:
@@ -148,7 +148,8 @@ def scan(configured, approved, overrides):
                             "date": entry["received"].isoformat(), "ext": PurePath(entry["filename"]).suffix.lower(),
                             "sheet": p.sheet, "name": column_name(p.name_column), "price": column_name(p.price_column),
                             "sku": column_name(p.sku_column) if p.sku_column is not None else None,
-                            "currency": p.currency, "rows": len(p.rows), "duplicate_or_conflict_rows": p.skipped})
+                            "currency": p.currency, "currency_evidence": p.currency_evidence, "rows": len(p.rows),
+                            "duplicate_or_conflict_rows": p.skipped})
     emit("PRICE_SCAN_DONE", {"sources": len(result), "attachment_formats": sizes, "excluded": reason, "more_archive": bool(cursor)})
     return result
 
@@ -237,6 +238,7 @@ async def main(approved, overrides):
                 if sku:
                     index[normalize(str(sku))].add(item["id"])
     totals = Counter()
+    supplier_ids = []
     for entry in plan:
         if entry["ref"] not in approved or not entry["sheet"].currency:
             continue
@@ -248,7 +250,15 @@ async def main(approved, overrides):
         totals[result["status"]] += 1
         if result["status"] in {"imported", "already_imported"}:
             totals["offers"] += result["rows"]
+            supplier_ids.append(result["supplier_id"])
         emit("PRICE_LOAD", {"ref": entry["ref"], "supplier": entry["name"], **result})
+    async with async_session() as session:
+        visible = await session.scalar(select(func.count()).select_from(SupplierOffer).join(
+            BuyingOffer, BuyingOffer.offer_id == SupplierOffer.id).join(
+            Supplier, Supplier.id == SupplierOffer.supplier_id).join(
+            BuyingProduct, BuyingProduct.product_id == SupplierOffer.product_id).where(
+            Supplier.id.in_(supplier_ids), Supplier.status == "active", SupplierOffer.active.is_(True)))
+    totals["visible_catalog_offers"] = visible
     emit("PRICE_IMPORT_DONE", {**totals, "approved": len(approved)})
 
 
