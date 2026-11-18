@@ -1,6 +1,7 @@
 """Independent supplier reply worker. Never enters customer ingestion."""
 import asyncio
 import logging
+import os
 from app.integrations.email.supplier_gmail import SupplierGmailProvider
 from app.workers.supplier_replies import SupplierReplyPoller
 
@@ -25,6 +26,8 @@ class SupplierEmailWorker:
         # Check identity/auth even when there are no live purchase threads yet.
         await asyncio.to_thread(self.provider.readonly_smoke_check, 1)
         count = await self.poller.run_once()
+        if os.getenv("SUPPLIER_PRICE_AUTO_IMPORT_ENABLED", "true").casefold() != "true":
+            return dict(received=count, processed=count, failed=0, skipped=0)
         from app.services.supplier_price_import import import_attachment
         from app.database.session import async_session
         from app.integrations.moysklad.async_gateway import AsyncMoySkladGateway
