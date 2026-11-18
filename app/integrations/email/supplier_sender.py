@@ -44,7 +44,13 @@ class GmailSupplierSender:
             from google_auth_httplib2 import AuthorizedHttp
             import httplib2
             from app.integrations.email.gmail_auth import load_gmail_credentials
+            from app.integrations.email.secret_files import prepare_secret_files
             from app.integrations.http_tls import verified_ca_bundle
+            # Buying API runs separately from the supplier reply worker.
+            # Resolve the dedicated supplier OAuth secrets in THIS process
+            # before loading its credentials; never reuse customer Gmail files.
+            # Preserve an already refreshed local token on subsequent calls.
+            prepare_secret_files('supplier', overwrite_json=False)
             credentials=load_gmail_credentials(allow_interactive=False,mailbox_role='supplier')
             self.service=build('gmail','v1',http=AuthorizedHttp(credentials,http=httplib2.Http(
                 timeout=20,ca_certs=verified_ca_bundle())),cache_discovery=False)
