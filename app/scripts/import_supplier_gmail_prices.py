@@ -3,7 +3,7 @@ import argparse
 import asyncio
 import base64
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parseaddr
 import hashlib
 import json
@@ -77,9 +77,10 @@ def scan(configured, overrides, default_currency="USD", *, known_only=False):
     sizes = Counter()
     candidates = Counter()
     latest = {}
-    for _ in range(3):
+    for _ in range(8 if known_only else 3):
         page = api.list(userId=provider.user_id, q="newer_than:8d has:attachment {filename:xlsx filename:xls filename:csv} -in:sent -in:drafts",
                         maxResults=30, **({"pageToken": cursor} if cursor else {})).execute()
+        covered_all = False
         for item in page.get("messages", []):
             try:
                 message = api.get(userId=provider.user_id, id=item["id"], format="full").execute()
@@ -107,6 +108,10 @@ def scan(configured, overrides, default_currency="USD", *, known_only=False):
                 reason["sender_not_verified"] += 1
                 continue
             received = datetime.fromtimestamp(int(message["internalDate"]) / 1000, timezone.utc)
+            if (known_only and len(picked) == len(configured) and picked
+                    and received.date() < min(score[0] for score, _ in picked.values())):
+                covered_all = True
+                break
             sender_key = digest(sender)[:12]
             subject = headers["subject"][0] if headers["subject"] else ""
             if sender_key in latest and received.date() < latest[sender_key]:
@@ -157,7 +162,7 @@ def scan(configured, overrides, default_currency="USD", *, known_only=False):
                 if current is None or score > current[0]:
                     picked[sender_key] = (score, entry)
         cursor = page.get("nextPageToken")
-        if not cursor:
+        if covered_all or not cursor:
             break
     result = [entry for _, entry in picked.values()]
     for entry in result:
@@ -263,13 +268,6 @@ async def publish(entry, index):
         await session.flush()
         for group in chunks(history):
             await session.execute(insert(BuyingPriceHistory), group)
-        sample = next((row for row in rows if "jacques bogart one man show" in row["name"].casefold()
-                       and re.search(r"(?<!\d)3\s*(?:ml|мл)\b", row["name"], re.I)
-                       and "бальзам" in row["name"].casefold()), None)
-        if sample and "прокофьев" in supplier.name.casefold():
-            emit("PRICE_ROW_CHECK", {"supplier_id": supplier.id, "old_minor": sample.get("old_price_minor"),
-                                     "old_currency": sample.get("old_currency_code"), "new_minor": sample["price_minor"],
-                                     "currency": sample["currency_code"], "column": column_name(sample["price_column"])})
         return {"status": "imported", "rows": len(rows), "new": len(offers), "changed": len(history),
                 "catalog_sku_matches": matched, "supplier_id": supplier.id}
 
@@ -320,7 +318,7 @@ async def refresh(approved=None, overrides=None, default_currency="USD", *, know
     return totals
 
 
-DAILY_STATUS = "supplier_price_import"
+DAILY_STATUS = "supplier_price_import_v2"
 MOSCOW = ZoneInfo("Europe/Moscow")
 
 
@@ -329,7 +327,6 @@ async def run_daily():
     local = began.astimezone(MOSCOW)
     scheduled_for = local.replace(hour=9, minute=0, second=0, microsecond=0)
     if local < scheduled_for:
-        from datetime import timedelta
         scheduled_for -= timedelta(days=1)
     async with async_session() as session:
         status = await session.get(IntegrationHealth, DAILY_STATUS)
@@ -351,7 +348,7 @@ async def run_daily():
             row = IntegrationHealth(name=DAILY_STATUS)
             session.add(row)
         row.status = "success" if ok else "error"
-        row.checked_at = datetime.now(timezone.utc)
+        row.checked_at = began if ok else datetime.now(timezone.utc)
         row.retry_after_seconds = 0 if ok else 1800
     emit("PRICE_DAILY_DONE", {"result": "success" if ok else "retry", "next_after_moscow": "09:00"})
 
