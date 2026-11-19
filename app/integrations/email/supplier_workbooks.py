@@ -1,7 +1,7 @@
 """Read supplier price rows without executing Excel formulas or opening links."""
 from collections import Counter
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from io import BytesIO, StringIO
 from pathlib import PurePath
 import csv
@@ -31,6 +31,7 @@ class PriceSheet:
     rows: list
     skipped: int
     currency_evidence: int
+    price_columns: tuple[int, ...]
 
 
 def currencies(text):
@@ -61,13 +62,23 @@ def price_minor(value, currency):
     if currencies(raw) - ({currency} if currency else {"RUB", "USD"}):
         return None
     raw = re.sub(r"(?i)\s*(?:₽|\$|USD|RUB|руб\.?)\s*", "", raw).replace(" ", "")
-    if not re.fullmatch(r"\d+(?:[.,]\d{1,2})?", raw):
+    if "," in raw and "." in raw:
+        if re.fullmatch(r"\d{1,3}(?:,\d{3})+\.\d{1,2}", raw):
+            raw = raw.replace(",", "")
+        elif re.fullmatch(r"\d{1,3}(?:\.\d{3})+,\d{1,2}", raw):
+            raw = raw.replace(".", "")
+        else:
+            return None
+    if isinstance(value, str) and not re.fullmatch(r"\d+(?:[.,]\d{1,2})?", raw):
         return None
     try:
-        minor = int(Decimal(raw.replace(",", ".")) * 100)
+        amount = Decimal(str(value)) if not isinstance(value, str) else Decimal(raw.replace(",", "."))
+        if not amount.is_finite() or not 0 < amount <= 10**10:
+            return None
+        minor = int((amount * 100).to_integral_value(rounding=ROUND_HALF_UP))
     except (InvalidOperation, ValueError):
         return None
-    return minor if 0 < minor <= 10**12 else None
+    return minor if minor > 0 else None
 
 
 def workbooks(data, filename):
@@ -153,52 +164,76 @@ def find_price_sheet(data, filename, *, subject="", verified_currency=None):
             if len(name_columns) != 1:
                 continue
             sku_columns = {col for h in nearby for col, v in enumerate(h) if SKU.search(v)}
-            for price_col in price_columns:
-                name_col = name_columns[0]
-                sku_col = next(iter(sku_columns)) if len(sku_columns) == 1 else None
-                if price_col == name_col or sku_col in {price_col, name_col}:
+            name_col = name_columns[0]
+            sku_col = next(iter(sku_columns)) if len(sku_columns) == 1 else None
+            body = rows[header_idx + 1:]
+            columns = []
+            declared_currency = set().union(*(currencies(cell) for cell in title_cells if TITLE.search(cell)))
+            for col in price_columns:
+                if col in (name_col, sku_col):
                     continue
-                explicit = set().union(*(currencies(h[price_col]) for h in nearby if price_col < len(h)))
+                explicit = set().union(*(currencies(h[col]) for h in nearby if col < len(h)))
                 inferred = set()
-                for row in rows[header_idx + 1:]:
-                    if price_col < len(row):
-                        value, fmt = row[price_col]
+                for row in body:
+                    if col < len(row):
+                        value, fmt = row[col]
                         if price_minor(value, None) is not None:
                             inferred |= currencies(fmt) | currencies(safe_text(value))
-                marks = explicit | inferred
-                evidence = 3 if explicit else 2 if inferred else 0
-                if not marks:
-                    marks = set().union(*(currencies(cell) for cell in title_cells if TITLE.search(cell)))
-                    if marks:
-                        evidence = 1
-                    if not marks and verified_currency:
-                        marks = {verified_currency}
-                currency = next(iter(marks)) if len(marks) == 1 and marks <= {"RUB", "USD"} else None
-                records, duplicated, conflicts = {}, 0, set()
-                for number, row in enumerate(rows[header_idx + 1:], header_idx + 2):
-                    if max(name_col, price_col) >= len(row):
+                marks = explicit or inferred or declared_currency
+                if len(marks) > 1 or marks - {"RUB", "USD"}:
+                    continue
+                columns.append((col, next(iter(marks), None), 3 if explicit else 2 if inferred else int(bool(declared_currency))))
+            if not columns:
+                continue
+
+            # An unlabeled column beside a labeled RUB column follows the
+            # purchase mailbox default (USD). Keep the winning cell's currency.
+            has_declared_rub = any(currency == "RUB" for _, currency, _ in columns)
+            fallback = "USD" if has_declared_rub and len(columns) > 1 else verified_currency
+            records, duplicated, conflicts = {}, 0, set()
+            winners = Counter()
+            for number, row in enumerate(body, header_idx + 2):
+                if name_col >= len(row):
+                    continue
+                raw_name = row[name_col][0]
+                name = safe_text(raw_name)
+                if not isinstance(raw_name, str) or not name or len(name) > 490:
+                    continue
+                prices = []
+                for col, currency, evidence in columns:
+                    if col < len(row):
+                        currency = currency or fallback
+                        value, _ = row[col]
+                        if currency and (amount := price_minor(value, currency)) is not None:
+                            prices.append((amount, evidence, col, currency))
+                if not prices:
+                    continue
+                amount, evidence, col, currency = max(prices)
+                sku = safe_text(row[sku_col][0]) if sku_col is not None and sku_col < len(row) else ""
+                if len(sku) > 255:
+                    continue
+                key = "sku:" + sku if sku else "name:" + normalize(name)
+                if key in records:
+                    duplicated += 1
+                    previous = records[key]
+                    if normalize(previous["name"]) != normalize(name):
+                        conflicts.add(key)
                         continue
-                    raw_name = row[name_col][0]
-                    name = safe_text(raw_name)
-                    price = price_minor(row[price_col][0], currency)
-                    if not isinstance(raw_name, str) or not name or price is None or len(name) > 490:
+                    if previous["price_minor"] >= amount:
                         continue
-                    sku = safe_text(row[sku_col][0]) if sku_col is not None and sku_col < len(row) else ""
-                    if len(sku) > 255:
-                        continue
-                    key = "sku:" + sku if sku else "name:" + normalize(name)
-                    if key in records:
-                        duplicated += 1
-                        if records[key]["price_minor"] != price or normalize(records[key]["name"]) != normalize(name):
-                            conflicts.add(key)
-                        continue
-                    records[key] = dict(row=number, name=name, sku=sku or None, mapping_key=key, price_minor=price,
-                                        old_price_minor=None, state="new", offer_id=None, error=None, candidates=[])
-                for key in conflicts:
-                    del records[key]
-                if len(records) >= 5:
-                    candidates.append(PriceSheet(sheet, header_idx + 2, name_col, price_col, sku_col, currency,
-                                                 list(records.values()), duplicated + len(conflicts), evidence))
+                records[key] = dict(row=number, name=name, sku=sku or None, mapping_key=key,
+                                    price_minor=amount, currency_code=currency, price_column=col,
+                                    old_price_minor=None, state="new", offer_id=None, error=None, candidates=[])
+            for key in conflicts:
+                del records[key]
+            if len(records) >= 5:
+                for record in records.values():
+                    winners[(record["price_column"], record["currency_code"])] += 1
+                (main_col, main_currency), _ = winners.most_common(1)[0]
+                strength = max(evidence for _, _, evidence in columns)
+                candidates.append(PriceSheet(sheet, header_idx + 2, name_col, main_col, sku_col, main_currency,
+                                             list(records.values()), duplicated + len(conflicts), strength,
+                                             tuple(col for col, _, _ in columns)))
     if not candidates:
         return None
-    return max(candidates, key=lambda p: (p.currency is not None, p.currency_evidence, len(p.rows)))
+    return max(candidates, key=lambda p: (len(p.rows), p.currency_evidence, len(p.price_columns)))

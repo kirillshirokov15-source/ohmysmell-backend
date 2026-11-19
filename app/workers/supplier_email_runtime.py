@@ -26,6 +26,10 @@ class SupplierEmailWorker:
         # Check identity/auth even when there are no live purchase threads yet.
         await asyncio.to_thread(self.provider.readonly_smoke_check, 1)
         count = await self.poller.run_once()
+        if os.getenv("SUPPLIER_PRICE_DAILY_ENABLED", "false").casefold() == "true":
+            from app.scripts.import_supplier_gmail_prices import run_daily
+            await run_daily()
+            return dict(received=count, processed=count, failed=0, skipped=0)
         if os.getenv("SUPPLIER_PRICE_AUTO_IMPORT_ENABLED", "true").casefold() != "true":
             return dict(received=count, processed=count, failed=0, skipped=0)
         from app.services.supplier_price_import import import_attachment
