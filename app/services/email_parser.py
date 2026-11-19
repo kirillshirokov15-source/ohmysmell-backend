@@ -39,6 +39,14 @@ class EmailParser:
         r"(?P<product>[^\n]+?)\s*$", re.I,
     )
     _inline_qty = re.compile(r"^(?P<product>.+?)\s+qty\s*[:=]?\s*(?P<qty>\d+)\s*$", re.I)
+    # An explicit delimiter and unit distinguish a numeric article from a
+    # count, price, or volume. Keep separators and leading zeros in the SKU.
+    _numeric_sku_qty = re.compile(
+        r"^(?P<sku>[0-9]{1,12}(?:[./-][0-9]{1,12})*(?:[ \t]+[0-9]{1,8})?)"
+        r"\s*[-–—xх×]\s*(?P<qty>[0-9]{1,6})\s*(?:шт\.?|штук(?:и|а)?|pcs?\.?)$",
+        re.I,
+    )
+    _quantity_fragment = re.compile(r"^\d+\s*(?:шт\.?|штук(?:и|а)?|pcs?\.?)$", re.I)
     # Short wholesale line: SKU, quantity, then customer-supplied price.
     # The trailing number is money, NEVER part of quantity or SKU.
     _standalone_sku = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{2,39}$")
@@ -108,6 +116,8 @@ class EmailParser:
         name = name.strip(" \t:;,.–—-")
         if not name or len(name) > 450 or "@" in name or not re.search(r"[a-zа-яё]", name, re.I):
             return None
+        if cls._quantity_fragment.fullmatch(name):
+            return None
         if cls._greeting.match(name) or cls._signature_start.match(name):
             return None
         if cls._normalize(name) == cls._normalize(sender_name):
@@ -117,7 +127,7 @@ class EmailParser:
         return name
 
     @classmethod
-    def _line_qty(cls, line):
+    def _line_qty(cls, line, *, explicit_order=False):
         # Some wholesalers write "DSD balm -2 шт😻 -- Отправлено из мобильной..."
         # The mobile signature and trailing emoji are not product or quantity.
         # Do not strip question marks or other punctuation: a question must
@@ -130,6 +140,12 @@ class EmailParser:
             r"[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]+\s*$",
             "", line,
         ).strip()
+        numeric_sku = cls._numeric_sku_qty.fullmatch(line)
+        if numeric_sku:
+            sku, qty = numeric_sku["sku"], int(numeric_sku["qty"])
+            if explicit_order and 1 <= qty <= 100000:
+                return ExtractedOrderLine(sku, qty, "confirmed", f"Артикул {sku} | {line}"[:500])
+            return None
         m = cls._sku_qty_price.match(line)
         if m and int(m.group("qty")) > 0:
             product = cls._safe_product(m.group("product"))
@@ -155,7 +171,7 @@ class EmailParser:
             parts = [p.strip() for p in re.split(r"\s+\+\s+|\s+и\s+(?=\S+\s+(?:[xх×]|\d))", parts[0]) if p.strip()]
         results = []
         for p in parts:
-            row = cls._line_qty(p)
+            row = cls._line_qty(p, explicit_order=bool(cls._order_signal.search(original_subject)))
             if row:
                 results.append(row)
         if not results:
@@ -273,7 +289,7 @@ class EmailParser:
                     if 1 <= qty <= 100000:
                         output.append(ExtractedOrderLine(name, qty, "probable", clean[:500]))
                         continue
-            parsed = self._line_qty(clean)
+            parsed = self._line_qty(clean, explicit_order=explicit_order)
             if parsed:
                 # Do not parse a question such as "Есть ли Marvis – 2 шт?"
                 if not self._question_signal.search(clean) and "?" not in clean:
@@ -359,3 +375,4 @@ class EmailParser:
                 return ClassifiedEmail("possible_order", (tentative,))
             return ClassifiedEmail("inquiry", ())
         return ClassifiedEmail("order", tuple(item_rows))
+

@@ -327,8 +327,10 @@ class DraftOrderService:
             sku = m.group(1).strip()
             products = await self.matching_service.products_async()
             article_match = ProductMatchingService.match_sku(products, sku, line.qty)
-            if article_match.status in {ProductMatchStatus.MATCHED,
-                                       ProductMatchStatus.AMBIGUOUS}:
+            # An item that consists solely of an explicit SKU must never
+            # fall back to similarities in a product name or a different code.
+            if (line.raw_product_text == sku or article_match.status in {
+                    ProductMatchStatus.MATCHED, ProductMatchStatus.AMBIGUOUS}):
                 return replace(article_match, raw_product_text=line.raw_product_text)
         return await self.matching_service.match_async(line.raw_product_text, line.qty)
 
@@ -707,3 +709,4 @@ class DraftOrderService:
             raise DraftOrderError(
                 f"Draft в статусе {draft.status} больше нельзя редактировать"
             )
+
