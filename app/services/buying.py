@@ -157,10 +157,8 @@ async def checkout_preview(session):
         supplier = suppliers[offer["supplier_id"]]
         if not supplier.email:
             fail("Supplier email is missing")
-        group = groups.setdefault(supplier.id, dict(supplier_id=supplier.id, supplier_name=supplier.name, recipient=supplier.email,
+        group = groups.setdefault((supplier.id, offer["currency_code"]), dict(supplier_id=supplier.id, supplier_name=supplier.name, recipient=supplier.email,
             items=[], currency=offer["currency_code"], total_minor=0, approximate_rub_minor=0, approximate=offer["approximate"]))
-        if group["currency"] != offer["currency_code"]:
-            fail("Supplier offers must share one currency")
         group["items"].append(dict(offer_id=offer["id"], product_id=offer["product_id"], name=offer["name"], quantity=row["quantity"],
             unit_price_minor=offer["purchase_price_minor"], approximate_rub_minor=offer["approximate_rub_minor"],
             fx_rate_to_rub=offer["fx_rate_to_rub"], fx_source=offer["fx_source"], fx_rate_date=offer["fx_rate_date"]))
@@ -311,3 +309,4 @@ async def ingest_reply(session, *, message_id, thread_id, sender, received_at, s
     session.add(BuyingEvent(purchase_id=p.id, action="supplier_reply", actor="gmail-readonly"))
     await session.flush()
     return reply
+

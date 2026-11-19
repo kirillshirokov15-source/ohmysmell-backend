@@ -138,12 +138,17 @@ async def create_supplier(payload: SupplierInput) -> dict:
         return {"id": s.id}
 
 
-async def suppliers_data(session, identifier=None, offset=0, limit=50):
+async def suppliers_data(session, identifier=None, offset=0, limit=50, q="", active_only=False):
     count = select(func.count(SupplierOffer.id)).where(SupplierOffer.supplier_id == Supplier.id, SupplierOffer.active.is_(True)).correlate(Supplier).scalar_subquery()
     latest = select(func.max(BuyingImport.imported_at)).where(BuyingImport.supplier_id == Supplier.id).correlate(Supplier).scalar_subquery()
     query = select(Supplier, BuyingSupplier, count, latest).join(BuyingSupplier)
     if identifier is not None:
         query = query.where(Supplier.id == identifier)
+    if active_only:
+        query = query.where(Supplier.status == "active")
+    for term in normalize(q).split():
+        query = query.where(or_(Supplier.name.icontains(term, autoescape=True),
+                                Supplier.email.icontains(term, autoescape=True)))
     rows = (await session.execute(query.order_by(Supplier.id).offset(offset).limit(limit))).all()
     return [dict(id=s.id, name=s.name, email=s.email, currency=b.currency, status=s.status,
         latest_price_list_upload=latest, active_offer_count=count, created_at=s.created_at, updated_at=s.updated_at,
@@ -151,9 +156,11 @@ async def suppliers_data(session, identifier=None, offset=0, limit=50):
 
 
 @router.get("/suppliers")
-async def suppliers(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)) -> dict:
+async def suppliers(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100),
+                    q: str = Query("", max_length=120), active_only: bool = False) -> dict:
     async with async_session() as session:
-        return {"suppliers": await suppliers_data(session, offset=offset, limit=limit), "offset": offset, "limit": limit}
+        return {"suppliers": await suppliers_data(session, offset=offset, limit=limit, q=q, active_only=active_only),
+                "offset": offset, "limit": limit}
 
 
 @router.get("/suppliers/{supplier_id}")
@@ -269,7 +276,8 @@ async def map_product(payload: MappingInput) -> dict:
 
 @router.get("/catalog", response_model=CatalogRead)
 async def catalog(q: str = Query("", max_length=200), sort: Literal["cheapest", "supplier", "newest"] = "cheapest",
-                  offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)) -> dict:
+                  offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100),
+                  supplier_id: int | None = Query(None, gt=0)) -> dict:
     async with async_session() as session:
         # Page canonical identities, then fetch all their offers in one query.
         try:
@@ -284,12 +292,17 @@ async def catalog(q: str = Query("", max_length=200), sort: Literal["cheapest", 
             SupplierOffer.active.is_(True), Supplier.status == "active")
         if filters is not None:
             base = base.where(filters)
+        if supplier_id is not None:
+            base = base.where(SupplierOffer.supplier_id == supplier_id)
         base = base.group_by(BuyingProduct.product_id)
         order = func.min(price).asc().nullslast() if sort == "cheapest" else func.min(Supplier.name) if sort == "supplier" else func.max(SupplierOffer.valid_at).desc().nullslast()
         total = await session.scalar(select(func.count()).select_from(base.subquery()))
         ids = list((await session.scalars(base.order_by(order, BuyingProduct.product_id).offset(offset).limit(limit))).all())
         products = {p.product_id: dict(id=p.product_id, name=p.name, offers=[]) for p in (await session.scalars(select(BuyingProduct).where(BuyingProduct.product_id.in_(ids)))).all()}
-        for o,m,s in (await session.execute(service.offer_query().where(SupplierOffer.product_id.in_(ids), SupplierOffer.active.is_(True), Supplier.status == "active").order_by(price.asc().nullslast(), SupplierOffer.id))).all():
+        offers = service.offer_query().where(SupplierOffer.product_id.in_(ids), SupplierOffer.active.is_(True), Supplier.status == "active")
+        if supplier_id is not None:
+            offers = offers.where(SupplierOffer.supplier_id == supplier_id)
+        for o,m,s in (await session.execute(offers.order_by(price.asc().nullslast(), SupplierOffer.id))).all():
             products[o.product_id]["offers"].append(service.offer_view(o,m,s))
         return {"products": [products[i] for i in ids], "total": total, "offset": offset, "limit": limit}
 
@@ -597,3 +610,4 @@ async def integration_status() -> dict:
             fx = dict(status='cached', rate=str(quote.current_fx_rate_to_rub), updated_at=quote.fx_rate_date, source=quote.fx_source)
         return dict(**gmail, moysklad=dict(status='configured' if os.getenv('MOYSKLAD_TOKEN') else 'not_configured', writes_enabled=False),
                     telegram=dict(status=telegram), fx=fx, supplier_email=dict(status='disabled'))
+
